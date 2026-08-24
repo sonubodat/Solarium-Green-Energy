@@ -1,0 +1,251 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum StaffRole {
+  ADMIN
+  SALES
+}
+
+enum AccountStatus {
+  ACTIVE
+  INACTIVE
+  DELETED
+}
+
+enum QrStatus {
+  UNASSIGNED
+  ACTIVE
+  INACTIVE
+  RETIRED
+}
+
+enum PayoutStatus {
+  UNPAID
+  PAID
+}
+
+model User {
+  id             String      @id @default(cuid())
+  name           String
+  usernameMobile String      @unique @map("username_or_mobile")
+  passwordHash   String      @map("password_hash")
+  role           StaffRole
+  status         AccountStatus @default(ACTIVE)
+  createdAt      DateTime    @default(now()) @map("created_at")
+  updatedAt      DateTime    @updatedAt @map("updated_at")
+  ownedVendors   Vendor[]    @relation("SalesOwner")
+  assignments    QrAssignment[]
+  payoutsPaid    Payout[]    @relation("PayoutPaidBy")
+  auditLogs      AuditLog[]
+  sessions       Session[]
+  resetTokens    PasswordResetToken[]
+
+  @@index([role, status])
+  @@index([createdAt])
+  @@map("users")
+}
+
+model Vendor {
+  id                 String      @id @default(cuid())
+  businessName       String      @map("business_name")
+  ownerName          String      @map("owner_name")
+  loginIdentifier    String      @unique @map("login_identifier")
+  mobileNumber       String      @map("mobile_number")
+  passwordHash       String?     @map("password_hash")
+  mustChangePassword Boolean     @default(true) @map("must_change_password")
+  status             AccountStatus @default(ACTIVE)
+  salesUserId        String?     @map("sales_user_id")
+  createdAt          DateTime    @default(now()) @map("created_at")
+  updatedAt          DateTime    @updatedAt @map("updated_at")
+  salesUser          User?      @relation("SalesOwner", fields: [salesUserId], references: [id])
+  assignments        QrAssignment[]
+  scans              Scan[]
+  leads              Lead[]
+  payouts            Payout[]
+  sessions           Session[]
+  resetTokens        PasswordResetToken[]
+
+  @@index([mobileNumber])
+  @@index([status, createdAt])
+  @@index([salesUserId])
+  @@map("vendors")
+}
+
+model VendorRegistration {
+  id             String      @id @default(cuid())
+  vendorId       String?     @map("vendor_id")
+  businessName   String      @map("business_name")
+  ownerName      String      @map("owner_name")
+  mobileNumber   String      @map("mobile_number")
+  loginIdentifier String     @map("login_identifier")
+  salesUserId    String?     @map("sales_user_id")
+  status         String
+  createdAt      DateTime    @default(now()) @map("created_at")
+  updatedAt      DateTime    @updatedAt @map("updated_at")
+
+  @@index([salesUserId, status, createdAt])
+  @@map("vendor_registrations")
+}
+
+model QrCode {
+  id           String         @id @default(cuid())
+  code         String         @unique
+  status       QrStatus       @default(UNASSIGNED)
+  createdAt    DateTime       @default(now()) @map("created_at")
+  updatedAt    DateTime       @updatedAt @map("updated_at")
+  assignments  QrAssignment[]
+  scans        Scan[]
+  leads        Lead[]
+
+  @@index([status])
+  @@map("qr_codes")
+}
+
+model QrAssignment {
+  id           String    @id @default(cuid())
+  qrCodeId     String    @map("qr_code_id")
+  vendorId     String    @map("vendor_id")
+  assignedById String?   @map("assigned_by")
+  assignedAt   DateTime  @default(now()) @map("assigned_at")
+  unassignedAt DateTime? @map("unassigned_at")
+  qrCode       QrCode    @relation(fields: [qrCodeId], references: [id])
+  vendor       Vendor    @relation(fields: [vendorId], references: [id])
+  assignedBy   User?     @relation(fields: [assignedById], references: [id])
+  scans        Scan[]
+  leads        Lead[]
+
+  @@index([qrCodeId, unassignedAt])
+  @@index([vendorId, assignedAt])
+  @@map("qr_assignments")
+}
+
+model CustomerIdentity {
+  id        String   @id @default(cuid())
+  hash      String   @unique @map("customer_hash")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  scans     Scan[]
+  leads     Lead[]
+
+  @@map("customer_identities")
+}
+
+model Scan {
+  id                 String            @id @default(cuid())
+  qrId               String            @map("qr_id")
+  qrAssignmentId     String            @map("qr_assignment_id")
+  vendorId           String            @map("vendor_id")
+  customerIdentityId String?           @map("customer_identity_id")
+  createdAt          DateTime          @default(now()) @map("created_at")
+  qr                 QrCode            @relation(fields: [qrId], references: [id])
+  assignment         QrAssignment     @relation(fields: [qrAssignmentId], references: [id])
+  vendor             Vendor            @relation(fields: [vendorId], references: [id])
+  customerIdentity   CustomerIdentity? @relation(fields: [customerIdentityId], references: [id])
+  lead               Lead?
+
+  @@index([qrId, createdAt])
+  @@index([vendorId, createdAt])
+  @@index([qrAssignmentId])
+  @@map("scans")
+}
+
+model Lead {
+  id                 String            @id @default(cuid())
+  vendorId           String            @map("vendor_id")
+  qrId               String            @map("qr_id")
+  qrAssignmentId     String            @map("qr_assignment_id")
+  scanId             String            @unique @map("scan_id")
+  customerIdentityId String            @map("customer_identity_id")
+  customerName       String            @map("customer_name")
+  phone              String
+  email              String?
+  location           String?
+  status             String
+  createdAt          DateTime          @default(now()) @map("created_at")
+  updatedAt          DateTime          @updatedAt @map("updated_at")
+  vendor             Vendor            @relation(fields: [vendorId], references: [id])
+  qr                 QrCode            @relation(fields: [qrId], references: [id])
+  assignment         QrAssignment     @relation(fields: [qrAssignmentId], references: [id])
+  scan               Scan              @relation(fields: [scanId], references: [id])
+  customerIdentity   CustomerIdentity  @relation(fields: [customerIdentityId], references: [id])
+  payout             Payout?
+
+  @@index([vendorId, createdAt])
+  @@index([qrId, createdAt])
+  @@index([qrAssignmentId])
+  @@index([customerIdentityId])
+  @@index([status])
+  @@map("leads")
+}
+
+model Payout {
+  id            String       @id @default(cuid())
+  leadId        String       @unique @map("lead_id")
+  vendorId      String       @map("vendor_id")
+  status        PayoutStatus @default(UNPAID)
+  paidAt        DateTime?    @map("paid_at")
+  paidById      String?      @map("paid_by")
+  paidReference String?      @map("paid_reference")
+  createdAt     DateTime     @default(now()) @map("created_at")
+  updatedAt     DateTime     @updatedAt @map("updated_at")
+  lead          Lead         @relation(fields: [leadId], references: [id])
+  vendor        Vendor       @relation(fields: [vendorId], references: [id])
+  paidBy        User?        @relation("PayoutPaidBy", fields: [paidById], references: [id])
+
+  @@index([vendorId, status])
+  @@index([paidAt])
+  @@map("payouts")
+}
+
+model Session {
+  id               String   @id @default(cuid())
+  userId           String?  @map("user_id")
+  vendorId         String?  @map("vendor_id")
+  tokenHash        String   @unique @map("session_token_hash")
+  expiresAt        DateTime @map("expires_at")
+  createdAt        DateTime @default(now()) @map("created_at")
+  revokedAt        DateTime? @map("revoked_at")
+  user             User?    @relation(fields: [userId], references: [id])
+  vendor           Vendor?  @relation(fields: [vendorId], references: [id])
+
+  @@index([expiresAt])
+  @@map("sessions")
+}
+
+model PasswordResetToken {
+  id        String   @id @default(cuid())
+  userId    String?  @map("user_id")
+  vendorId  String?  @map("vendor_id")
+  tokenHash String   @unique @map("token_hash")
+  expiresAt DateTime @map("expires_at")
+  usedAt    DateTime? @map("used_at")
+  createdAt DateTime @default(now()) @map("created_at")
+  user      User?    @relation(fields: [userId], references: [id])
+  vendor    Vendor?  @relation(fields: [vendorId], references: [id])
+
+  @@index([expiresAt])
+  @@map("password_reset_tokens")
+}
+
+model AuditLog {
+  id          String   @id @default(cuid())
+  actorUserId String   @map("actor_user_id")
+  actorRole   String   @map("actor_role")
+  action      String
+  entity      String
+  entityId    String   @map("entity_id")
+  metadata    Json?
+  timestamp   DateTime @default(now())
+  actor       User     @relation(fields: [actorUserId], references: [id])
+
+  @@index([entity, entityId])
+  @@index([actorUserId, timestamp])
+  @@index([timestamp])
+  @@index([action, timestamp])
+  @@map("audit_logs")
+}

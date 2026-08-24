@@ -1,3 +1,25 @@
+# Solarium workspace
+
+The project is organized into separate application boundaries:
+
+```text
+frontend/  React customer, Vendor, Sales, and Admin UI
+backend/   Node.js/Express API, Prisma, and database access
+docs/      Product, architecture, data-model, API, task, and progress references
+```
+
+Use `frontend/README.md` for frontend setup and `backend/README.md` for API setup. The root CRA files are preserved as the original shell while the separated frontend is established.
+
+Important references:
+
+- `docs/plan.md` — implementation contract
+- `docs/requirements.md` — business requirements
+- `docs/architecture.md` — technical boundaries and runtime flows
+- `docs/data-model.md` — persistence contract
+- `docs/api.md` — frontend/backend API contract
+- `docs/tasks.md` — execution tasks
+- `docs/progress.md` — current implementation state
+
 # Getting Started with Create React App
 
 This project was bootstrapped with [Create React App](https://github.com/facebook/create-react-app).
