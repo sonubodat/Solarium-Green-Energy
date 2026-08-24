@@ -24,6 +24,12 @@ const passwordSchema = z.object({
 	new_password: z.string().min(8),
 });
 
+function pagination(query) {
+	const page = Math.max(Number.parseInt(query.page, 10) || 1, 1);
+	const limit = Math.min(Math.max(Number.parseInt(query.limit, 10) || 25, 1), 100);
+	return { page, limit, skip: (page - 1) * limit };
+}
+
 function invalidCredentials() {
 	const error = new Error('Invalid credentials.');
 	error.statusCode = 401;
@@ -72,6 +78,54 @@ vendorRoutes.post('/change-password', requireAuth, requireVendor, async (request
 			data: { passwordHash: await hashPassword(input.new_password), mustChangePassword: false },
 		});
 		return response.json({ success: true, vendor: publicVendor(vendor) });
+	} catch (error) {
+		return next(error);
+	}
+});
+
+vendorRoutes.get('/profile', requireAuth, requireVendor, (request, response) => {
+	const { vendor } = request.auth;
+	return response.json({
+		success: true,
+		vendor: publicVendor(vendor),
+	});
+});
+
+vendorRoutes.get('/leads', requireAuth, requireVendor, async (request, response, next) => {
+	try {
+		const { page, limit, skip } = pagination(request.query);
+		const vendorId = request.auth.vendor.id;
+		const [leads, total] = await Promise.all([
+			prisma.lead.findMany({
+				where: { vendorId },
+				select: { id: true, customerName: true, email: true, location: true, status: true, createdAt: true, qr: { select: { code: true } } },
+				orderBy: { createdAt: 'desc' },
+				skip,
+				take: limit,
+			}),
+			prisma.lead.count({ where: { vendorId } }),
+		]);
+		return response.json({ success: true, leads, pagination: { page, limit, total } });
+	} catch (error) {
+		return next(error);
+	}
+});
+
+vendorRoutes.get('/payouts', requireAuth, requireVendor, async (request, response, next) => {
+	try {
+		const { page, limit, skip } = pagination(request.query);
+		const vendorId = request.auth.vendor.id;
+		const [payouts, total] = await Promise.all([
+			prisma.payout.findMany({
+				where: { vendorId },
+				select: { id: true, leadId: true, status: true, paidAt: true, paidReference: true, createdAt: true },
+				orderBy: { createdAt: 'desc' },
+				skip,
+				take: limit,
+			}),
+			prisma.payout.count({ where: { vendorId } }),
+		]);
+		return response.json({ success: true, payouts, pagination: { page, limit, total } });
 	} catch (error) {
 		return next(error);
 	}

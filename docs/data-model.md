@@ -84,7 +84,7 @@ created_at
 updated_at
 ```
 
-Index `sales_user_id`, `status`, and `created_at`. Do not expose more contact data to Sales than the onboarding workflow requires.
+Status is `PENDING`, `ONBOARDED`, or `REJECTED`. A registration may be linked to one Vendor at most once; onboarding must set `vendor_id` and transition the registration transactionally. Index `sales_user_id`, `status`, and `created_at`. Do not expose more contact data to Sales than the onboarding workflow requires.
 
 ### QrCode
 
@@ -136,6 +136,8 @@ updated_at
 ```
 
 Generate `customer_hash` server-side from a normalized mobile number using an application secret HMAC key. Never use the raw phone number as the identity key. Enforce the configured uniqueness rule at the database level.
+
+The current product rule remains configurable and is not assumed to mean one lead per customer globally. `CustomerIdentity.hash` identifies the normalized customer; lead-level duplicate attribution rules determine whether a later lead is payable in the relevant campaign or referral context.
 
 ### Scan
 
@@ -228,6 +230,8 @@ created_at
 
 Index the token hash and expiration. Never store the raw reset token or password.
 
+This table supports the server-side staff and Vendor reset endpoints currently implemented. It does not imply email recovery, OTP recovery, or automated messaging. Admin-issued Vendor temporary-password resets still use `must_change_password`.
+
 ### AuditLog
 
 Record meaningful security and business changes.
@@ -269,3 +273,15 @@ The active QR assignment is used only for a new public scan. Existing Scan, Lead
 3. Lead creation: normalize identity, resolve the scan attribution, apply duplicate rules, and create the lead transactionally.
 4. Payout marking: verify the authenticated actor is Admin, set `PAID`, record payment metadata, and audit atomically.
 5. Password reset: create a short-lived single-use reset record and invalidate it after successful use.
+
+## Database-Only Constraints
+
+Prisma schema syntax cannot express the active-assignment partial uniqueness rule. The PostgreSQL migration must maintain:
+
+```sql
+CREATE UNIQUE INDEX ...
+ON qr_assignments(qr_code_id)
+WHERE unassigned_at IS NULL;
+```
+
+Payout creation must always copy `lead.vendor_id`; clients never submit `Payout.vendor_id`. Service-level tests must reject any attempted divergence between the payout and its lead.

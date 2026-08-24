@@ -76,6 +76,20 @@ Submit a customer referral lead.
 - Rules: normalize the mobile number, generate the server-side HMAC identity, validate the qualifying scan, apply duplicate prevention transactionally, and persist `vendor_id`, `qr_id`, `qr_assignment_id`, and `scan_id`
 - Response: safe confirmation without exposing internal attribution data
 
+Request example:
+
+```json
+{
+	"scan_id": "scan-id-from-qr-response",
+	"customer_name": "Customer Name",
+	"phone": "+91 9876543210",
+	"email": "customer@example.com",
+	"location": "Pune"
+}
+```
+
+The server normalizes the phone number and stores only its HMAC identity for deduplication. The first lead is `NEW`; a later lead for the same identity is recorded as `DUPLICATE` and must not create payable attribution.
+
 ## Vendor Registration
 
 ### `POST /api/vendors/register`
@@ -155,6 +169,21 @@ Modify vendor information or status.
 - Authentication: Admin
 - Rules: preserve historical records and write an audit log
 
+### `POST /api/admin/vendors`
+
+Create a Vendor directly.
+
+- Authentication: Admin
+- Request: business details and optional initial password
+- Rules: normalize identifiers, store only a password hash, and audit the creation
+
+### `POST /api/admin/vendors/:vendorId/deactivate`
+
+Deactivate a Vendor without deleting historical records.
+
+- Authentication: Admin
+- Rules: set the Vendor inactive and write an audit log
+
 ### `POST /api/admin/vendors/:vendorId/reset-password`
 
 Issue a secure temporary password/reset flow for a Vendor.
@@ -199,6 +228,14 @@ List and filter leads.
 - Authentication: Admin
 - Query: bounded pagination and approved filters
 
+### `PATCH /api/admin/leads/:leadId`
+
+Change a lead status.
+
+- Authentication: Admin
+- Request: `status` (`NEW`, `CONTACTED`, `QUALIFIED`, `CONVERTED`, `REJECTED`, or `DUPLICATE`)
+- Rules: preserve immutable attribution and write an audit log
+
 ### `GET /api/admin/payouts`
 
 List manual payout-status records.
@@ -217,10 +254,32 @@ Mark a payout as paid.
 
 ### `GET /api/admin/users`
 
-List and manage staff users.
+List staff users.
 
 - Authentication: Admin
-- Rules: only Admin may create, modify, deactivate, or delete staff users where appropriate
+- Query: bounded pagination
+
+### `POST /api/admin/users`
+
+Create an Admin or Sales staff user.
+
+- Authentication: Admin
+- Request: `name`, `username_or_mobile`, `password`, `role`
+- Rules: store only a password hash and write an audit log
+
+### `PATCH /api/admin/users/:userId`
+
+Update a staff user.
+
+- Authentication: Admin
+- Rules: only Admin may modify staff users; at least one active Admin must remain
+
+### `POST /api/admin/users/:userId/deactivate`
+
+Deactivate a staff user.
+
+- Authentication: Admin
+- Rules: preserve audit history and protect the last active Admin account
 
 ### `GET /api/admin/audit-logs`
 

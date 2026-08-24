@@ -29,6 +29,12 @@ enum PayoutStatus {
   PAID
 }
 
+enum VendorRegistrationStatus {
+  PENDING
+  ONBOARDED
+  REJECTED
+}
+
 model User {
   id             String      @id @default(cuid())
   name           String
@@ -44,6 +50,7 @@ model User {
   auditLogs      AuditLog[]
   sessions       Session[]
   resetTokens    PasswordResetToken[]
+  registrations  VendorRegistration[]
 
   @@index([role, status])
   @@index([createdAt])
@@ -69,6 +76,7 @@ model Vendor {
   payouts            Payout[]
   sessions           Session[]
   resetTokens        PasswordResetToken[]
+  registrations      VendorRegistration[]
 
   @@index([mobileNumber])
   @@index([status, createdAt])
@@ -78,15 +86,17 @@ model Vendor {
 
 model VendorRegistration {
   id             String      @id @default(cuid())
-  vendorId       String?     @map("vendor_id")
+  vendorId       String?     @unique @map("vendor_id")
   businessName   String      @map("business_name")
   ownerName      String      @map("owner_name")
   mobileNumber   String      @map("mobile_number")
   loginIdentifier String     @map("login_identifier")
   salesUserId    String?     @map("sales_user_id")
-  status         String
+  status         VendorRegistrationStatus @default(PENDING)
   createdAt      DateTime    @default(now()) @map("created_at")
   updatedAt      DateTime    @updatedAt @map("updated_at")
+  vendor         Vendor?     @relation(fields: [vendorId], references: [id])
+  salesUser      User?       @relation(fields: [salesUserId], references: [id])
 
   @@index([salesUserId, status, createdAt])
   @@map("vendor_registrations")

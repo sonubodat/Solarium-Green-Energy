@@ -64,14 +64,14 @@ export function setSessionCookie(response, token) {
   const secure = env.nodeEnv === 'production';
   response.setHeader(
     'Set-Cookie',
-    `${env.sessionCookieName}=${encodeURIComponent(token)}; Max-Age=${sessionLifetimeMs / 1000}; Path=/; HttpOnly; SameSite=Lax${secure ? '; Secure' : ''}`
+    `${env.sessionCookieName}=${encodeURIComponent(token)}; Max-Age=${sessionLifetimeMs / 1000}; Path=/; HttpOnly; SameSite=${env.sessionCookieSameSite}${secure ? '; Secure' : ''}`
   );
 }
 
 export function clearSessionCookie(response) {
   response.setHeader(
     'Set-Cookie',
-    `${env.sessionCookieName}=; Max-Age=0; Path=/; HttpOnly; SameSite=Lax${env.nodeEnv === 'production' ? '; Secure' : ''}`
+    `${env.sessionCookieName}=; Max-Age=0; Path=/; HttpOnly; SameSite=${env.sessionCookieSameSite}${env.nodeEnv === 'production' ? '; Secure' : ''}`
   );
 }
 

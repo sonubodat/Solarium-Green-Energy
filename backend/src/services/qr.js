@@ -1,0 +1,80 @@
+import { prisma } from '../lib/prisma.js';
+
+function conflict(message, code = 'QR_CONFLICT') {
+  const error = new Error(message);
+  error.statusCode = 409;
+  error.code = code;
+  return error;
+}
+
+export async function generateQrCodes(quantity, actorUserId) {
+  const codes = Array.from({ length: quantity }, (_, index) => `V-${Date.now()}-${index + 1}`);
+  return prisma.$transaction(async (transaction) => {
+    const created = await transaction.qrCode.createMany({ data: codes.map((code) => ({ code })) });
+    await transaction.auditLog.create({
+      data: {
+        actorUserId,
+        actorRole: 'ADMIN',
+        action: 'QR_GENERATED',
+        entity: 'QrCode',
+        entityId: 'batch',
+        metadata: { quantity: created.count },
+      },
+    });
+    return { count: created.count, codes };
+  });
+}
+
+export async function assignUnassignedQr({ code, vendorId, assignedById, assignedByRole }) {
+  return prisma.$transaction(async (transaction) => {
+    const qr = await transaction.qrCode.findUnique({ where: { code } });
+    const vendor = await transaction.vendor.findUnique({ where: { id: vendorId } });
+    if (!qr) throw conflict('QR code was not found.', 'QR_NOT_FOUND');
+    if (!vendor) throw conflict('Vendor was not found.', 'VENDOR_NOT_FOUND');
+    if (qr.status !== 'UNASSIGNED') throw conflict('Only an unassigned QR can be activated.', 'QR_NOT_UNASSIGNED');
+
+    const assignment = await transaction.qrAssignment.create({
+      data: { qrCodeId: qr.id, vendorId, assignedById, assignedAt: new Date() },
+    });
+    const updatedQr = await transaction.qrCode.update({ where: { id: qr.id }, data: { status: 'ACTIVE' } });
+    await transaction.auditLog.create({
+      data: {
+        actorUserId: assignedById,
+        actorRole: assignedByRole,
+        action: 'QR_ASSIGNED',
+        entity: 'QrAssignment',
+        entityId: assignment.id,
+        metadata: { qrCode: code, vendorId },
+      },
+    });
+    return { qr: updatedQr, assignment, vendor };
+  });
+}
+
+export async function reassignQr({ qrId, vendorId, assignedById }) {
+  return prisma.$transaction(async (transaction) => {
+    const qr = await transaction.qrCode.findUnique({ where: { id: qrId } });
+    const vendor = await transaction.vendor.findUnique({ where: { id: vendorId } });
+    const current = await transaction.qrAssignment.findFirst({ where: { qrCodeId: qrId, unassignedAt: null } });
+    if (!qr) throw conflict('QR code was not found.', 'QR_NOT_FOUND');
+    if (!vendor) throw conflict('Vendor was not found.', 'VENDOR_NOT_FOUND');
+    if (!current || qr.status !== 'ACTIVE') throw conflict('Only an active QR can be reassigned.', 'QR_NOT_ACTIVE');
+    if (current.vendorId === vendorId) throw conflict('QR is already assigned to this Vendor.', 'QR_ALREADY_ASSIGNED');
+
+    await transaction.qrAssignment.update({ where: { id: current.id }, data: { unassignedAt: new Date() } });
+    const replacement = await transaction.qrAssignment.create({
+      data: { qrCodeId: qrId, vendorId, assignedById, assignedAt: new Date() },
+    });
+    await transaction.auditLog.create({
+      data: {
+        actorUserId: assignedById,
+        actorRole: 'ADMIN',
+        action: 'QR_REASSIGNED',
+        entity: 'QrAssignment',
+        entityId: replacement.id,
+        metadata: { oldVendorId: current.vendorId, newVendorId: vendorId, qrId },
+      },
+    });
+    return { qr, previousAssignment: current, assignment: replacement, vendor };
+  });
+}
