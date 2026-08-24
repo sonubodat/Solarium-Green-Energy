@@ -48,6 +48,14 @@ Staff password recovery or change-password initiation, according to the selected
 - Authentication: public entry, protected completion
 - Rules: do not reveal whether an account exists; reset credentials server-side
 
+### `POST /api/auth/reset-password`
+
+Complete a staff or Vendor password reset.
+
+- Authentication: public with a valid reset token
+- Request: `reset_token`, `new_password`
+- Rules: tokens are hashed in storage, expire after a short period, are single-use, and are consumed atomically with the password update
+
 ## Public Referral API
 
 ### `GET /api/public/qr/:qrCode`
@@ -257,6 +265,10 @@ Authenticate using a login identifier or registered mobile number and password.
 - Authentication: Vendor
 - Request: current password and new password
 - Rules: clear `must_change_password` after success and invalidate temporary credentials
+
+## Password Reset Development Note
+
+`POST /api/auth/forgot-password` accepts `account_type` (`staff` or `vendor`) and `identifier`. It always returns a generic response to avoid account enumeration. For local development only, the reset token is included in the response; production responses never include it. Admins can issue a Vendor reset through `POST /api/admin/vendors/:vendorId/reset-password`.
 
 ## Authorization Invariants
 

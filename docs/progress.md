@@ -2,8 +2,8 @@
 
 ## Current status
 
-- Planning only.
-- No implementation code has been added.
+- Foundation implementation is in progress.
+- Frontend/backend connection and the initial backend structure are implemented.
 - Core role separation is defined as ADMIN, SALES, and VENDOR.
 - Supabase is documented as the PostgreSQL provider.
 - Vendor login is defined as username or mobile number plus password.
@@ -11,10 +11,15 @@
 - Vendor password reset from the dashboard is now part of the plan.
 - `frontend/` and `backend/` application boundaries have been scaffolded.
 - Prisma schema, seed entry point, API route boundaries, middleware, and shared frontend API client have been scaffolded.
+- Server-side session lookup and reusable Admin, Sales, Vendor, and Admin-or-Sales authorization guards are implemented.
+- Staff and Vendor login, logout, and password-change endpoints are implemented with hashed passwords and server-managed sessions.
+- Frontend and backend `.env.example` and `.gitignore` boundaries are configured; secrets and generated artifacts are excluded from commits.
+- Password reset issuance and completion are implemented with hashed, expiring, single-use reset tokens; reset tokens are never returned in production responses.
+- A visible frontend portal preview is implemented with Public, Vendor, Sales, and Admin views using text-only status presentation.
 
 ## Next step
 
-- Implement the authentication and authorization contracts, then generate and apply the first Prisma migration.
+- Generate and apply the first Prisma migration, then replace the frontend preview with the first database-backed feature module.
 
 ## Notes
 

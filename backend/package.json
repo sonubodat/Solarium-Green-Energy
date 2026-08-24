@@ -18,6 +18,6 @@
     "zod": "latest"
   },
   "devDependencies": {
-    "prisma": "latest"
+    "prisma": "^6.12.0"
   }
 }

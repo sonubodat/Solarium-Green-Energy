@@ -12,6 +12,7 @@ export function errorHandler(error, _request, response, _next) {
     error: {
       code: error.code || 'INTERNAL_ERROR',
       message: error.statusCode ? error.message : 'An unexpected error occurred.',
+      ...(error.details ? { details: error.details } : {}),
     },
   });
 }
