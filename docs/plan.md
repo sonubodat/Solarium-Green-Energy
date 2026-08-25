@@ -106,6 +106,8 @@ The system has three authenticated roles:
 
 The public customer flow remains unauthenticated.
 
+The frontend must consume the backend through the centralized API client, include credentials for server-managed sessions, and provide loading, validation, success, empty, and error states for each implemented workflow.
+
 ---
 
 ## 4. Role Separation
@@ -500,6 +502,8 @@ Onboarding complete
 
 The sales dashboard must support selecting a vendor by unique vendor identifier/name/login identifier and assigning the scanned or entered QR to that vendor.
 
+The Sales UI must complete onboarding before assignment, retain the returned Vendor identifier for the assignment request, show the QR status before assigning, and refresh state after a successful operation. It must never submit a registration identifier where the API requires a Vendor identifier.
+
 Do not place the vendor ID in the QR URL.
 
 The URL remains:
@@ -836,6 +840,8 @@ Admin routes:
 
 Admin must be able to manage vendors, QR inventory, assignments, leads, payout status, and audit trails.
 
+The first Admin UI slice exposes these operational collections through bounded API responses and a resource selector. Mutating actions remain explicit, authorized backend operations and are added only with confirmation and audit feedback.
+
 ### Sales UI
 
 Sales routes:
@@ -873,6 +879,8 @@ Vendor routes:
 ```
 
 Vendor data must always be scoped to the authenticated vendor.
+
+The Vendor UI may display only the authenticated Vendor's permitted profile, referral, and payout-status data. It must provide an empty state when no records exist and a password-change state when `must_change_password` is true.
 
 ---
 
@@ -954,6 +962,8 @@ Prevent:
 Frontend route protection alone is never sufficient.
 
 The public QR endpoint must have server-side rate limiting and abuse protection.
+
+Authentication and password-reset entry points must also be rate-limited per client IP. Login attempts must return a generic credential error, and reset requests must not reveal whether an account exists. The limiter may use in-memory storage for a single backend instance; a shared store is required before running multiple instances.
 
 ---
 

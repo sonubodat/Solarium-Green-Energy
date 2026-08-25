@@ -38,10 +38,16 @@
 - Development seed data now provides repeatable Admin, Sales, Vendor, and QR records for Postman/API verification.
 - CORS now supports a comma-separated browser-origin allowlist for local, Render, Vercel, and temporary ngrok testing; expected `401/403` responses are no longer logged as server errors.
 - Production session cookies use configurable `SameSite=None; Secure` behavior for the separate Vercel frontend and Render backend.
+- A client-facing RFI has been prepared covering the product scope, technical approach, security model, current progress, exclusions, acceptance scenarios, and information required from Solarium Energy.
+- Security hardening now rate-limits staff and Vendor login attempts and password-reset requests per client IP, while preserving generic authentication and reset responses.
+- The frontend now connects the Public QR/lead workflow and authenticated Vendor, Sales, and Admin entry workflows to the live API with loading, success, and error states.
+- The Sales frontend now supports pending-registration selection, temporary-password onboarding, QR status lookup, and assignment of an unassigned QR using the returned Vendor identifier.
+- The Admin frontend now loads bounded operational views for vendors, QR inventory, leads, scans, payouts, staff users, and audit logs through a resource selector.
+- The Vendor frontend now renders the authenticated Vendor workspace with profile, referral, payout-status, empty, and first-login password-change states without exposing customer phone numbers.
 
 ## Next step
 
-- Verify QR inventory, Sales assignment, Admin reassignment, public QR scanning, lead deduplication, Vendor data isolation, Admin writes, and staff-user management against the seeded database, then continue with security hardening.
+- Verify the complete Sales onboarding and QR assignment flow against seeded data, then verify Admin operational views, QR reassignment, public QR scanning, lead deduplication, Vendor data isolation, Admin writes, and staff-user management. Complete authorization/security tests before adding Admin mutation controls and final portal screens.
 
 ## Notes
 

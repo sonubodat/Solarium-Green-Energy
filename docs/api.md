@@ -10,6 +10,8 @@ Base path:
 
 Protected endpoints use the server-managed HTTP-only session. The client must not submit a role or vendor ID as an authority source.
 
+The frontend calls these endpoints through one centralized API client with credentialed requests. Browser and API failures must be shown as user-facing states without exposing server stack traces.
+
 ## Common Response Rules
 
 Success responses return JSON with the resource or operation result. Validation failures return `400`. Authentication failures return `401`. Authorization failures return `403`. Missing resources return `404`. Conflicts such as duplicate identifiers or an already-assigned QR return `409`. Unexpected failures are handled by centralized server error handling.
@@ -26,6 +28,7 @@ Authenticate an Admin or Sales user.
 - Request: `username_or_mobile`, `password`
 - Response: authenticated staff profile and session state
 - Rules: derive role from the stored account; never trust a submitted role
+- Security: requests are rate-limited per client IP; invalid credentials use a generic response
 
 ### `POST /api/auth/logout`
 
@@ -47,6 +50,7 @@ Staff password recovery or change-password initiation, according to the selected
 
 - Authentication: public entry, protected completion
 - Rules: do not reveal whether an account exists; reset credentials server-side
+- Security: requests are rate-limited per client IP
 
 ### `POST /api/auth/reset-password`
 
@@ -55,6 +59,7 @@ Complete a staff or Vendor password reset.
 - Authentication: public with a valid reset token
 - Request: `reset_token`, `new_password`
 - Rules: tokens are hashed in storage, expire after a short period, are single-use, and are consumed atomically with the password update
+- Security: requests are rate-limited per client IP
 
 ## Public Referral API
 
@@ -126,6 +131,7 @@ Complete onboarding for an eligible registration.
 - Authentication: Sales
 - Request: approved vendor details and initial credential setup
 - Rules: authorize the vendor through Sales ownership; store only a password hash; set `must_change_password = true`; do not allow active QR reassignment
+- Frontend sequence: use the returned Vendor identifier for the subsequent QR assignment request; do not reuse the registration identifier
 
 ### `GET /api/sales/qr/:code`
 
@@ -296,6 +302,7 @@ Authenticate using a login identifier or registered mobile number and password.
 
 - Authentication: public
 - Rules: create a server-managed Vendor session; enforce temporary-password change when `must_change_password = true`
+- Security: requests are rate-limited per client IP and invalid credentials use a generic response
 
 ### `GET /api/vendor/profile`
 

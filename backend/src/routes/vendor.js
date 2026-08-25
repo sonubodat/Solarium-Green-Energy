@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { prisma } from '../lib/prisma.js';
 import { requireAuth, requireVendor } from '../middleware/auth.js';
+import { authRateLimit } from '../middleware/rate-limit.js';
 import {
 	clearSessionCookie,
 	createVendorSession,
@@ -37,7 +38,7 @@ function invalidCredentials() {
 	return error;
 }
 
-vendorRoutes.post('/login', async (request, response, next) => {
+vendorRoutes.post('/login', authRateLimit, async (request, response, next) => {
 	try {
 		const input = loginSchema.parse(request.body);
 		const identifier = normalizeLoginIdentifier(input.login_identifier);

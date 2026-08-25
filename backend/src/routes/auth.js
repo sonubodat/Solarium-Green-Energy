@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { prisma } from '../lib/prisma.js';
 import { requireAuth } from '../middleware/auth.js';
+import { authRateLimit, passwordResetRateLimit } from '../middleware/rate-limit.js';
 import { env } from '../config/env.js';
 import { consumePasswordResetToken, createPasswordResetToken } from '../services/password-reset.js';
 import {
@@ -43,7 +44,7 @@ function invalidCredentials() {
 	return error;
 }
 
-authRoutes.post('/login', async (request, response, next) => {
+authRoutes.post('/login', authRateLimit, async (request, response, next) => {
 	try {
 		const input = loginSchema.parse(request.body);
 		const user = await prisma.user.findUnique({
@@ -91,7 +92,7 @@ authRoutes.post('/change-password', requireAuth, async (request, response, next)
 	}
 });
 
-authRoutes.post('/forgot-password', async (request, response, next) => {
+authRoutes.post('/forgot-password', passwordResetRateLimit, async (request, response, next) => {
 	try {
 		const input = resetRequestSchema.parse(request.body);
 		const identifier = normalizeLoginIdentifier(input.identifier);
@@ -112,7 +113,7 @@ authRoutes.post('/forgot-password', async (request, response, next) => {
 	}
 });
 
-authRoutes.post('/reset-password', async (request, response, next) => {
+authRoutes.post('/reset-password', passwordResetRateLimit, async (request, response, next) => {
 	try {
 		const input = resetCompletionSchema.parse(request.body);
 		const resetToken = await consumePasswordResetToken(input.reset_token);

@@ -63,3 +63,17 @@
 - Run `npm run db:seed`, log in through Postman, and retain the session cookie for protected endpoint checks.
 - Use `curl.exe` rather than PowerShell's `curl` alias when testing curl commands.
 - Verify CORS from `http://localhost:3000`, the deployed frontend origin, and any temporary ngrok origin; verify Postman requests are governed by authentication rather than CORS.
+- Add and verify per-IP throttling for staff login, Vendor login, and password-reset endpoints.
+- Verify rate-limited requests return `429` with `Retry-After` and do not reveal account existence.
+- Run authorization regression checks for Admin, Sales, Vendor, and unauthenticated requests before connecting the live role-based UI.
+- Connect the Public QR resolution and lead form to the live API client.
+- Connect Vendor login/profile/leads/payouts to the live API client.
+- Connect initial Admin and Sales login/list workflows to the live API client.
+- Verify frontend loading, validation, success, empty, and API error states against the running backend.
+- Verify Sales onboarding returns a Vendor identifier and QR assignment uses that identifier only.
+- Verify Sales cannot assign an active, inactive, or retired QR and cannot onboard another Sales user's registration.
+- Connect Admin operational resource views to vendors, QR inventory, leads, scans, payouts, staff users, and audit logs.
+- Verify Admin operational views remain bounded and inaccessible to Sales, Vendor, and unauthenticated sessions.
+- Expand Admin mutation controls and Vendor live screens after operational authorization verification.
+- Verify Vendor first-login password change, Vendor isolation, protected customer fields, and empty states.
+- Add Admin mutation controls only after the operational authorization checks pass.
