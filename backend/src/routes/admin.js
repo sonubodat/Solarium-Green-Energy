@@ -416,7 +416,14 @@ function escapeHtml(value) {
 const qrPrintFilterSchema = z.object({
 	status: z.enum(['UNASSIGNED', 'ACTIVE', 'INACTIVE', 'RETIRED']).optional(),
 	vendor_id: z.string().trim().min(1).optional(),
+	assignment: z.enum(['ASSIGNED', 'UNASSIGNED']).optional(),
 });
+
+function qrAssignmentWhere(assignment) {
+	if (assignment === 'ASSIGNED') return { assignments: { some: { unassignedAt: null } } };
+	if (assignment === 'UNASSIGNED') return { assignments: { none: { unassignedAt: null } } };
+	return {};
+}
 
 adminRoutes.get('/qr/:qrId/image', requireAuth, requireAdmin, async (request, response, next) => {
 	try {
@@ -442,12 +449,13 @@ adminRoutes.get('/qr/:qrId/image', requireAuth, requireAdmin, async (request, re
 
 adminRoutes.get('/qr/print', requireAuth, requireAdmin, async (request, response, next) => {
 	try {
-		const filters = qrPrintFilterSchema.parse({ status: request.query.status, vendor_id: request.query.vendor_id });
+		const filters = qrPrintFilterSchema.parse({ status: request.query.status, vendor_id: request.query.vendor_id, assignment: request.query.assignment });
 		const { page, limit, skip } = pagination(request.query);
 
 		const where = {
 			...(filters.status ? { status: filters.status } : {}),
 			...(filters.vendor_id ? { assignments: { some: { vendorId: filters.vendor_id, unassignedAt: null } } } : {}),
+			...qrAssignmentWhere(filters.assignment),
 		};
 
 		const [qrCodes, total] = await Promise.all([
@@ -490,7 +498,7 @@ adminRoutes.get('/qr/print', requireAuth, requireAdmin, async (request, response
 <body>
 	<header>
 		<h1>Solarium QR Print Sheet</h1>
-		<p>Status: ${filters.status ? escapeHtml(filters.status) : 'All'} &middot; Vendor filter: ${filters.vendor_id ? escapeHtml(filters.vendor_id) : 'None'} &middot; Showing ${qrCodes.length} of ${total} (page ${page} of ${totalPages}, ${limit} per page) &middot; Generated ${new Date().toISOString()}</p>
+		<p>Status: ${filters.status ? escapeHtml(filters.status) : 'All'} &middot; Assignment: ${filters.assignment ? escapeHtml(filters.assignment) : 'All'} &middot; Vendor filter: ${filters.vendor_id ? escapeHtml(filters.vendor_id) : 'None'} &middot; Showing ${qrCodes.length} of ${total} (page ${page} of ${totalPages}, ${limit} per page) &middot; Generated ${new Date().toISOString()}</p>
 	</header>
 	${qrCodes.length ? `<div class="qr-grid">${cards.join('')}</div>` : '<p class="empty-state">No QR codes match this filter.</p>'}
 </body>
@@ -505,11 +513,12 @@ adminRoutes.get('/qr/print', requireAuth, requireAdmin, async (request, response
 
 adminRoutes.get('/qr/pdf', requireAuth, requireAdmin, async (request, response, next) => {
 	try {
-		const filters = qrPrintFilterSchema.parse({ status: request.query.status, vendor_id: request.query.vendor_id });
+		const filters = qrPrintFilterSchema.parse({ status: request.query.status, vendor_id: request.query.vendor_id, assignment: request.query.assignment });
 
 		const where = {
 			...(filters.status ? { status: filters.status } : {}),
 			...(filters.vendor_id ? { assignments: { some: { vendorId: filters.vendor_id, unassignedAt: null } } } : {}),
+			...qrAssignmentWhere(filters.assignment),
 		};
 
 		const qrCodes = await prisma.qrCode.findMany({

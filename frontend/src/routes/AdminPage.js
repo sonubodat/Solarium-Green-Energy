@@ -717,6 +717,7 @@ function AdminPage() {
     const validPrintStatuses = ['UNASSIGNED', 'ACTIVE', 'INACTIVE', 'RETIRED'];
     const params = new URLSearchParams();
     if (validPrintStatuses.includes(qrStatus)) params.set('status', qrStatus);
+    if (qrAssignment) params.set('assignment', qrAssignment);
     const query = params.toString();
     // Same-window navigation (not a new tab) so the request shows up in this tab's own
     // Network tab for debugging — the print sheet is server-rendered HTML outside the SPA,
@@ -725,11 +726,13 @@ function AdminPage() {
   }
 
   function downloadQrPdf() {
-    // Same status filter as the print sheet. The endpoint sends Content-Disposition: attachment,
-    // so the browser downloads the file in place without navigating away from the app.
+    // Same status/assignment filters as the print sheet and the QR list. The endpoint sends
+    // Content-Disposition: attachment, so the browser downloads the file in place without
+    // navigating away from the app.
     const validPrintStatuses = ['UNASSIGNED', 'ACTIVE', 'INACTIVE', 'RETIRED'];
     const params = new URLSearchParams();
     if (validPrintStatuses.includes(qrStatus)) params.set('status', qrStatus);
+    if (qrAssignment) params.set('assignment', qrAssignment);
     const query = params.toString();
     window.location.href = `${API_BASE_URL}/admin/qr/pdf${query ? `?${query}` : ''}`;
   }
