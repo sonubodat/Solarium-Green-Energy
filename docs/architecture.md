@@ -52,6 +52,7 @@ Do not introduce microservices, a separate QR service, a separate payout service
 - Prisma is the database access layer.
 - Database uniqueness and integrity constraints are authoritative.
 - Use deployment-appropriate PostgreSQL connection pooling.
+- The runtime connects via Supabase's direct/session-mode connection (`DIRECT_URL`), not the transaction-mode pooler (port 6543). Prisma's interactive `$transaction()` — used throughout this app's mutations (vendor/staff-user CRUD, QR generate/assign/reassign, lead submission, payout mark-paid) — is unreliable against transaction-mode pooling under concurrent load (a documented Prisma/Supabase incompatibility, confirmed live during the `docs/testing.md` verification pass: intermittent `P2028` failures under load through the pooler, none through the direct connection). At the current single-instance scope this is a non-issue. Revisit only when multiple backend instances or measured high write concurrency require more connection headroom than the session-mode pool provides — options then include a dedicated pooler tier sized for interactive transactions, splitting reads (pooler-safe) from writes (direct connection) across two Prisma clients, or reducing reliance on interactive transactions in the hottest paths. Do not switch back to the transaction-mode pooler for the runtime without addressing this.
 
 Supabase Auth is not used. Authentication is server-controlled with secure HTTP-only sessions or an equivalent server-managed session mechanism.
 

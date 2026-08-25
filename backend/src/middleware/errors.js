@@ -6,6 +6,16 @@ export function notFoundHandler(_request, response) {
 }
 
 export function errorHandler(error, _request, response, _next) {
+  if (error.name === 'ZodError') {
+    return response.status(400).json({
+      success: false,
+      error: {
+        code: 'VALIDATION_ERROR',
+        message: 'Request validation failed.',
+        details: error.issues.map((issue) => ({ path: issue.path.join('.'), message: issue.message })),
+      },
+    });
+  }
   if ((error.statusCode || 500) >= 500) {
     console.error(error);
   }

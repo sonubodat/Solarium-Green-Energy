@@ -14,7 +14,13 @@ export const env = {
     .filter(Boolean),
   sessionCookieName: process.env.SESSION_COOKIE_NAME || 'solarium_session',
   sessionCookieSameSite: process.env.SESSION_COOKIE_SAME_SITE || (process.env.NODE_ENV === 'production' ? 'None' : 'Lax'),
-  databaseUrl: process.env.DATABASE_URL || '',
+  passwordResetTtlMinutes: Number(process.env.PASSWORD_RESET_TTL_MINUTES || 15),
+  // Prisma's interactive $transaction() API (used throughout this app's mutations)
+  // is unreliable against Supabase's transaction-mode pooler (port 6543) under
+  // concurrent load, so the runtime connects via the direct/session-mode URL when
+  // available, matching prisma.config.ts's connection for the CLI. DATABASE_URL
+  // remains the fallback for environments where only a pooled URL is configured.
+  databaseUrl: process.env.DIRECT_URL || process.env.DATABASE_URL || '',
   sessionSecret: process.env.SESSION_SECRET || '',
   customerHashSecret: process.env.CUSTOMER_HASH_SECRET || '',
 };

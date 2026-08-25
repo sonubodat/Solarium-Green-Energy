@@ -1,7 +1,8 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { prisma } from '../lib/prisma.js';
+import { env } from '../config/env.js';
 
-const resetLifetimeMs = 1000 * 60 * 15;
+const resetLifetimeMs = env.passwordResetTtlMinutes * 60 * 1000;
 
 function hashToken(token) {
   return createHash('sha256').update(token).digest('hex');

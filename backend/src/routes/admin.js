@@ -3,6 +3,7 @@ import { requireAuth, requireAdmin } from '../middleware/auth.js';
 import { prisma } from '../lib/prisma.js';
 import { createPasswordResetToken, resetTokenResponse } from '../services/password-reset.js';
 import { generateQrCodes, reassignQr } from '../services/qr.js';
+import { generateQrPng, generateQrSvg } from '../services/qr-image.js';
 import { hashPassword, normalizeLoginIdentifier, publicVendor } from '../services/auth.js';
 import { z } from 'zod';
 
@@ -45,6 +46,18 @@ async function writeAudit(transaction, request, action, entity, entityId, metada
 function normalizeMobile(value) {
 	const digits = value.replace(/\D/g, '');
 	return digits.startsWith('91') && digits.length === 12 ? digits.slice(2) : digits;
+}
+
+function preventSelfLockout(request, targetUserId, changes) {
+	if (targetUserId !== request.auth.user.id) return;
+	const losesActive = changes.status !== undefined && changes.status !== 'ACTIVE';
+	const losesAdmin = changes.role !== undefined && changes.role !== 'ADMIN';
+	if (losesActive || losesAdmin) {
+		const error = new Error('Admins cannot deactivate or demote their own account.');
+		error.statusCode = 409;
+		error.code = 'CANNOT_MODIFY_OWN_ACCOUNT';
+		throw error;
+	}
 }
 
 async function ensureActiveAdminRemains(transaction, userId, changes) {
@@ -137,6 +150,7 @@ adminRoutes.patch('/users/:userId', requireAuth, requireAdmin, async (request, r
 		if (input.password !== undefined) data.passwordHash = await hashPassword(input.password);
 		if (input.role !== undefined) data.role = input.role;
 		if (input.status !== undefined) data.status = input.status;
+		preventSelfLockout(request, request.params.userId, data);
 		const user = await prisma.$transaction(async (transaction) => {
 			await ensureActiveAdminRemains(transaction, request.params.userId, data);
 			const updated = await transaction.user.update({ where: { id: request.params.userId }, data });
@@ -156,6 +170,7 @@ adminRoutes.patch('/users/:userId', requireAuth, requireAdmin, async (request, r
 
 adminRoutes.post('/users/:userId/deactivate', requireAuth, requireAdmin, async (request, response, next) => {
 	try {
+		preventSelfLockout(request, request.params.userId, { status: 'INACTIVE' });
 		const user = await prisma.$transaction(async (transaction) => {
 			await ensureActiveAdminRemains(transaction, request.params.userId, { status: 'INACTIVE' });
 			const updated = await transaction.user.update({ where: { id: request.params.userId }, data: { status: 'INACTIVE' } });
@@ -226,6 +241,7 @@ adminRoutes.post('/vendors/:vendorId/reset-password', requireAuth, requireAdmin,
 			return response.status(404).json({ success: false, error: { code: 'VENDOR_NOT_FOUND', message: 'Vendor was not found.' } });
 		}
 		const token = await createPasswordResetToken({ vendorId: vendor.id });
+		await writeAudit(prisma, request, 'VENDOR_PASSWORD_RESET', 'Vendor', vendor.id);
 		return response.json(resetTokenResponse(token, 'Vendor password reset issued.'));
 	} catch (error) {
 		return next(error);
@@ -260,7 +276,105 @@ adminRoutes.post('/qr/:qrId/reassign', requireAuth, requireAdmin, async (request
 	try {
 		const { vendor_id: vendorId } = reassignQrSchema.parse(request.body);
 		const result = await reassignQr({ qrId: request.params.qrId, vendorId, assignedById: request.auth.user.id });
-		return response.json({ success: true, qr: result.qr, assignment: result.assignment, vendor: result.vendor });
+		return response.json({ success: true, qr: result.qr, assignment: result.assignment, vendor: publicVendor(result.vendor) });
+	} catch (error) {
+		return next(error);
+	}
+});
+
+function safeFilenameSegment(value) {
+	return value.replace(/[^a-zA-Z0-9_-]/g, '_');
+}
+
+function escapeHtml(value) {
+	return String(value).replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
+}
+
+const qrPrintFilterSchema = z.object({
+	status: z.enum(['UNASSIGNED', 'ACTIVE', 'INACTIVE', 'RETIRED']).optional(),
+	vendor_id: z.string().trim().min(1).optional(),
+});
+
+adminRoutes.get('/qr/:qrId/image', requireAuth, requireAdmin, async (request, response, next) => {
+	try {
+		const qr = await prisma.qrCode.findUnique({ where: { id: request.params.qrId } });
+		if (!qr) {
+			return response.status(404).json({ success: false, error: { code: 'QR_NOT_FOUND', message: 'QR code was not found.' } });
+		}
+		const filename = safeFilenameSegment(qr.code);
+		if (request.query.format === 'png') {
+			const png = await generateQrPng(qr.code);
+			response.setHeader('Content-Type', 'image/png');
+			response.setHeader('Content-Disposition', `inline; filename="${filename}.png"`);
+			return response.send(png);
+		}
+		const svg = await generateQrSvg(qr.code);
+		response.setHeader('Content-Type', 'image/svg+xml');
+		response.setHeader('Content-Disposition', `inline; filename="${filename}.svg"`);
+		return response.send(svg);
+	} catch (error) {
+		return next(error);
+	}
+});
+
+adminRoutes.get('/qr/print', requireAuth, requireAdmin, async (request, response, next) => {
+	try {
+		const filters = qrPrintFilterSchema.parse({ status: request.query.status, vendor_id: request.query.vendor_id });
+		const { page, limit, skip } = pagination(request.query);
+
+		const where = {
+			...(filters.status ? { status: filters.status } : {}),
+			...(filters.vendor_id ? { assignments: { some: { vendorId: filters.vendor_id, unassignedAt: null } } } : {}),
+		};
+
+		const [qrCodes, total] = await Promise.all([
+			prisma.qrCode.findMany({
+				where,
+				skip,
+				take: limit,
+				orderBy: { code: 'asc' },
+				include: { assignments: { where: { unassignedAt: null }, include: { vendor: { select: { businessName: true } } }, take: 1 } },
+			}),
+			prisma.qrCode.count({ where }),
+		]);
+
+		const cards = await Promise.all(qrCodes.map(async (qr) => {
+			const vendor = qr.assignments[0]?.vendor;
+			const svg = await generateQrSvg(qr.code);
+			return `<div class="qr-card">${svg}<p class="qr-code">${escapeHtml(qr.code)}</p><p class="qr-status">${escapeHtml(qr.status)}</p><p class="qr-vendor">${vendor ? escapeHtml(vendor.businessName) : 'Unassigned'}</p></div>`;
+		}));
+
+		const totalPages = Math.max(Math.ceil(total / limit), 1);
+		const html = `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Solarium QR Print Sheet</title>
+<style>
+	body { background: #fffaf2; color: #18332d; font-family: Arial, sans-serif; margin: 2rem; }
+	header { margin-bottom: 1.5rem; }
+	header h1 { font-size: 1.4rem; margin: 0 0 .3rem; }
+	header p { color: #597069; font-size: .85rem; margin: 0; }
+	.qr-grid { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); }
+	.qr-card { border: 1px solid #cbd8cc; break-inside: avoid; page-break-inside: avoid; padding: .75rem; text-align: center; }
+	.qr-card svg { height: auto; max-width: 160px; width: 100%; }
+	.qr-code { font-weight: 700; margin: .5rem 0 .15rem; }
+	.qr-status, .qr-vendor { color: #597069; font-size: .8rem; margin: 0; }
+	.empty-state { color: #9a8f80; }
+	@media print { body { margin: .5in; } }
+</style>
+</head>
+<body>
+	<header>
+		<h1>Solarium QR Print Sheet</h1>
+		<p>Status: ${filters.status ? escapeHtml(filters.status) : 'All'} &middot; Vendor filter: ${filters.vendor_id ? escapeHtml(filters.vendor_id) : 'None'} &middot; Showing ${qrCodes.length} of ${total} (page ${page} of ${totalPages}, ${limit} per page) &middot; Generated ${new Date().toISOString()}</p>
+	</header>
+	${qrCodes.length ? `<div class="qr-grid">${cards.join('')}</div>` : '<p class="empty-state">No QR codes match this filter.</p>'}
+</body>
+</html>`;
+
+		response.setHeader('Content-Type', 'text/html; charset=utf-8');
+		return response.send(html);
 	} catch (error) {
 		return next(error);
 	}

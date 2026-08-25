@@ -175,6 +175,7 @@ The current plan intentionally uses the following decisions:
 | Sales access | Limited to assigned or owned onboarding work |
 | Vendor access | Restricted to the authenticated Vendor |
 | Scale target | Approximately 50,000 vendors and high-volume referral records |
+| QR printing/export | Confirmed required: single QR image download plus a filterable, bounded printable sheet for Admin (browser print-to-PDF, no server-side PDF dependency) |
 
 ## 7. Scope Excluded From the First Release
 
@@ -243,7 +244,7 @@ Please confirm or provide the following information.
 
 1. What QR code prefix and numbering format should be used: `VEN-0001`, `V-0001`, or another format?
 2. What quantity should be generated in the initial QR batch?
-3. Are printable QR sheets and downloadable QR images required in the first release?
+3. ~~Are printable QR sheets and downloadable QR images required in the first release?~~ Confirmed: yes — see the "QR printing and export" scope now recorded in `plan.md` §7.
 4. What should customers see when a QR is unassigned, inactive, or retired?
 5. Who may approve or request QR reassignment?
 
@@ -346,3 +347,4 @@ Additional requirements:
 - [Requirements](requirements.md)
 - [Development progress](progress.md)
 - [Development tasks](tasks.md)
+- [Testing guide](testing.md)

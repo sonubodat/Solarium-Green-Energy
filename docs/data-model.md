@@ -86,6 +86,8 @@ updated_at
 
 Status is `PENDING`, `ONBOARDED`, or `REJECTED`. A registration may be linked to one Vendor at most once; onboarding must set `vendor_id` and transition the registration transactionally. Index `sales_user_id`, `status`, and `created_at`. Do not expose more contact data to Sales than the onboarding workflow requires.
 
+`login_identifier` is unique at the database level, matching `Vendor.login_identifier` — this prevents duplicate pending registrations for the same identifier from silently coexisting. `mobile_number` uniqueness follows the same open policy question as `Vendor.mobile_number` (see `RFI.md` §9) and is not yet enforced.
+
 ### QrCode
 
 Physical QR inventory item. It is not a vendor identifier.

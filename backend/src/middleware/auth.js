@@ -46,6 +46,11 @@ export async function requireAuth(request, _response, next) {
       return next(unauthorized('Session is invalid or expired.'));
     }
 
+    const account = session.user || session.vendor;
+    if (account.status !== 'ACTIVE') {
+      return next(unauthorized('Session is invalid or expired.'));
+    }
+
     request.auth = session.user
       ? { type: 'staff', user: session.user, role: session.user.role, sessionId: session.id }
       : { type: 'vendor', vendor: session.vendor, role: 'VENDOR', sessionId: session.id };

@@ -143,6 +143,8 @@ Admin can:
 
 Admin must also have a secure staff password-change/reset flow.
 
+An Admin can never deactivate or demote their own account (change their own `status` away from `ACTIVE` or their own `role` away from `ADMIN`), independent of the last-active-Admin protection — this is checked before the last-Admin check and applies even when other Admins exist.
+
 ---
 
 ### SALES
@@ -420,6 +422,22 @@ Database constraints and indexes must support the public lookup and assignment l
 - `QrAssignment.qr_code_id`, `vendor_id`, `assigned_at`, and `unassigned_at` must be indexed.
 - The data model must enforce at most one active assignment for a QR code according to the database's chosen active-assignment representation.
 
+### QR printing and export
+
+Confirmed scope (previously an open question in `RFI.md`; now decided): Admin must be able to generate printable, physical QR code images for the inventory, filterable by status and by current vendor assignment.
+
+Requirements:
+
+- The QR image encodes only the public referral URL (`${APP_BASE_URL}/v/:code`) — the same "no private data in the QR" rule from this section applies; never encode an internal database id or vendor id.
+- Admin can export/print by `status` (`UNASSIGNED`, `ACTIVE`, `INACTIVE`, `RETIRED`, or all) and optionally filtered to a single Vendor's currently assigned codes.
+- Admin can download a single QR as an image, or generate a printable sheet for a batch.
+- A batch export is bounded (a fixed maximum codes per request, consistent with this plan's bounded-collection rule elsewhere) rather than unbounded — a very large inventory is paginated across multiple export requests, not rendered in one unbounded response.
+- The printable sheet is a print-friendly HTML page (grid of QR image + code + status + assigned vendor name per cell), opened in the browser and printed via the browser's native print-to-PDF — this avoids adding a server-side PDF-generation dependency for a need the browser already satisfies.
+- Generating a QR image is a read-only export action; it does not require an audit log entry (no state change), matching the read-only treatment of scans/audit-logs elsewhere in this plan.
+- This introduces exactly one new backend dependency: a QR-image-generation library. Keep it to a single well-established, pure-JS package (no native build step) rather than a broader document-generation toolkit.
+
+This is added to `tasks.md` as its own sequenced set of steps — implemented and verified one step at a time, the same as every other slice in this plan, not built in one pass.
+
 ---
 
 ## 8. QR Database Relationship
@@ -579,6 +597,8 @@ Do not expose internal database IDs or sensitive vendor information.
 The public QR endpoint must have server-side rate limiting and abuse protection.
 
 Rate limiting must be deployable with a shared store when the backend runs on multiple instances. An in-memory limiter is acceptable only for a single-instance deployment.
+
+The in-memory limiter's request-window cache evicts stale entries on a periodic sweep (every 5 minutes) so it does not grow unbounded over the life of the process; it is not persisted and resets on restart, which remains acceptable for the current single-instance deployment.
 
 Do not rely only on frontend protection.
 
@@ -773,6 +793,8 @@ new_vendor_id
 paid_reference
 ```
 
+Every action in the list above writes an `AuditLog` row, including `POST /api/admin/vendors/:vendorId/reset-password` (`VENDOR_PASSWORD_RESET`), which previously issued the reset token without an audit entry.
+
 Do not turn audit logging into an unnecessarily complex enterprise system.
 
 Audit logs may grow to millions of rows. Index and paginate them using at least:
@@ -831,6 +853,7 @@ Admin routes:
 /admin/vendors
 /admin/vendors/:id
 /admin/qr
+/admin/qr/print
 /admin/scans
 /admin/leads
 /admin/payouts
@@ -841,6 +864,8 @@ Admin routes:
 Admin must be able to manage vendors, QR inventory, assignments, leads, payout status, and audit trails.
 
 The first Admin UI slice exposes these operational collections through bounded API responses and a resource selector. Mutating actions remain explicit, authorized backend operations and are added only with confirmation and audit feedback.
+
+The Vendor resource view is the first mutation slice: Admin can create a Vendor, edit its business name/owner name/login identifier/mobile number inline, issue a temporary-password reset, and deactivate a Vendor, each confirmed before submission and followed by a refreshed list. The QR resource view is the second mutation slice: Admin can generate a QR batch and reassign an `ACTIVE` QR to a different Vendor by ID, confirmed before submission and followed by a refreshed list. The Leads resource view is the third mutation slice: Admin can change a lead's status from the documented set (`NEW`, `CONTACTED`, `QUALIFIED`, `CONVERTED`, `REJECTED`, `DUPLICATE`), confirmed before submission and followed by a refreshed list; attribution fields remain immutable to this action. The Payouts resource view is the fourth mutation slice: Admin can mark an `UNPAID` payout as `PAID` by supplying a manual payment reference, confirmed before submission and followed by a refreshed list; the action is only offered in the UI for `UNPAID` records. The Staff users resource view is the fifth mutation slice: Admin can create a staff user (`ADMIN` or `SALES`), update a staff user's role, and deactivate a staff user, each confirmed before submission and followed by a refreshed list; the backend protects the last active Admin from deactivation or role change. Remaining resources (scans, audit logs) are inherently read-only and have no documented mutation actions.
 
 ### Sales UI
 

@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "build": "prisma generate",
     "dev": "node --watch src/server.js",
     "start": "node src/server.js",
     "prestart": "prisma generate",
@@ -15,11 +16,12 @@
   "dependencies": {
     "@prisma/adapter-pg": "7.9.1",
     "@prisma/client": "7.9.1",
-    "dotenv": "latest",
-    "express": "latest",
-    "helmet": "latest",
-    "pg": "latest",
-    "zod": "latest"
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "helmet": "^8.3.0",
+    "pg": "^8.23.0",
+    "qrcode": "^1.5.4",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "prisma": "7.9.1"

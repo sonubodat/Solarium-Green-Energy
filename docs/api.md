@@ -14,7 +14,7 @@ The frontend calls these endpoints through one centralized API client with crede
 
 ## Common Response Rules
 
-Success responses return JSON with the resource or operation result. Validation failures return `400`. Authentication failures return `401`. Authorization failures return `403`. Missing resources return `404`. Conflicts such as duplicate identifiers or an already-assigned QR return `409`. Unexpected failures are handled by centralized server error handling.
+Success responses return JSON with the resource or operation result. Validation failures return `400 VALIDATION_ERROR` with a `details` array of `{path, message}` per invalid field (the centralized error handler maps every schema validation failure to this shape). Authentication failures return `401`. Authorization failures return `403`. Missing resources return `404`. Conflicts such as duplicate identifiers or an already-assigned QR return `409`. Unexpected failures are handled by centralized server error handling.
 
 Do not expose password hashes, session tokens, reset tokens, raw customer hashes, internal database IDs where a public identifier is sufficient, or protected customer phone numbers to unauthorized roles.
 
@@ -58,7 +58,7 @@ Complete a staff or Vendor password reset.
 
 - Authentication: public with a valid reset token
 - Request: `reset_token`, `new_password`
-- Rules: tokens are hashed in storage, expire after a short period, are single-use, and are consumed atomically with the password update
+- Rules: tokens are hashed in storage, expire after a short period (`PASSWORD_RESET_TTL_MINUTES`, default 15 minutes), are single-use, and are consumed atomically with the password update
 - Security: requests are rate-limited per client IP
 
 ## Public Referral API
@@ -219,6 +219,24 @@ Reassign an active QR.
 - Authentication: Admin
 - Request: new vendor reference
 - Rules: close the old assignment, create the new assignment, preserve all historical attribution, and audit in one transaction
+
+### `GET /api/admin/qr/:qrId/image`
+
+Download a single QR code as a scannable image.
+
+- Authentication: Admin
+- Query: `format` (`svg` default, or `png`)
+- Rules: the image encodes only the public referral URL (`${APP_BASE_URL}/v/:code`) — never an internal database id or vendor id; read-only, no audit log
+- Errors: unknown `qrId` returns `404 QR_NOT_FOUND`
+
+### `GET /api/admin/qr/print`
+
+Generate a printable HTML sheet of QR codes for physical distribution.
+
+- Authentication: Admin
+- Query: `status` (`UNASSIGNED`/`ACTIVE`/`INACTIVE`/`RETIRED`, omitted = all), `vendor_id` (filters to QR codes currently assigned to that Vendor), bounded pagination (`page`/`limit`, same cap as every other Admin list endpoint)
+- Response: `text/html`, not JSON — a self-contained page (inline QR images, no external requests) meant to be opened in a browser and printed to PDF via the browser's own print dialog; no server-side PDF dependency
+- Rules: read-only, no audit log
 
 ### `GET /api/admin/scans`
 

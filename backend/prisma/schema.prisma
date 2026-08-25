@@ -90,7 +90,7 @@ model VendorRegistration {
   businessName   String      @map("business_name")
   ownerName      String      @map("owner_name")
   mobileNumber   String      @map("mobile_number")
-  loginIdentifier String     @map("login_identifier")
+  loginIdentifier String     @unique @map("login_identifier")
   salesUserId    String?     @map("sales_user_id")
   status         VendorRegistrationStatus @default(PENDING)
   createdAt      DateTime    @default(now()) @map("created_at")

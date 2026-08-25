@@ -41,6 +41,17 @@ h1 { font-family: Georgia, 'Times New Roman', serif; font-size: clamp(2.7rem, 6v
 .data-row span { color: #597069; }
 .data-row strong { font-weight: 600; }
 .empty-state { color: #9a8f80; font-size: .9rem; }
+.admin-row { align-items: center; gap: 1rem; }
+.admin-row em { color: #9a8f80; font-size: .82rem; font-style: normal; }
+.row-actions { display: flex; flex-shrink: 0; gap: .5rem; }
+.secondary-action { background: transparent; border: 1px solid #cbd8cc; color: #18332d; cursor: pointer; font: inherit; font-size: .82rem; padding: .5rem .8rem; }
+.secondary-action:disabled { cursor: not-allowed; opacity: .5; }
+.reassign-input { background: #fff; border: 1px solid #cbd8cc; color: #18332d; font: inherit; font-size: .82rem; padding: .5rem .6rem; width: 9rem; }
+.admin-edit-form { background: #eef3ec; margin: .5rem 0; max-width: none; padding: 1rem; }
+.print-controls { align-items: end; display: flex; flex-wrap: wrap; gap: .75rem; margin: .5rem 0 1rem; }
+.print-controls label { color: #718078; font-size: .78rem; width: 100%; }
+.print-controls select, .print-controls input { background: #fff; border: 1px solid #cbd8cc; color: #18332d; font: inherit; padding: .85rem; }
+.row-actions a.secondary-action { text-decoration: none; }
 .status-list { border-top: 1px solid #d9e1d7; margin-top: 6rem; max-width: 42rem; }
 .status-row { border-bottom: 1px solid #d9e1d7; display: flex; justify-content: space-between; padding: 1rem 0; }
 .status-row span { color: #718078; }
