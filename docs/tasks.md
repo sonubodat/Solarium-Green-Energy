@@ -124,3 +124,58 @@ Ran every section of `docs/testing.md` (§3–§11) against the live dev Supabas
 6. The app's runtime connected via Supabase's transaction-mode pooler (port 6543), a documented Prisma incompatibility for interactive `$transaction()` under load, affecting every mutation in the app. Fixed by routing the runtime connection through `DIRECT_URL` (session-mode, port 5432) in `backend/src/config/env.js`, matching what `prisma.config.ts` already used for the CLI. Verified with a 20-concurrent-transaction stress test. See `architecture.md` for the scaling note this leaves for a later, measured-need revisit.
 
 Next: you should still run your own independent Postman/curl/Supabase pass per `docs/testing.md`, especially for anything touching money (payouts) or access control — an automated pass reduces risk but doesn't replace manual review. After that, the remaining open items are the client-supplied production values from `RFI.md` §9 needed for real deployment (final `CORS_ORIGINS`/`FRONTEND_ORIGIN`, hosting details) before a live cross-origin cookie check can run.
+
+## Admin / Sales / Vendor dashboard design-system audit and plan — planning only, not yet implemented
+
+Requested via `/design:design-system`. This is a plan to review and execute one item at a time later, the same way every other slice in this file has been — nothing below has been coded yet.
+
+### Audit: current state
+
+There is no formal design system to audit in the usual sense — no token file, no extracted/reusable components, no documented variants or states. The entire UI lives in one file, `frontend/src/App.js` (787 lines, one `render*()` function per resource/role) plus one stylesheet, `frontend/src/App.css` (60 lines). That's not a criticism of what exists — it's matched the project's actual pace, and everything in it works, is accessible enough to use, and has been verified live in a real browser repeatedly this session — but it means "audit the design system" mostly means **naming what's missing before deciding what to build**:
+
+- **Tokens: none formalized.** 11 distinct hex colors (`#18332d`, `#d9e1d7`, `#ef6f45`, `#718078`, `#597069`, `#fffaf2`, `#cbd8cc`, `#9a8f80`, `#eef3ec`, `#e6eee3`, `#9eb1a3`) are hardcoded inline throughout `App.css`, each repeated 1–9 times, with no CSS custom properties. Spacing uses ad-hoc rem values with no defined scale. No dark-mode support (the QR print sheet's earlier black-background bug was exactly this class of issue).
+- **Components: none extracted.** Every button, input, row, and form is raw JSX with a shared className, not a reusable `<Button>`/`<Input>`/`<DataTable>` component. `.primary-action`/`.secondary-action` are the closest thing to a button "variant" system — two variants, no size scale, no icon-button/danger/link variants, no loading-spinner state (loading is communicated only via changed button text, e.g. "Generating...").
+- **Patterns: partially consistent, not documented.** The create/edit-form pattern (`.lead-form`, `.inline-form`), the list-row-with-actions pattern (`.data-row`/`.admin-row`/`.row-actions`), and the empty-state pattern (`.empty-state`) are each used consistently within their own resource, but nothing documents them as *the* pattern to reuse for the next one — a future contributor would have no way to discover "use `.data-row` for list items" except by reading existing JSX.
+- **Confirmation pattern**: every destructive/sensitive Admin action uses the browser's native `window.confirm()` (deactivate, reassign, mark-paid, role change, self-lockout attempts). Functional and already verified live, but not a designed/branded UI pattern — no way to show *why* an action needs confirming beyond a generic OS dialog.
+- **Accessibility**: role/tab semantics exist (`role="tablist"`, `aria-selected`) on the view switcher; form inputs mostly rely on `placeholder` rather than associated `<label>` elements (a few explicit `<label htmlFor>` pairs exist, e.g. the QR quantity field, but most Admin list forms don't). No accessibility-specific pass has been done — `docs/testing.md`'s browser walkthrough checks *that things work*, not screen-reader/keyboard-only usability.
+
+### Gap analysis against `plan.md` §19 and `api.md`
+
+Cross-checked the documented contract against what's actually built for the three staff-facing dashboards (Public is out of scope for this plan — it's a single simple form and isn't a "dashboard").
+
+**Structural — the biggest, most consequential gap:**
+- `plan.md` §19 specifies distinct URL routes per role (`/admin/dashboard`, `/admin/vendors`, `/admin/vendors/:id`, `/admin/qr`, ... `/sales/dashboard`, `/sales/registrations`, ... `/vendor/dashboard`, `/vendor/leads`, ...). The app has **no router** (`react-router` isn't even a dependency) — every role is a client-side tab switch within one page at `/`, all state resets on switch. This was a deliberate simplification that's held up fine so far (already reflected honestly in `frontend/README.md`'s "single-page `View as` switcher... rather than as separate routes" line), but it means: no shareable/bookmarkable URLs per screen, no browser back-button support between resources, and no `/admin/vendors/:id` vendor-detail view at all (Admin can edit a vendor inline in the list, but there's no dedicated detail page showing that vendor's own leads/scans/payouts together, which `plan.md` §19 and §16 describe).
+- **This needs a decision, not just execution** — see "Open decision" below before sequencing the rest of this plan.
+
+**Pagination and search — real, currently-invisible functional gaps:**
+- The backend's every Admin list endpoint accepts `page`/`limit` (`docs/api.md`, verified in `docs/testing.md` §8), but `frontend/src/App.js` never sends either param and has zero pagination controls. Any resource beyond the first `page=1&limit=50`/`100` page is **permanently inaccessible from the UI** today — this will become a real problem the moment vendor/lead/scan/audit-log counts pass one page, which `plan.md`'s stated 50,000-vendor scale target guarantees will happen.
+- No search/filter UI exists for Vendors, Leads, Payouts, or Staff users (QR is the only resource with a filter panel, built for the print feature). `api.md` documents "approved search/filter fields" for several of these list endpoints that the frontend never exposes.
+
+**Resource-view gaps:**
+- Scans and Audit logs are still raw `<pre>{JSON.stringify(...)}</pre>` dumps — functional (correctly read-only, per `plan.md`) but not a designed table view. Audit logs specifically will grow to the "millions of rows" `plan.md` §17 anticipates; a raw JSON dump of even one page of 50-100 rows is hard to scan visually.
+- No Admin dashboard/overview screen at all — `plan.md` §19 lists `/admin/dashboard` as a route; nothing renders there today (the resource selector defaults straight to Vendors). Note: `plan.md` §20 explicitly forbids progress bars/completion meters/KPI scorecards, so this must stay text-only counts/links, not a metrics dashboard — easy to over-build here, watch that.
+- Sales has no distinct "my vendors" list view separate from the onboarding flow (`plan.md` mentions Sales should see "operational vendor information required for onboarding" but there's currently no browsable list of a Sales user's own vendors, only the pending-registrations queue).
+- Vendor workspace already covers profile/leads/payouts/password-change content-wise (verified live, no gaps there) — its only real gap is the missing route split, covered above.
+
+**Branding — blocked on the client, not actionable now:**
+- `RFI.md` §9 still has open questions for logo/colors/fonts/wording. The current palette is a placeholder. Don't invest in polishing colors/typography before that answer lands — formalizing *tokens as a system* (see below) is worth doing now since it's structure, not final values; picking final brand colors is not.
+
+### Open decision before sequencing implementation
+
+Before turning any of this into "step 1 of N" the way QR printing/export was sequenced, one thing needs a decision, not more analysis: **does this project adopt real per-role routing (`react-router`) now, or stay single-page and just add pagination/search/table-view polish within the current structure?**
+
+- **Stay single-page** is the lower-risk, faster path, consistent with everything built so far, and defers the routing question until it's actually blocking something (e.g., needing to link directly to `/admin/vendors/:id` from an audit log entry or a payout record).
+- **Add routing now** is a bigger, riskier change (touches every render function, the view-switcher, and how state resets between views) but directly closes the gap against `plan.md` §19's literal route list and enables deep-linking (e.g., a shareable link to one vendor's detail page).
+
+Recommendation: stay single-page for now and treat the pagination/search/table-view gaps as the actual next work, since those are functional gaps (data becomes literally unreachable at scale) rather than structural ones (URLs don't match a spec that no one has asked to see enforced). Revisit routing only if a concrete need surfaces (e.g., the client asks for shareable admin links). This is a recommendation, not a decision made on your behalf — say which way to go before step 1 below starts.
+
+### Sequenced plan (pending the decision above), one step at a time like every other slice
+
+1. **Design tokens.** Extract the 11 hardcoded colors into CSS custom properties on `:root` in `App.css` (no visual change — same values, just named), plus a documented spacing scale. Establishes the vocabulary the rest of this plan's steps reuse; doesn't touch JSX at all.
+2. **Pagination controls.** Add Prev/Next (or page-number) controls to every Admin list view (Vendors, QR, Leads, Scans, Payouts, Staff users, Audit logs) and wire `page`/`limit` into the existing `apiRequest` calls. This is the highest-value, most functionally urgent item — it's the one gap that actively breaks at real data volumes, not just a polish item.
+3. **Search/filter for Vendors and Leads.** Match the pattern already built for QR's filter panel (status/vendor-id) — add the "approved search/filter fields" `api.md` already documents for these two endpoints specifically (highest-traffic Admin views).
+4. **Real table views for Scans and Audit logs**, replacing the raw JSON dumps — reuse the `.data-row` pattern already established elsewhere rather than inventing a new one.
+5. **Confirmation pattern.** Replace `window.confirm()` with a small in-page confirm affordance (e.g., a second click-to-confirm state on the button, or an inline "Are you sure? Yes/Cancel" row) for the highest-stakes actions specifically (deactivate, reassign, mark-paid) — lower priority than 2–4, since `window.confirm()` already works and was already verified live; this is pure polish.
+6. **Accessibility pass.** Add explicit `<label htmlFor>` associations to every form input still relying on placeholder-only labeling, once the form set from steps 2–4 has stabilized (do this last so it's not redone per new form).
+
+Each step should be implemented, verified live (curl/browser as established this session), and documented in `progress.md` before starting the next — no step implemented blind, matching how the QR printing/export and testing-pass work went.
