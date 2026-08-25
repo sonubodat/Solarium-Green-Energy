@@ -1,0 +1,8 @@
+{
+  "rewrites": [
+    {
+      "source": "/api/(.*)",
+      "destination": "https://solarium-green-energy.onrender.com/api/$1"
+    }
+  ]
+}
