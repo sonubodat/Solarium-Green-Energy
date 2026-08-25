@@ -33,3 +33,4 @@ Solarium API listening on port 10000
 ==> Available at your primary URL https://solarium-green-energy.onrender.com
 ==> 
 ==> ///////////////////////////////////////////////////////////
+done
