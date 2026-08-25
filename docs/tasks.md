@@ -77,6 +77,7 @@
 - Expand Admin mutation controls and Vendor live screens after operational authorization verification.
 - Verify Vendor first-login password change, Vendor isolation, protected customer fields, and empty states.
 - Add Admin mutation controls only after the operational authorization checks pass.
+- Measure public QR and lead endpoint response times after the database query optimizations and confirm low-latency behavior under normal local traffic.
 - Admin Vendor mutation slice added: create Vendor, reset-password, deactivate, each with confirmation and an automatic list reload.
 - Verify via Postman/curl/Supabase: `POST /api/admin/vendors` (create, then duplicate-identifier `409`), `POST /api/admin/vendors/:id/reset-password` (dev `reset_token` present, invalidates prior reset state), `POST /api/admin/vendors/:id/deactivate` (status becomes `INACTIVE`, historical records untouched), and that each action writes an `AuditLog` row.
 - Verify Sales and Vendor sessions receive `401/403` on all three endpoints.
@@ -195,3 +196,11 @@ Recommendation: stay single-page for now and treat the pagination/search/table-v
 6. **Accessibility pass.** Add explicit `<label htmlFor>` associations to every form input still relying on placeholder-only labeling, once the form set from steps 2–4 has stabilized (do this last so it's not redone per new form).
 
 Each step should be implemented, verified live (curl/browser as established this session), and documented in `progress.md` before starting the next — no step implemented blind, matching how the QR printing/export and testing-pass work went.
+
+## Incomplete steps snapshot (current)
+
+- Design-system plan step 3: add search/filter UI for Vendors and Leads (QR filter now implemented; Vendors/Leads filter UI still pending).
+- Design-system plan step 5: replace `window.confirm()` with an in-page confirmation pattern for high-stakes Admin actions.
+- Design-system plan step 6: accessibility pass for explicit labels and keyboard/screen-reader validation on all Admin/Sales/Vendor forms.
+- Production validation pending from `RFI.md` values: final deployed `CORS_ORIGINS`/`FRONTEND_ORIGIN` and live cross-origin cookie verification.
+- Independent manual verification pass still recommended (Postman/curl/Supabase) for payout and access-control flows after each mutation slice change.

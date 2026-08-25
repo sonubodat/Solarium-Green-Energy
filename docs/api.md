@@ -87,6 +87,7 @@ Submit a customer referral lead.
 
 - Authentication: public
 - Request: QR/referral context, customer name, mobile number, and approved optional fields
+- Request: customer name, mobile number, and optional referral context (`scan_id` or `referral_qr`) with approved optional fields
 - Rules: normalize the mobile number, generate the server-side HMAC identity, validate the qualifying scan, apply duplicate prevention transactionally, and persist `vendor_id`, `qr_id`, `qr_assignment_id`, and `scan_id`
 - Response: safe confirmation without exposing internal attribution data
 
@@ -103,6 +104,8 @@ Request example:
 ```
 
 The server normalizes the phone number and stores only its HMAC identity for deduplication. The first lead is `NEW`; a later lead for the same identity is recorded as `DUPLICATE` and must not create payable attribution.
+
+When `scan_id` is omitted, the backend accepts a direct public enquiry and creates attribution using `referral_qr` when provided; if no referral QR is provided, it records the enquiry under the configured general public assignment.
 
 ## Vendor Registration
 
@@ -219,7 +222,7 @@ Issue a secure temporary password/reset flow for a Vendor.
 List QR inventory and current assignment summary.
 
 - Authentication: Admin
-- Query: bounded pagination and status filters
+- Query: bounded pagination, `status` filter, and `assignment` filter (`ASSIGNED`/`UNASSIGNED`)
 
 ### `POST /api/admin/qr/generate`
 
@@ -292,7 +295,7 @@ Change a lead status.
 
 - Authentication: Admin
 - Request: `status` (`NEW`, `CONTACTED`, `QUALIFIED`, `CONVERTED`, `REJECTED`, or `DUPLICATE`)
-- Rules: preserve immutable attribution and write an audit log
+- Rules: preserve immutable attribution and write an audit log; when status becomes `CONVERTED`, ensure a payout record exists for that lead (`UNPAID` by default)
 
 ### `GET /api/admin/payouts`
 
@@ -304,12 +307,11 @@ List manual payout-status records.
 
 ### `POST /api/admin/payouts/:payoutId/status`
 
-Set a payout's status to `PAID` or `PARTIAL` (replaces the earlier `mark-paid` route now that a third status exists).
+Set a payout's status to `UNPAID`, `PARTIAL`, or `PAID`.
 
 - Authentication: Admin
-- Request: `status` (`PAID` or `PARTIAL`), `paid_reference`
-- Rules: set `paid_by` from the authenticated Admin; set `paid_at` only when `status` is `PAID` (a `PARTIAL` update leaves `paid_at` unset, since the payout isn't in its final state); `PARTIAL` is a manual status label only — no partial amount, split, or commission calculation is stored or computed; do not invoke an automated payout provider; audit the change (`PAYOUT_MARKED_PAID` or `PAYOUT_MARKED_PARTIAL`)
-- Errors: an already-`PAID` payout returns `409 PAYOUT_ALREADY_PAID` regardless of the requested status
+- Request: `status` (`UNPAID`/`PARTIAL`/`PAID`), `paid_reference` (required for `PARTIAL` and `PAID`; optional for `UNPAID`)
+- Rules: set `paid_by` from the authenticated Admin for `PARTIAL`/`PAID`; clear `paid_by`, `paid_at`, and `paid_reference` when setting `UNPAID`; set `paid_at` only when `status` is `PAID` (a `PARTIAL` update leaves `paid_at` unchanged); `PARTIAL` remains a manual status label only — no partial amount, split, or commission calculation is stored or computed; audit the change (`PAYOUT_MARKED_UNPAID`, `PAYOUT_MARKED_PARTIAL`, or `PAYOUT_MARKED_PAID`)
 
 ### `GET /api/admin/users`
 

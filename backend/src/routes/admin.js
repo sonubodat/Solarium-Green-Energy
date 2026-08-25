@@ -23,8 +23,8 @@ const vendorUpdateSchema = vendorSchema.partial().extend({
 });
 const leadStatusSchema = z.object({ status: z.enum(['NEW', 'CONTACTED', 'QUALIFIED', 'CONVERTED', 'REJECTED', 'DUPLICATE']) });
 const payoutStatusSchema = z.object({
-	status: z.enum(['PAID', 'PARTIAL']),
-	paid_reference: z.string().trim().min(1).max(160),
+	status: z.enum(['UNPAID', 'PAID', 'PARTIAL']),
+	paid_reference: z.string().trim().max(160).optional(),
 });
 const userSchema = z.object({
 	name: z.string().trim().min(2).max(120),
@@ -285,14 +285,24 @@ adminRoutes.post('/vendors/:vendorId/reset-password', requireAuth, requireAdmin,
 	}
 });
 
-const qrListFilterSchema = z.object({ status: z.enum(['UNASSIGNED', 'ACTIVE', 'INACTIVE', 'RETIRED']).optional() });
+const qrListFilterSchema = z.object({
+	status: z.enum(['UNASSIGNED', 'ACTIVE', 'INACTIVE', 'RETIRED']).optional(),
+	assignment: z.enum(['ASSIGNED', 'UNASSIGNED']).optional(),
+});
 
 adminRoutes.get('/qr', requireAuth, requireAdmin, async (request, response, next) => {
 	try {
-		const { status } = qrListFilterSchema.parse({ status: request.query.status || undefined });
+		const { status, assignment } = qrListFilterSchema.parse({
+			status: request.query.status || undefined,
+			assignment: request.query.assignment || undefined,
+		});
 		const page = Math.max(Number.parseInt(request.query.page, 10) || 1, 1);
 		const limit = Math.min(Math.max(Number.parseInt(request.query.limit, 10) || 50, 1), 100);
-		const where = status ? { status } : {};
+		const where = {
+			...(status ? { status } : {}),
+			...(assignment === 'ASSIGNED' ? { assignments: { some: { unassignedAt: null } } } : {}),
+			...(assignment === 'UNASSIGNED' ? { assignments: { none: { unassignedAt: null } } } : {}),
+		};
 		const [qrCodes, total] = await Promise.all([
 			prisma.qrCode.findMany({ where, skip: (page - 1) * limit, take: limit, orderBy: { createdAt: 'desc' }, include: { assignments: { where: { unassignedAt: null }, include: { vendor: true }, take: 1 } } }),
 			prisma.qrCode.count({ where }),
@@ -479,7 +489,22 @@ adminRoutes.get('/leads', requireAuth, requireAdmin, async (request, response, n
 				orderBy: { createdAt: 'desc' },
 				skip,
 				take: limit,
-				select: { id: true, vendorId: true, qrId: true, qrAssignmentId: true, scanId: true, customerName: true, phone: true, email: true, location: true, status: true, createdAt: true, vendor: { select: { businessName: true } }, qr: { select: { code: true } } },
+					select: {
+						id: true,
+						vendorId: true,
+						qrId: true,
+						qrAssignmentId: true,
+						scanId: true,
+						customerName: true,
+						phone: true,
+						email: true,
+						location: true,
+						status: true,
+						createdAt: true,
+						vendor: { select: { businessName: true } },
+						qr: { select: { code: true } },
+						payout: { select: { id: true, status: true, paidAt: true, paidReference: true } },
+					},
 			}),
 			prisma.lead.count(),
 		]);
@@ -537,7 +562,27 @@ adminRoutes.patch('/leads/:leadId', requireAuth, requireAdmin, async (request, r
 	try {
 		const { status } = leadStatusSchema.parse(request.body);
 		const lead = await prisma.$transaction(async (transaction) => {
-			const updated = await transaction.lead.update({ where: { id: request.params.leadId }, data: { status } });
+			const updated = await transaction.lead.update({
+				where: { id: request.params.leadId },
+				data: { status },
+				select: { id: true, status: true, vendorId: true },
+			});
+
+			if (status === 'CONVERTED') {
+				const existingPayout = await transaction.payout.findUnique({ where: { leadId: updated.id }, select: { id: true } });
+				if (!existingPayout) {
+					const payout = await transaction.payout.create({
+						data: {
+							leadId: updated.id,
+							vendorId: updated.vendorId,
+							status: 'UNPAID',
+						},
+						select: { id: true },
+					});
+					await writeAudit(transaction, request, 'PAYOUT_CREATED_FOR_CONVERTED_LEAD', 'Payout', payout.id, { leadId: updated.id });
+				}
+			}
+
 			await writeAudit(transaction, request, 'LEAD_STATUS_CHANGED', 'Lead', updated.id, { status });
 			return updated;
 		});
@@ -563,18 +608,36 @@ adminRoutes.post('/payouts/:payoutId/status', requireAuth, requireAdmin, async (
 				error.code = 'PAYOUT_NOT_FOUND';
 				throw error;
 			}
-			if (current.status === 'PAID') {
-				const error = new Error('Payout is already marked as paid.');
-				error.statusCode = 409;
-				error.code = 'PAYOUT_ALREADY_PAID';
+
+			if (status !== 'UNPAID' && !paidReference) {
+				const error = new Error('Payment reference is required when marking a payout as partial or paid.');
+				error.statusCode = 400;
+				error.code = 'PAID_REFERENCE_REQUIRED';
 				throw error;
 			}
+
+			const nextData = status === 'UNPAID'
+				? { status: 'UNPAID', paidAt: null, paidById: null, paidReference: null }
+				: {
+					status,
+					paidAt: status === 'PAID' ? new Date() : current.paidAt,
+					paidById: request.auth.user.id,
+					paidReference: paidReference || current.paidReference,
+				};
+
 			const updated = await transaction.payout.update({
 				where: { id: current.id },
 				// paid_at is only set once the payout reaches the final PAID state, not for a PARTIAL update.
-				data: { status, paidAt: status === 'PAID' ? new Date() : current.paidAt, paidById: request.auth.user.id, paidReference },
+				data: nextData,
 			});
-			await writeAudit(transaction, request, status === 'PAID' ? 'PAYOUT_MARKED_PAID' : 'PAYOUT_MARKED_PARTIAL', 'Payout', updated.id, { status, paidReference });
+			await writeAudit(
+				transaction,
+				request,
+				status === 'PAID' ? 'PAYOUT_MARKED_PAID' : status === 'PARTIAL' ? 'PAYOUT_MARKED_PARTIAL' : 'PAYOUT_MARKED_UNPAID',
+				'Payout',
+				updated.id,
+				{ status, paidReference: status === 'UNPAID' ? null : paidReference }
+			);
 			return updated;
 		});
 		return response.json({ success: true, payout: { id: payout.id, status: payout.status, paidAt: payout.paidAt, paidReference: payout.paidReference } });

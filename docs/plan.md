@@ -870,6 +870,8 @@ Admin must be able to manage vendors, QR inventory, assignments, leads, payout s
 
 The first Admin UI slice exposes these operational collections through bounded API responses and a resource selector. Mutating actions remain explicit, authorized backend operations and are added only with confirmation and audit feedback.
 
+Admin resource navigation should use clear horizontal tabs/buttons instead of dense dropdown-only controls, and Vendor creation should open from a simple button-driven panel to reduce form clutter.
+
 The Vendor resource view is the first mutation slice: Admin can create a Vendor, edit its business name/owner name/login identifier/mobile number inline, issue a temporary-password reset, and deactivate a Vendor, each confirmed before submission and followed by a refreshed list. The QR resource view is the second mutation slice: Admin can generate a QR batch and reassign an `ACTIVE` QR to a different Vendor by ID, confirmed before submission and followed by a refreshed list. The Leads resource view is the third mutation slice: Admin can change a lead's status from the documented set (`NEW`, `CONTACTED`, `QUALIFIED`, `CONVERTED`, `REJECTED`, `DUPLICATE`), confirmed before submission and followed by a refreshed list; attribution fields remain immutable to this action. The Payouts resource view is the fourth mutation slice: Admin can mark an `UNPAID` payout as `PAID` by supplying a manual payment reference, confirmed before submission and followed by a refreshed list; the action is only offered in the UI for `UNPAID` records. The Staff users resource view is the fifth mutation slice: Admin can create a staff user (`ADMIN` or `SALES`), update a staff user's role, and deactivate a staff user, each confirmed before submission and followed by a refreshed list; the backend protects the last active Admin from deactivation or role change. Remaining resources (scans, audit logs) are inherently read-only and have no documented mutation actions.
 
 ### Sales UI
@@ -970,6 +972,8 @@ Remove all references to:
 - reassignment-request workflows unless fully specified elsewhere
 
 The public customer flow remains unauthenticated and limited to the referral/lead journey.
+
+The public page must support both referral and non-referral enquiries. A direct `/v/:qrCode` visit auto-resolves the assigned Vendor and shows the enquiry form immediately. A generic public visit can submit an enquiry without a referral QR, and optionally attach one when available.
 
 ---
 
