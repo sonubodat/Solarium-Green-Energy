@@ -60,8 +60,15 @@ export async function createVendorSession(vendorId) {
   return token;
 }
 
+function cookieIsSecure() {
+  // A SameSite=None cookie without Secure is rejected outright by browsers, so
+  // these two settings must never be able to drift apart — Secure is required
+  // whenever SameSite=None is in effect, regardless of how NODE_ENV is set.
+  return env.nodeEnv === 'production' || env.sessionCookieSameSite === 'None';
+}
+
 export function setSessionCookie(response, token) {
-  const secure = env.nodeEnv === 'production';
+  const secure = cookieIsSecure();
   response.setHeader(
     'Set-Cookie',
     `${env.sessionCookieName}=${encodeURIComponent(token)}; Max-Age=${sessionLifetimeMs / 1000}; Path=/; HttpOnly; SameSite=${env.sessionCookieSameSite}${secure ? '; Secure' : ''}`
@@ -71,7 +78,7 @@ export function setSessionCookie(response, token) {
 export function clearSessionCookie(response) {
   response.setHeader(
     'Set-Cookie',
-    `${env.sessionCookieName}=; Max-Age=0; Path=/; HttpOnly; SameSite=${env.sessionCookieSameSite}${env.nodeEnv === 'production' ? '; Secure' : ''}`
+    `${env.sessionCookieName}=; Max-Age=0; Path=/; HttpOnly; SameSite=${env.sessionCookieSameSite}${cookieIsSecure() ? '; Secure' : ''}`
   );
 }
 
