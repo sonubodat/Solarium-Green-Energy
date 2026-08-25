@@ -30,6 +30,15 @@ Authenticate an Admin or Sales user.
 - Rules: derive role from the stored account; never trust a submitted role
 - Security: requests are rate-limited per client IP; invalid credentials use a generic response
 
+### `GET /api/auth/session`
+
+Return the account and role for the currently authenticated session, if any.
+
+- Authentication: any authenticated session (staff or Vendor)
+- Response: `{ type: 'staff' | 'vendor', role, account }`
+- Rules: read-only; relies entirely on the existing session cookie — never returns or accepts a password. Used by the frontend to silently restore a signed-in view (Admin/Sales/Vendor) without re-prompting for credentials within the session's lifetime.
+- Errors: `401` if no valid session cookie is present
+
 ### `POST /api/auth/logout`
 
 - Authentication: authenticated staff or Vendor
@@ -122,7 +131,7 @@ List vendors operationally available to the authenticated Sales user.
 
 - Authentication: Sales
 - Query: bounded pagination; indexed identifier/name lookup
-- Rules: scope results by Sales ownership or assignment
+- Rules: scope results by Sales ownership or assignment; excludes any Vendor already holding an active QR assignment
 
 ### `POST /api/sales/vendors/:vendorId/onboard`
 
@@ -190,6 +199,14 @@ Deactivate a Vendor without deleting historical records.
 - Authentication: Admin
 - Rules: set the Vendor inactive and write an audit log
 
+### `POST /api/admin/vendors/:vendorId/delete`
+
+Soft-delete a Vendor with no historical records.
+
+- Authentication: Admin
+- Rules: only permitted when the Vendor has zero leads, scans, payouts, and QR assignments; sets `status = DELETED` and writes an audit log (`VENDOR_DELETED`); a `DELETED` Vendor is excluded from the default `GET /api/admin/vendors` list
+- Errors: any historical record present returns `409 VENDOR_HAS_HISTORY` — deactivate instead
+
 ### `POST /api/admin/vendors/:vendorId/reset-password`
 
 Issue a secure temporary password/reset flow for a Vendor.
@@ -212,6 +229,15 @@ Generate a batch of unique QR inventory records.
 - Request: quantity and approved generation options
 - Rules: enforce unique codes in the database and audit the batch
 
+### `POST /api/admin/qr/:qrId/assign`
+
+Assign and activate an unassigned QR directly (the Admin equivalent of the Sales-only `POST /api/sales/qr/assign`, without the Sales-ownership restriction).
+
+- Authentication: Admin
+- Request: `vendor_id`
+- Rules: require `UNASSIGNED`, create the assignment and activate the QR transactionally, and write an audit log (`QR_ASSIGNED`)
+- Errors: unknown `qrId` returns `404 QR_NOT_FOUND`; a QR that is not `UNASSIGNED` returns `409 QR_NOT_UNASSIGNED`
+
 ### `POST /api/admin/qr/:qrId/reassign`
 
 Reassign an active QR.
@@ -219,6 +245,14 @@ Reassign an active QR.
 - Authentication: Admin
 - Request: new vendor reference
 - Rules: close the old assignment, create the new assignment, preserve all historical attribution, and audit in one transaction
+
+### `GET /api/admin/vendors/lookup`
+
+List active vendors for a quick-pick UI (Admin's vendor-assignment dropdown for QR assign/reassign).
+
+- Authentication: Admin
+- Response: `vendors: [{ id, businessName, loginIdentifier }]`, bounded to 200, name-sorted
+- Rules: read-only, no audit log; excludes any Vendor already holding an active QR assignment — one active QR per Vendor is enforced at this picker, not just in the reassignment logic
 
 ### `GET /api/admin/qr/:qrId/image`
 
@@ -266,15 +300,16 @@ List manual payout-status records.
 
 - Authentication: Admin
 - Query: bounded pagination and status filters
-- Rules: statuses are only `UNPAID` and `PAID`
+- Rules: statuses are only `UNPAID`, `PAID`, and `PARTIAL`
 
-### `POST /api/admin/payouts/:payoutId/mark-paid`
+### `POST /api/admin/payouts/:payoutId/status`
 
-Mark a payout as paid.
+Set a payout's status to `PAID` or `PARTIAL` (replaces the earlier `mark-paid` route now that a third status exists).
 
 - Authentication: Admin
-- Request: `paid_reference`
-- Rules: set `paid_at` and `paid_by` from the authenticated Admin; do not calculate commission or invoke an automated payout provider; audit the change
+- Request: `status` (`PAID` or `PARTIAL`), `paid_reference`
+- Rules: set `paid_by` from the authenticated Admin; set `paid_at` only when `status` is `PAID` (a `PARTIAL` update leaves `paid_at` unset, since the payout isn't in its final state); `PARTIAL` is a manual status label only — no partial amount, split, or commission calculation is stored or computed; do not invoke an automated payout provider; audit the change (`PAYOUT_MARKED_PAID` or `PAYOUT_MARKED_PARTIAL`)
+- Errors: an already-`PAID` payout returns `409 PAYOUT_ALREADY_PAID` regardless of the requested status
 
 ### `GET /api/admin/users`
 

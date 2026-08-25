@@ -27,6 +27,7 @@ enum QrStatus {
 enum PayoutStatus {
   UNPAID
   PAID
+  PARTIAL
 }
 
 enum VendorRegistrationStatus {

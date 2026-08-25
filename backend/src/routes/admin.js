@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { requireAuth, requireAdmin } from '../middleware/auth.js';
 import { prisma } from '../lib/prisma.js';
 import { createPasswordResetToken, resetTokenResponse } from '../services/password-reset.js';
-import { generateQrCodes, reassignQr } from '../services/qr.js';
+import { assignUnassignedQr, generateQrCodes, reassignQr } from '../services/qr.js';
 import { generateQrPng, generateQrSvg } from '../services/qr-image.js';
 import { hashPassword, normalizeLoginIdentifier, publicVendor } from '../services/auth.js';
 import { z } from 'zod';
@@ -22,7 +22,10 @@ const vendorUpdateSchema = vendorSchema.partial().extend({
 	status: z.enum(['ACTIVE', 'INACTIVE', 'DELETED']).optional(),
 });
 const leadStatusSchema = z.object({ status: z.enum(['NEW', 'CONTACTED', 'QUALIFIED', 'CONVERTED', 'REJECTED', 'DUPLICATE']) });
-const payoutSchema = z.object({ paid_reference: z.string().trim().min(1).max(160) });
+const payoutStatusSchema = z.object({
+	status: z.enum(['PAID', 'PARTIAL']),
+	paid_reference: z.string().trim().min(1).max(160),
+});
 const userSchema = z.object({
 	name: z.string().trim().min(2).max(120),
 	username_or_mobile: z.string().trim().min(3).max(120),
@@ -234,6 +237,40 @@ adminRoutes.post('/vendors/:vendorId/deactivate', requireAuth, requireAdmin, asy
 		return next(error);
 	}
 });
+adminRoutes.post('/vendors/:vendorId/delete', requireAuth, requireAdmin, async (request, response, next) => {
+	try {
+		const vendorId = request.params.vendorId;
+		const [leadCount, scanCount, payoutCount, assignmentCount] = await Promise.all([
+			prisma.lead.count({ where: { vendorId } }),
+			prisma.scan.count({ where: { vendorId } }),
+			prisma.payout.count({ where: { vendorId } }),
+			prisma.qrAssignment.count({ where: { vendorId } }),
+		]);
+		if (leadCount || scanCount || payoutCount || assignmentCount) {
+			return response.status(409).json({
+				success: false,
+				error: {
+					code: 'VENDOR_HAS_HISTORY',
+					message: 'This Vendor has historical leads, scans, payouts, or QR assignment records and cannot be deleted. Deactivate it instead.',
+				},
+			});
+		}
+		const vendor = await prisma.$transaction(async (transaction) => {
+			const updated = await transaction.vendor.update({ where: { id: vendorId }, data: { status: 'DELETED' } });
+			await writeAudit(transaction, request, 'VENDOR_DELETED', 'Vendor', updated.id);
+			return updated;
+		});
+		return response.json({ success: true, vendor: publicVendor(vendor) });
+	} catch (error) {
+		if (error.code === 'P2025') {
+			error.statusCode = 404;
+			error.code = 'VENDOR_NOT_FOUND';
+			error.message = 'Vendor was not found.';
+		}
+		return next(error);
+	}
+});
+
 adminRoutes.post('/vendors/:vendorId/reset-password', requireAuth, requireAdmin, async (request, response, next) => {
 	try {
 		const vendor = await prisma.vendor.findUnique({ where: { id: request.params.vendorId } });
@@ -248,13 +285,17 @@ adminRoutes.post('/vendors/:vendorId/reset-password', requireAuth, requireAdmin,
 	}
 });
 
+const qrListFilterSchema = z.object({ status: z.enum(['UNASSIGNED', 'ACTIVE', 'INACTIVE', 'RETIRED']).optional() });
+
 adminRoutes.get('/qr', requireAuth, requireAdmin, async (request, response, next) => {
 	try {
+		const { status } = qrListFilterSchema.parse({ status: request.query.status || undefined });
 		const page = Math.max(Number.parseInt(request.query.page, 10) || 1, 1);
 		const limit = Math.min(Math.max(Number.parseInt(request.query.limit, 10) || 50, 1), 100);
+		const where = status ? { status } : {};
 		const [qrCodes, total] = await Promise.all([
-			prisma.qrCode.findMany({ skip: (page - 1) * limit, take: limit, orderBy: { createdAt: 'desc' }, include: { assignments: { where: { unassignedAt: null }, include: { vendor: true }, take: 1 } } }),
-			prisma.qrCode.count(),
+			prisma.qrCode.findMany({ where, skip: (page - 1) * limit, take: limit, orderBy: { createdAt: 'desc' }, include: { assignments: { where: { unassignedAt: null }, include: { vendor: true }, take: 1 } } }),
+			prisma.qrCode.count({ where }),
 		]);
 		return response.json({ success: true, data: qrCodes, pagination: { page, limit, total } });
 	} catch (error) {
@@ -277,6 +318,36 @@ adminRoutes.post('/qr/:qrId/reassign', requireAuth, requireAdmin, async (request
 		const { vendor_id: vendorId } = reassignQrSchema.parse(request.body);
 		const result = await reassignQr({ qrId: request.params.qrId, vendorId, assignedById: request.auth.user.id });
 		return response.json({ success: true, qr: result.qr, assignment: result.assignment, vendor: publicVendor(result.vendor) });
+	} catch (error) {
+		return next(error);
+	}
+});
+
+adminRoutes.post('/qr/:qrId/assign', requireAuth, requireAdmin, async (request, response, next) => {
+	try {
+		const { vendor_id: vendorId } = reassignQrSchema.parse(request.body);
+		const qr = await prisma.qrCode.findUnique({ where: { id: request.params.qrId } });
+		if (!qr) {
+			return response.status(404).json({ success: false, error: { code: 'QR_NOT_FOUND', message: 'QR code was not found.' } });
+		}
+		const result = await assignUnassignedQr({ code: qr.code, vendorId, assignedById: request.auth.user.id, assignedByRole: 'ADMIN' });
+		return response.status(201).json({ success: true, qr: result.qr, assignment: result.assignment, vendor: publicVendor(result.vendor) });
+	} catch (error) {
+		return next(error);
+	}
+});
+
+adminRoutes.get('/vendors/lookup', requireAuth, requireAdmin, async (request, response, next) => {
+	try {
+		const vendors = await prisma.vendor.findMany({
+			// A Vendor already holding an active QR is excluded — the picker is for choosing
+			// a vendor to assign/reassign an active QR to, and one active QR per Vendor is enforced here.
+			where: { status: 'ACTIVE', assignments: { none: { unassignedAt: null } } },
+			orderBy: { businessName: 'asc' },
+			take: 200,
+			select: { id: true, businessName: true, loginIdentifier: true },
+		});
+		return response.json({ success: true, vendors });
 	} catch (error) {
 		return next(error);
 	}
@@ -383,14 +454,16 @@ adminRoutes.get('/qr/print', requireAuth, requireAdmin, async (request, response
 adminRoutes.get('/vendors', requireAuth, requireAdmin, async (request, response, next) => {
 	try {
 		const { page, limit, skip } = pagination(request.query);
+		const where = { status: { not: 'DELETED' } };
 		const [vendors, total] = await Promise.all([
 			prisma.vendor.findMany({
+				where,
 				orderBy: { createdAt: 'desc' },
 				skip,
 				take: limit,
 				select: { id: true, businessName: true, ownerName: true, loginIdentifier: true, mobileNumber: true, status: true, salesUserId: true, createdAt: true },
 			}),
-			prisma.vendor.count(),
+			prisma.vendor.count({ where }),
 		]);
 		return response.json({ success: true, vendors, pagination: { page, limit, total } });
 	} catch (error) {
@@ -451,7 +524,7 @@ adminRoutes.get('/audit-logs', requireAuth, requireAdmin, async (request, respon
 	try {
 		const { page, limit, skip } = pagination(request.query);
 		const [auditLogs, total] = await Promise.all([
-			prisma.auditLog.findMany({ orderBy: { timestamp: 'desc' }, skip, take: limit }),
+			prisma.auditLog.findMany({ orderBy: { timestamp: 'desc' }, skip, take: limit, include: { actor: { select: { name: true } } } }),
 			prisma.auditLog.count(),
 		]);
 		return response.json({ success: true, audit_logs: auditLogs, pagination: { page, limit, total } });
@@ -479,9 +552,9 @@ adminRoutes.patch('/leads/:leadId', requireAuth, requireAdmin, async (request, r
 	}
 });
 
-adminRoutes.post('/payouts/:payoutId/mark-paid', requireAuth, requireAdmin, async (request, response, next) => {
+adminRoutes.post('/payouts/:payoutId/status', requireAuth, requireAdmin, async (request, response, next) => {
 	try {
-		const { paid_reference: paidReference } = payoutSchema.parse(request.body);
+		const { status, paid_reference: paidReference } = payoutStatusSchema.parse(request.body);
 		const payout = await prisma.$transaction(async (transaction) => {
 			const current = await transaction.payout.findUnique({ where: { id: request.params.payoutId } });
 			if (!current) {
@@ -498,9 +571,10 @@ adminRoutes.post('/payouts/:payoutId/mark-paid', requireAuth, requireAdmin, asyn
 			}
 			const updated = await transaction.payout.update({
 				where: { id: current.id },
-				data: { status: 'PAID', paidAt: new Date(), paidById: request.auth.user.id, paidReference },
+				// paid_at is only set once the payout reaches the final PAID state, not for a PARTIAL update.
+				data: { status, paidAt: status === 'PAID' ? new Date() : current.paidAt, paidById: request.auth.user.id, paidReference },
 			});
-			await writeAudit(transaction, request, 'PAYOUT_MARKED_PAID', 'Payout', updated.id, { paidReference });
+			await writeAudit(transaction, request, status === 'PAID' ? 'PAYOUT_MARKED_PAID' : 'PAYOUT_MARKED_PARTIAL', 'Payout', updated.id, { status, paidReference });
 			return updated;
 		});
 		return response.json({ success: true, payout: { id: payout.id, status: payout.status, paidAt: payout.paidAt, paidReference: payout.paidReference } });

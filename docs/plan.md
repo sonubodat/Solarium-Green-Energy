@@ -660,6 +660,8 @@ Admin may:
 
 Historical QR assignments, scans, leads, and payout records must remain intact.
 
+The Admin "delete" action (distinct from deactivate) is a soft delete: it sets the Vendor's status to `DELETED` and is only permitted when the Vendor has zero historical leads, scans, payouts, and QR assignment records. If any exist, the action is rejected with a clear message directing the Admin to deactivate instead. A `DELETED` Vendor is excluded from the default Admin vendor list and cannot log in (session revocation already applies to any non-`ACTIVE` status).
+
 ---
 
 ## 14. Customer Identity and Deduplication
@@ -716,7 +718,10 @@ Use only:
 ```text
 UNPAID
 PAID
+PARTIAL
 ```
+
+`PARTIAL` is a manually-set status, same as `PAID` — it does not imply or store any partial amount, split, or commission calculation. It exists purely as a third informational label an Admin can set manually, no different in kind from `PAID`.
 
 For a paid referral/payout record, capture:
 
@@ -920,6 +925,7 @@ For payout:
 ```text
 Unpaid
 Paid
+Partial
 ```
 
 For QR:

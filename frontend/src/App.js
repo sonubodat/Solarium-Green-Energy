@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { apiRequest, API_BASE_URL } from './api/client';
 import './App.css';
 
@@ -66,6 +66,7 @@ function App() {
   const [assignmentCode, setAssignmentCode] = useState('');
   const [qrStatus, setQrStatus] = useState(null);
   const [adminResource, setAdminResource] = useState('vendors');
+  const [adminPage, setAdminPage] = useState(1);
   const [newPassword, setNewPassword] = useState('');
   const [newVendor, setNewVendor] = useState({ business_name: '', owner_name: '', login_identifier: '', mobile_number: '', password: '' });
   const [qrGenerateQuantity, setQrGenerateQuantity] = useState('100');
@@ -77,10 +78,16 @@ function App() {
   const [editingVendorId, setEditingVendorId] = useState(null);
   const [editVendorDraft, setEditVendorDraft] = useState({ business_name: '', owner_name: '', login_identifier: '', mobile_number: '' });
   const [qrPrintFilters, setQrPrintFilters] = useState({ status: '', vendor_id: '' });
+  const [qrListStatus, setQrListStatus] = useState('');
+  const [expandedLeadId, setExpandedLeadId] = useState(null);
+  const [vendorLookup, setVendorLookup] = useState([]);
+  const [salesVendorOptions, setSalesVendorOptions] = useState([]);
   const [message, setMessage] = useState('');
   const [loading, setLoading] = useState(false);
+  const activeViewRef = useRef('Public');
 
-  function changeView(name) {
+  async function changeView(name) {
+    activeViewRef.current = name;
     setActiveView(name);
     setMessage('');
     setReferral(null);
@@ -91,6 +98,7 @@ function App() {
     setAssignmentCode('');
     setQrStatus(null);
     setAdminResource('vendors');
+    setAdminPage(1);
     setNewPassword('');
     setNewVendor({ business_name: '', owner_name: '', login_identifier: '', mobile_number: '', password: '' });
     setQrGenerateQuantity('100');
@@ -101,6 +109,65 @@ function App() {
     setStaffRoleInputs({});
     setEditingVendorId(null);
     setQrPrintFilters({ status: '', vendor_id: '' });
+    setQrListStatus('');
+    setExpandedLeadId(null);
+    setVendorLookup([]);
+    setSalesVendorOptions([]);
+    if (name === 'Admin' || name === 'Sales' || name === 'Vendor') {
+      await restoreSession(name);
+    }
+  }
+
+  // Relies on the existing session cookie rather than storing the password anywhere,
+  // so returning to a role tab within the 24h session lifetime skips the login form.
+  async function restoreSession(name) {
+    try {
+      const session = await apiRequest('/auth/session');
+      // Guard against a stale response landing after the user has already switched
+      // to a different tab — otherwise one role's data can overwrite another's state.
+      if (activeViewRef.current !== name) return;
+      const roleForView = { Vendor: 'VENDOR', Sales: 'SALES', Admin: 'ADMIN' }[name];
+      if (session.role !== roleForView) return;
+      if (name === 'Vendor') {
+        const data = await Promise.all(['/vendor/profile', '/vendor/leads', '/vendor/payouts'].map((path) => apiRequest(path)));
+        if (activeViewRef.current !== name) return;
+        setPortalData({ account: session.account, data });
+      } else if (name === 'Admin') {
+        const data = await apiRequest('/admin/vendors?page=1&limit=50');
+        if (activeViewRef.current !== name) return;
+        setPortalData({ account: session.account, data });
+      } else if (name === 'Sales') {
+        const data = await apiRequest('/sales/registrations');
+        if (activeViewRef.current !== name) return;
+        setPortalData({ account: session.account, data });
+        loadSalesVendors();
+      }
+    } catch (error) {
+      // No active session for this role — show the normal sign-in form.
+    }
+  }
+
+  async function signOutCurrent() {
+    setLoading(true);
+    setMessage('');
+    try {
+      await apiRequest('/auth/logout', { method: 'POST' });
+    } catch (error) {
+      // Even if the network call fails, clear local state so the UI reflects signed-out.
+    } finally {
+      setPortalData(null);
+      setLoading(false);
+      setMessage('Signed out.');
+    }
+  }
+
+  async function loadSalesVendors() {
+    try {
+      const result = await apiRequest('/sales/vendors');
+      setSalesVendorOptions(result.vendors);
+    } catch (error) {
+      // Background refresh only — leave the picker as-is if this fails.
+    }
   }
 
   async function resolveQr(event) {
@@ -149,6 +216,7 @@ function App() {
         ? await Promise.all(['/vendor/profile', '/vendor/leads', '/vendor/payouts'].map((path) => apiRequest(path)))
         : await apiRequest(activeView === 'Admin' ? '/admin/vendors' : '/sales/registrations');
       setPortalData({ account: result.vendor || result.user, data });
+      if (activeView === 'Sales') loadSalesVendors();
       setMessage('Signed in successfully.');
     } catch (error) {
       setMessage(error.message);
@@ -157,12 +225,19 @@ function App() {
     }
   }
 
-  async function loadAdminResource(resource = adminResource) {
+  async function loadAdminResource(resource = adminResource, page = 1, statusOverride) {
     setLoading(true);
     setMessage('');
     try {
-      const data = await apiRequest(`/admin/${resource}`);
+      const effectiveStatus = statusOverride !== undefined ? statusOverride : qrListStatus;
+      const statusQuery = resource === 'qr' && effectiveStatus ? `&status=${effectiveStatus}` : '';
+      const data = await apiRequest(`/admin/${resource}?page=${page}&limit=50${statusQuery}`);
+      setAdminPage(page);
       setPortalData({ ...portalData, data });
+      if (resource === 'qr') {
+        const lookup = await apiRequest('/admin/vendors/lookup');
+        setVendorLookup(lookup.vendors);
+      }
     } catch (error) {
       setMessage(error.message);
     } finally {
@@ -179,7 +254,7 @@ function App() {
       if (!body.password) delete body.password;
       await apiRequest('/admin/vendors', { method: 'POST', body: JSON.stringify(body) });
       setNewVendor({ business_name: '', owner_name: '', login_identifier: '', mobile_number: '', password: '' });
-      await loadAdminResource('vendors');
+      await loadAdminResource('vendors', adminPage);
       setMessage('Vendor created.');
     } catch (error) {
       setMessage(error.message);
@@ -194,8 +269,23 @@ function App() {
     setMessage('');
     try {
       await apiRequest(`/admin/vendors/${vendorId}/deactivate`, { method: 'POST' });
-      await loadAdminResource('vendors');
+      await loadAdminResource('vendors', adminPage);
       setMessage('Vendor deactivated.');
+    } catch (error) {
+      setMessage(error.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function deleteVendor(vendorId, businessName) {
+    if (!window.confirm(`Delete ${businessName}? This only succeeds if the Vendor has no leads, scans, payouts, or QR assignments — deactivate instead if it has history.`)) return;
+    setLoading(true);
+    setMessage('');
+    try {
+      await apiRequest(`/admin/vendors/${vendorId}/delete`, { method: 'POST' });
+      await loadAdminResource('vendors', adminPage);
+      setMessage('Vendor deleted.');
     } catch (error) {
       setMessage(error.message);
     } finally {
@@ -222,7 +312,7 @@ function App() {
     try {
       await apiRequest(`/admin/vendors/${vendorId}`, { method: 'PATCH', body: JSON.stringify(editVendorDraft) });
       setEditingVendorId(null);
-      await loadAdminResource('vendors');
+      await loadAdminResource('vendors', adminPage);
       setMessage('Vendor updated.');
     } catch (error) {
       setMessage(error.message);
@@ -256,7 +346,7 @@ function App() {
     setMessage('');
     try {
       const result = await apiRequest('/admin/qr/generate', { method: 'POST', body: JSON.stringify({ quantity }) });
-      await loadAdminResource('qr');
+      await loadAdminResource('qr', adminPage);
       setMessage(`Generated ${result.count} QR codes.`);
     } catch (error) {
       setMessage(error.message);
@@ -278,8 +368,30 @@ function App() {
     try {
       await apiRequest(`/admin/qr/${qr.id}/reassign`, { method: 'POST', body: JSON.stringify({ vendor_id: vendorId }) });
       setReassignVendorInputs({ ...reassignVendorInputs, [qr.id]: '' });
-      await loadAdminResource('qr');
+      await loadAdminResource('qr', adminPage);
       setMessage('QR reassigned successfully.');
+    } catch (error) {
+      setMessage(error.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function assignQrToVendor(qr) {
+    const vendorId = (reassignVendorInputs[qr.id] || '').trim();
+    if (!vendorId) {
+      setMessage('Select a vendor before assigning.');
+      return;
+    }
+    const targetVendor = vendorLookup.find((vendor) => vendor.id === vendorId);
+    if (!window.confirm(`Assign ${qr.code} to ${targetVendor?.businessName || 'the selected Vendor'}?`)) return;
+    setLoading(true);
+    setMessage('');
+    try {
+      await apiRequest(`/admin/qr/${qr.id}/assign`, { method: 'POST', body: JSON.stringify({ vendor_id: vendorId }) });
+      setReassignVendorInputs({ ...reassignVendorInputs, [qr.id]: '' });
+      await loadAdminResource('qr', adminPage);
+      setMessage('QR assigned successfully.');
     } catch (error) {
       setMessage(error.message);
     } finally {
@@ -298,7 +410,7 @@ function App() {
     setMessage('');
     try {
       await apiRequest(`/admin/leads/${lead.id}`, { method: 'PATCH', body: JSON.stringify({ status: nextStatus }) });
-      await loadAdminResource('leads');
+      await loadAdminResource('leads', adminPage);
       setMessage('Lead status updated.');
     } catch (error) {
       setMessage(error.message);
@@ -307,20 +419,20 @@ function App() {
     }
   }
 
-  async function markPayoutPaid(payout) {
+  async function updatePayoutStatus(payout, status) {
     const reference = (paidReferenceInputs[payout.id] || '').trim();
     if (!reference) {
-      setMessage('Enter a payment reference before marking paid.');
+      setMessage('Enter a payment reference before updating the commission status.');
       return;
     }
-    if (!window.confirm(`Mark the payout for ${payout.vendor?.businessName || 'this Vendor'} as PAID with reference "${reference}"?`)) return;
+    if (!window.confirm(`Mark the payout for ${payout.vendor?.businessName || 'this Vendor'} as ${status} with reference "${reference}"?`)) return;
     setLoading(true);
     setMessage('');
     try {
-      await apiRequest(`/admin/payouts/${payout.id}/mark-paid`, { method: 'POST', body: JSON.stringify({ paid_reference: reference }) });
+      await apiRequest(`/admin/payouts/${payout.id}/status`, { method: 'POST', body: JSON.stringify({ status, paid_reference: reference }) });
       setPaidReferenceInputs({ ...paidReferenceInputs, [payout.id]: '' });
-      await loadAdminResource('payouts');
-      setMessage('Payout marked as paid.');
+      await loadAdminResource('payouts', adminPage);
+      setMessage(`Payout marked as ${status.toLowerCase()}.`);
     } catch (error) {
       setMessage(error.message);
     } finally {
@@ -335,7 +447,7 @@ function App() {
     try {
       await apiRequest('/admin/users', { method: 'POST', body: JSON.stringify(newStaffUser) });
       setNewStaffUser({ name: '', username_or_mobile: '', password: '', role: 'SALES' });
-      await loadAdminResource('users');
+      await loadAdminResource('users', adminPage);
       setMessage('Staff user created.');
     } catch (error) {
       setMessage(error.message);
@@ -355,7 +467,7 @@ function App() {
     setMessage('');
     try {
       await apiRequest(`/admin/users/${user.id}`, { method: 'PATCH', body: JSON.stringify({ role: nextRole }) });
-      await loadAdminResource('users');
+      await loadAdminResource('users', adminPage);
       setMessage('Staff user role updated.');
     } catch (error) {
       setMessage(error.message);
@@ -370,7 +482,7 @@ function App() {
     setMessage('');
     try {
       await apiRequest(`/admin/users/${user.id}/deactivate`, { method: 'POST' });
-      await loadAdminResource('users');
+      await loadAdminResource('users', adminPage);
       setMessage('Staff user deactivated.');
     } catch (error) {
       setMessage(error.message);
@@ -398,6 +510,7 @@ function App() {
       setSelectedVendorId(result.vendor.id);
       setSelectedRegistration('');
       setTemporaryPassword('');
+      await loadSalesVendors();
       setMessage('Vendor onboarded. Assign an unassigned QR next.');
     } catch (error) {
       setMessage(error.message);
@@ -512,6 +625,7 @@ function App() {
                 <button className="secondary-action" onClick={() => startEditVendor(vendor)} disabled={loading}>Edit</button>
                 <button className="secondary-action" onClick={() => resetVendorPassword(vendor.id, vendor.businessName)} disabled={loading}>Reset password</button>
                 <button className="secondary-action" onClick={() => deactivateVendor(vendor.id, vendor.businessName)} disabled={loading || vendor.status === 'INACTIVE'}>Deactivate</button>
+                <button className="secondary-action" onClick={() => deleteVendor(vendor.id, vendor.businessName)} disabled={loading}>Delete</button>
               </span>
             </div>
           )
@@ -544,7 +658,18 @@ function App() {
           />
           <button type="button" className="primary-action" onClick={openQrPrintSheet}>Open printable sheet</button>
         </div>
-        <h3>QR inventory</h3>
+        <div className="inline-form">
+          <label htmlFor="qr-list-status">Filter inventory</label>
+          <select
+            id="qr-list-status"
+            value={qrListStatus}
+            onChange={(event) => { setQrListStatus(event.target.value); loadAdminResource('qr', 1, event.target.value); }}
+          >
+            <option value="">All statuses</option>
+            {QR_STATUSES.map((status) => <option key={status} value={status}>{status}</option>)}
+          </select>
+        </div>
+        <h3>QR inventory{qrListStatus ? ` — ${qrListStatus}` : ''}</h3>
         {qrCodes.length ? qrCodes.map((qr) => {
           const currentVendor = qr.assignments?.[0]?.vendor?.businessName;
           return (
@@ -553,15 +678,25 @@ function App() {
               <span className="row-actions">
                 <a className="secondary-action" href={`${API_BASE_URL}/admin/qr/${qr.id}/image`} target="_blank" rel="noreferrer">SVG</a>
                 <a className="secondary-action" href={`${API_BASE_URL}/admin/qr/${qr.id}/image?format=png`} target="_blank" rel="noreferrer">PNG</a>
-                {qr.status === 'ACTIVE' && (
+                {(qr.status === 'ACTIVE' || qr.status === 'UNASSIGNED') && (
                   <>
-                    <input
-                      className="reassign-input"
-                      placeholder="Target Vendor ID"
+                    <select
+                      className="vendor-picker"
                       value={reassignVendorInputs[qr.id] || ''}
                       onChange={(event) => setReassignVendorInputs({ ...reassignVendorInputs, [qr.id]: event.target.value })}
-                    />
-                    <button className="secondary-action" onClick={() => reassignQrCode(qr)} disabled={loading}>Reassign</button>
+                    >
+                      <option value="">Select vendor…</option>
+                      {vendorLookup.map((vendor) => (
+                        <option key={vendor.id} value={vendor.id}>{vendor.businessName} ({vendor.loginIdentifier})</option>
+                      ))}
+                    </select>
+                    <button
+                      className="secondary-action"
+                      onClick={() => (qr.status === 'ACTIVE' ? reassignQrCode(qr) : assignQrToVendor(qr))}
+                      disabled={loading || !reassignVendorInputs[qr.id]}
+                    >
+                      {qr.status === 'ACTIVE' ? 'Reassign' : 'Assign'}
+                    </button>
                   </>
                 )}
               </span>
@@ -578,14 +713,34 @@ function App() {
       <div className="data-section">
         <h3>Leads</h3>
         {leads.length ? leads.map((lead) => (
-          <div className="data-row admin-row" key={lead.id}>
-            <span>{lead.customerName} <em>({lead.vendor?.businessName || 'no vendor'} · {lead.qr?.code || 'no QR'} · {lead.status})</em></span>
-            <span className="row-actions">
-              <select value={leadStatusInputs[lead.id] || lead.status} onChange={(event) => setLeadStatusInputs({ ...leadStatusInputs, [lead.id]: event.target.value })}>
-                {LEAD_STATUSES.map((status) => <option key={status} value={status}>{status}</option>)}
-              </select>
-              <button className="secondary-action" onClick={() => updateLeadStatus(lead)} disabled={loading}>Update</button>
-            </span>
+          <div key={lead.id}>
+            <div className="data-row admin-row">
+              <span>{lead.customerName} <em>({lead.vendor?.businessName || 'no vendor'} · {lead.qr?.code || 'no QR'} · {lead.status})</em></span>
+              <span className="row-actions">
+                <button className="secondary-action" onClick={() => setExpandedLeadId(expandedLeadId === lead.id ? null : lead.id)}>
+                  {expandedLeadId === lead.id ? 'Hide details' : 'Details'}
+                </button>
+                <select value={leadStatusInputs[lead.id] || lead.status} onChange={(event) => setLeadStatusInputs({ ...leadStatusInputs, [lead.id]: event.target.value })}>
+                  {LEAD_STATUSES.map((status) => <option key={status} value={status}>{status}</option>)}
+                </select>
+                <button className="secondary-action" onClick={() => updateLeadStatus(lead)} disabled={loading}>Update</button>
+              </span>
+            </div>
+            {expandedLeadId === lead.id && (
+              <div className="detail-panel">
+                <div className="detail-row"><span>Customer name</span><strong>{lead.customerName}</strong></div>
+                <div className="detail-row"><span>Phone</span><strong>{lead.phone}</strong></div>
+                <div className="detail-row"><span>Email</span><strong>{lead.email || '—'}</strong></div>
+                <div className="detail-row"><span>Location</span><strong>{lead.location || '—'}</strong></div>
+                <div className="detail-row"><span>Vendor</span><strong>{lead.vendor?.businessName || '—'}</strong></div>
+                <div className="detail-row"><span>QR code</span><strong>{lead.qr?.code || '—'}</strong></div>
+                <div className="detail-row"><span>Status</span><strong>{lead.status}</strong></div>
+                <div className="detail-row"><span>Lead ID</span><strong>{lead.id}</strong></div>
+                <div className="detail-row"><span>Scan ID</span><strong>{lead.scanId}</strong></div>
+                <div className="detail-row"><span>QR assignment ID</span><strong>{lead.qrAssignmentId}</strong></div>
+                <div className="detail-row"><span>Created</span><strong>{new Date(lead.createdAt).toLocaleString()}</strong></div>
+              </div>
+            )}
           </div>
         )) : <p className="empty-state">No leads yet.</p>}
       </div>
@@ -599,8 +754,11 @@ function App() {
         <h3>Payouts</h3>
         {payouts.length ? payouts.map((payout) => (
           <div className="data-row admin-row" key={payout.id}>
-            <span>{payout.vendor?.businessName || 'Unknown vendor'} <em>({payout.status}{payout.paidReference ? ` — ${payout.paidReference}` : ''})</em></span>
-            {payout.status === 'UNPAID' && (
+            <span>
+              {payout.vendor?.businessName || 'Unknown vendor'} <em>({payout.status}{payout.paidReference ? ` — ${payout.paidReference}` : ''})</em>
+              <br /><span className="detail-hint">Lead {payout.leadId} · {payout.paidAt ? `Paid ${new Date(payout.paidAt).toLocaleString()}` : `Created ${new Date(payout.createdAt).toLocaleString()}`}</span>
+            </span>
+            {payout.status !== 'PAID' && (
               <span className="row-actions">
                 <input
                   className="reassign-input"
@@ -608,7 +766,8 @@ function App() {
                   value={paidReferenceInputs[payout.id] || ''}
                   onChange={(event) => setPaidReferenceInputs({ ...paidReferenceInputs, [payout.id]: event.target.value })}
                 />
-                <button className="secondary-action" onClick={() => markPayoutPaid(payout)} disabled={loading}>Mark paid</button>
+                <button className="secondary-action" onClick={() => updatePayoutStatus(payout, 'PARTIAL')} disabled={loading}>Mark partial</button>
+                <button className="secondary-action" onClick={() => updatePayoutStatus(payout, 'PAID')} disabled={loading}>Mark paid</button>
               </span>
             )}
           </div>
@@ -650,6 +809,58 @@ function App() {
     );
   }
 
+  function renderAdminScans() {
+    const scans = portalData?.data?.scans || [];
+    return (
+      <div className="data-section">
+        <h3>Scans</h3>
+        {scans.length ? scans.map((scan) => (
+          <div className="data-row admin-row" key={scan.id}>
+            <span>{scan.qr?.code || 'Unknown QR'} <em>({scan.vendor?.businessName || 'no vendor'})</em></span>
+            <span className="detail-hint">{new Date(scan.createdAt).toLocaleString()}</span>
+          </div>
+        )) : <p className="empty-state">No scans yet.</p>}
+      </div>
+    );
+  }
+
+  function renderAdminAuditLogs() {
+    const auditLogs = portalData?.data?.audit_logs || [];
+    return (
+      <div className="data-section">
+        <h3>Audit logs</h3>
+        {auditLogs.length ? auditLogs.map((entry) => (
+          <div className="data-row admin-row" key={entry.id}>
+            <span>
+              {entry.action} <em>({entry.entity} {entry.entityId})</em>
+              <br /><span className="detail-hint">
+                {entry.actor?.name || 'Unknown actor'} ({entry.actorRole}) · {new Date(entry.timestamp).toLocaleString()}
+                {entry.metadata ? ` · ${JSON.stringify(entry.metadata)}` : ''}
+              </span>
+            </span>
+          </div>
+        )) : <p className="empty-state">No audit records yet.</p>}
+      </div>
+    );
+  }
+
+  function renderAdminPagination() {
+    const meta = portalData?.data?.pagination;
+    if (!meta) return null;
+    const { page, limit, total } = meta;
+    const start = total === 0 ? 0 : (page - 1) * limit + 1;
+    const end = Math.min(page * limit, total);
+    return (
+      <div className="pagination-controls">
+        <span className="pagination-summary">{total === 0 ? 'No records' : `Showing ${start}–${end} of ${total}`}</span>
+        <span className="row-actions">
+          <button type="button" className="secondary-action" onClick={() => loadAdminResource(adminResource, page - 1)} disabled={loading || page <= 1}>Prev</button>
+          <button type="button" className="secondary-action" onClick={() => loadAdminResource(adminResource, page + 1)} disabled={loading || page * limit >= total}>Next</button>
+        </span>
+      </div>
+    );
+  }
+
   function renderPublic() {
     return (
       <div className="live-panel">
@@ -684,11 +895,14 @@ function App() {
           </form>
         ) : (
           <div className="portal-result">
-            <p className="referral-note">Signed in as <strong>{portalData.account.name || portalData.account.businessName || portalData.account.loginIdentifier}</strong></p>
+            <p className="referral-note">
+              Signed in as <strong>{portalData.account.name || portalData.account.businessName || portalData.account.loginIdentifier}</strong>{' '}
+              <button type="button" className="secondary-action" onClick={signOutCurrent} disabled={loading}>Sign out</button>
+            </p>
             {activeView === 'Admin' && (
               <div className="inline-form">
                 <label htmlFor="admin-resource">Operational view</label>
-                <select id="admin-resource" value={adminResource} onChange={(event) => { setAdminResource(event.target.value); loadAdminResource(event.target.value); }}>
+                <select id="admin-resource" value={adminResource} onChange={(event) => { setAdminResource(event.target.value); loadAdminResource(event.target.value, 1); }}>
                   <option value="vendors">Vendors</option>
                   <option value="qr">QR inventory</option>
                   <option value="leads">Leads</option>
@@ -697,7 +911,7 @@ function App() {
                   <option value="users">Staff users</option>
                   <option value="audit-logs">Audit logs</option>
                 </select>
-                <button className="primary-action" onClick={() => loadAdminResource()} disabled={loading}>{loading ? 'Loading...' : 'Refresh view'}</button>
+                <button className="primary-action" onClick={() => loadAdminResource(adminResource, adminPage)} disabled={loading}>{loading ? 'Loading...' : 'Refresh view'}</button>
               </div>
             )}
             {activeView === 'Vendor' ? renderVendorWorkspace() : null}
@@ -706,6 +920,8 @@ function App() {
             {activeView === 'Admin' && adminResource === 'leads' ? renderAdminLeads() : null}
             {activeView === 'Admin' && adminResource === 'payouts' ? renderAdminPayouts() : null}
             {activeView === 'Admin' && adminResource === 'users' ? renderAdminUsers() : null}
+            {activeView === 'Admin' && adminResource === 'scans' ? renderAdminScans() : null}
+            {activeView === 'Admin' && adminResource === 'audit-logs' ? renderAdminAuditLogs() : null}
             {activeView === 'Sales' && (
               <>
                 <form onSubmit={onboardVendor} className="lead-form">
@@ -722,10 +938,22 @@ function App() {
                   <button className="primary-action" disabled={loading}>{loading ? 'Checking...' : 'Check QR'}</button>
                 </form>
                 {qrStatus && <p className="referral-note">QR status: <strong>{qrStatus.status}</strong></p>}
-                {qrStatus?.status === 'UNASSIGNED' && selectedVendorId && <button className="primary-action" onClick={assignQr} disabled={loading}>Assign QR to selected Vendor</button>}
+                {qrStatus?.status === 'UNASSIGNED' && (
+                  <div className="inline-form">
+                    <label htmlFor="sales-vendor-picker">Assign to vendor</label>
+                    <select id="sales-vendor-picker" value={selectedVendorId} onChange={(event) => setSelectedVendorId(event.target.value)}>
+                      <option value="">Select vendor…</option>
+                      {salesVendorOptions.map((vendor) => (
+                        <option key={vendor.id} value={vendor.id}>{vendor.businessName} ({vendor.loginIdentifier})</option>
+                      ))}
+                    </select>
+                    <button className="primary-action" onClick={assignQr} disabled={loading || !selectedVendorId}>Assign QR</button>
+                  </div>
+                )}
               </>
             )}
-            {activeView !== 'Vendor' && !(activeView === 'Admin' && ['vendors', 'qr', 'leads', 'payouts', 'users'].includes(adminResource)) && <pre>{JSON.stringify(portalData.data, null, 2)}</pre>}
+            {activeView === 'Sales' && <pre>{JSON.stringify(portalData.data, null, 2)}</pre>}
+            {activeView === 'Admin' ? renderAdminPagination() : null}
           </div>
         )}
       </div>

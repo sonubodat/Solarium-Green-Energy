@@ -342,8 +342,13 @@ curl -i -b admin.cookies -X POST $BASE/admin/vendors/$VENDOR_ID/reset-password
 
 curl -i -b admin.cookies -X POST $BASE/admin/vendors/$VENDOR_ID/deactivate
 # -> 200, status -> INACTIVE
+
+curl -i -b admin.cookies -X POST $BASE/admin/vendors/$VENDOR_ID/delete
+# -> 409 VENDOR_HAS_HISTORY if this vendor has any lead/scan/payout/QR-assignment row (the one above from §7.1 does, from earlier tests)
+# create a brand-new vendor with no history and delete THAT one instead to see the 200 path:
+# -> 200, status -> DELETED, and it disappears from GET /admin/vendors (page total drops by 1)
 ```
-Supabase check: each call above adds one row to `audit_logs` with `action` = `VENDOR_CREATED` / `VENDOR_UPDATED` / `VENDOR_DEACTIVATED` / `VENDOR_PASSWORD_RESET` respectively.
+Supabase check: each call above adds one row to `audit_logs` with `action` = `VENDOR_CREATED` / `VENDOR_UPDATED` / `VENDOR_DEACTIVATED` / `VENDOR_PASSWORD_RESET` / `VENDOR_DELETED` respectively.
 
 ### 7.2 QR inventory
 ```bash
@@ -351,6 +356,16 @@ curl -i -b admin.cookies -X POST $BASE/admin/qr/generate -H "Content-Type: appli
 # -> 201, {"success":true,"count":5,"codes":[...]}
 
 curl -i -b admin.cookies "$BASE/admin/qr?page=1&limit=50"
+
+curl -i -b admin.cookies "$BASE/admin/qr?status=UNASSIGNED&limit=50"   # every row's status is UNASSIGNED
+curl -i -b admin.cookies "$BASE/admin/qr?status=ACTIVE&limit=50"       # every row's status is ACTIVE
+curl -i -b admin.cookies "$BASE/admin/qr?status=NOT_A_STATUS"          # -> 400
+
+curl -i -b admin.cookies "$BASE/admin/vendors/lookup"
+# -> 200, {"success":true,"vendors":[...]} — a Vendor that already holds an active QR must NOT appear here;
+# assign/reassign a QR to a Vendor, re-run this, confirm that Vendor drops out of the list
+curl -i -b sales.cookies "$BASE/sales/vendors"
+# same exclusion rule, additionally scoped to this Sales user's own vendors only
 
 QR_ID="<id-of-V-0001-from-above-or-vendors-list>"
 curl -i -b admin.cookies -X POST $BASE/admin/qr/$QR_ID/reassign -H "Content-Type: application/json" \
@@ -423,13 +438,17 @@ values (gen_random_uuid(), '<lead_id>', '<vendor_id>', 'UNPAID');
 curl -i -b admin.cookies "$BASE/admin/payouts?page=1&limit=50"
 
 PAYOUT_ID="<id>"
-curl -i -b admin.cookies -X POST $BASE/admin/payouts/$PAYOUT_ID/mark-paid \
-  -H "Content-Type: application/json" -d '{"paid_reference":"UTR123456789"}'
+curl -i -b admin.cookies -X POST $BASE/admin/payouts/$PAYOUT_ID/status \
+  -H "Content-Type: application/json" -d '{"status":"PARTIAL","paid_reference":"UTR-PARTIAL-001"}'
+# -> 200, status -> PARTIAL, paid_at stays null (not the final state yet)
+
+curl -i -b admin.cookies -X POST $BASE/admin/payouts/$PAYOUT_ID/status \
+  -H "Content-Type: application/json" -d '{"status":"PAID","paid_reference":"UTR123456789"}'
 # -> 200, status -> PAID, paid_at set, paid_by = the logged-in Admin's user id
 
-# repeat -> 409 PAYOUT_ALREADY_PAID
-curl -i -b admin.cookies -X POST $BASE/admin/payouts/$PAYOUT_ID/mark-paid -H "Content-Type: application/json" -d '{}'
-# -> 400 (paid_reference required)
+# repeat with either status -> 409 PAYOUT_ALREADY_PAID
+curl -i -b admin.cookies -X POST $BASE/admin/payouts/$PAYOUT_ID/status -H "Content-Type: application/json" -d '{}'
+# -> 400 (status and paid_reference required)
 ```
 Sales must never see this data at all:
 ```bash
@@ -576,8 +595,8 @@ These mirror `requirements.md` §40 and `RFI.md` §12 — run them as full seque
 2. Confirm in Supabase that the Vendor row still exists (`status = 'INACTIVE'`, not deleted) and any `Lead`/`Scan`/`Payout` rows tied to it are untouched.
 
 **Scenario G — Payout lifecycle**
-1. Mark a payout `PAID` (§7.5) with a reference.
-2. Confirm `paid_at`/`paid_by`/`paid_reference` are set, a second mark-paid attempt `409`s, and Sales cannot read it.
+1. Mark a payout `PARTIAL`, then `PAID` (§7.5), each with a reference.
+2. Confirm `paid_at` stays null through the `PARTIAL` step and is only set on `PAID`, `paid_by`/`paid_reference` are set, a second status update after `PAID` `409`s, and Sales cannot read it.
 
 ---
 
@@ -607,7 +626,7 @@ Use this to track a full pass. Check off against `plan.md` §24 (Definition of D
 - [ ] §4 Auth: staff login/logout/change-password, forgot/reset-password, rate limiting (login + reset)
 - [ ] §5 Vendor: login (identifier + mobile), profile/leads/payouts scoping, isolation under tampering, change-password
 - [ ] §6 Sales: registrations visibility, onboarding, QR check, QR assign, ownership boundary, Admin-route rejection
-- [ ] §7 Admin: Vendor CRUD + reset-password, QR generate/reassign + historical attribution, QR image download + print export (filters, pagination clamp, scanned-image content check), Lead status change, Payout mark-paid, Staff user CRUD + last-Admin protection + self-lockout protection, read-only scans/audit-logs
+- [ ] §7 Admin: Vendor CRUD + reset-password + guarded delete, QR generate/reassign/assign + status filter + one-active-QR-per-vendor picker rule + historical attribution, QR image download + print export (filters, pagination clamp, scanned-image content check), Lead status change + details view, Payout status (paid/partial), Staff user CRUD + last-Admin protection + self-lockout protection, read-only scans/audit-logs
 - [ ] §8 Pagination cap enforced server-side
 - [ ] §9 Supabase checks all pass (no plaintext passwords/phones, append-only assignments, single active assignment per QR, audit trail present)
 - [ ] §10 All seven acceptance scenarios pass end-to-end

@@ -49,6 +49,21 @@ salesRoutes.post('/qr/assign', requireAuth, requireSales, async (request, respon
 	}
 });
 
+salesRoutes.get('/vendors', requireAuth, requireSales, async (request, response, next) => {
+	try {
+		const vendors = await prisma.vendor.findMany({
+			// Excludes a Vendor already holding an active QR — one active QR per Vendor is enforced here.
+			where: { salesUserId: request.auth.user.id, status: 'ACTIVE', assignments: { none: { unassignedAt: null } } },
+			orderBy: { businessName: 'asc' },
+			take: 100,
+			select: { id: true, businessName: true, loginIdentifier: true },
+		});
+		return response.json({ success: true, vendors });
+	} catch (error) {
+		return next(error);
+	}
+});
+
 salesRoutes.get('/registrations', requireAuth, requireSales, async (request, response, next) => {
 	try {
 		const registrations = await prisma.vendorRegistration.findMany({

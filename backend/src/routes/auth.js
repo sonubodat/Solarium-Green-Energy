@@ -10,6 +10,7 @@ import {
 	hashPassword,
 	normalizeLoginIdentifier,
 	publicStaff,
+	publicVendor,
 	setSessionCookie,
 	clearSessionCookie,
 	verifyPassword,
@@ -58,6 +59,17 @@ authRoutes.post('/login', authRateLimit, async (request, response, next) => {
 		const token = await createStaffSession(user.id);
 		setSessionCookie(response, token);
 		return response.json({ success: true, user: publicStaff(user) });
+	} catch (error) {
+		return next(error);
+	}
+});
+
+authRoutes.get('/session', requireAuth, async (request, response, next) => {
+	try {
+		if (request.auth.type === 'vendor') {
+			return response.json({ success: true, type: 'vendor', role: 'VENDOR', account: publicVendor(request.auth.vendor) });
+		}
+		return response.json({ success: true, type: 'staff', role: request.auth.role, account: publicStaff(request.auth.user) });
 	} catch (error) {
 		return next(error);
 	}
