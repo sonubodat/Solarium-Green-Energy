@@ -186,6 +186,8 @@ Recommendation: stay single-page for now and treat the pagination/search/table-v
 
 **Decision made: stay single-page.** Confirmed by you; routing is not being adopted now.
 
+**Superseded:** real per-role routing was adopted directly in a later request, once development was far enough along to separate the app for production — see the "Real per-role routing" entry in `progress.md`. `/`, `/admin`, `/sales`, `/vendor` (and `/v/:code`) are now genuinely separate pages via `react-router-dom`; the dev-preview "View as" switcher is gone. This is top-level route separation only — the more granular routes plan.md §19 lists (e.g. `/admin/vendors/:id`, `/admin/qr/print`) are still handled as in-page resource tabs within `/admin`, not their own routes; revisit only if a concrete need surfaces (e.g. a shareable deep link to one vendor's detail).
+
 ### Sequenced plan, one step at a time like every other slice
 
 1. **Design tokens — done.** Extracted all 13 hardcoded colors (the 11 counted in the audit plus `#fff` and the live-dot green) into named CSS custom properties on `:root` in `frontend/src/App.css` — no value changes, no JSX touched. Verified live in a real browser: pixel-identical render, no console errors. A documented spacing scale was not added in this pass (colors only, matching the audit's stated scope); revisit if a future step needs it. Establishes the vocabulary the rest of this plan's steps reuse.

@@ -142,8 +142,17 @@ Complete onboarding for an eligible registration.
 
 - Authentication: Sales
 - Request: approved vendor details and initial credential setup
-- Rules: authorize the vendor through Sales ownership; store only a password hash; set `must_change_password = true`; do not allow active QR reassignment
+- Rules: authorize the vendor through Sales ownership; store only a password hash; set `must_change_password = true`; do not allow active QR reassignment; write an audit log (`VENDOR_CREATED`)
 - Frontend sequence: use the returned Vendor identifier for the subsequent QR assignment request; do not reuse the registration identifier
+
+### `POST /api/sales/vendors`
+
+Create a Vendor directly — the third onboarding path, alongside self-registration-then-onboard and Admin's direct create (`POST /api/admin/vendors`).
+
+- Authentication: Sales
+- Request: `business_name`, `owner_name`, `login_identifier`, `mobile_number`, `password` (temporary — no OTP/mobile verification, matching the rest of this app's vendor-creation paths)
+- Rules: normalize identifiers, store only a password hash, set `must_change_password = true`, set ownership to the creating Sales user (`sales_user_id`), write an audit log (`VENDOR_CREATED`)
+- Errors: a duplicate `login_identifier` or `mobile_number` returns `409 VENDOR_ALREADY_EXISTS`; an invalid mobile number returns `400 INVALID_MOBILE_NUMBER`
 
 ### `GET /api/sales/qr/:code`
 

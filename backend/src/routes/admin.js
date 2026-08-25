@@ -4,6 +4,7 @@ import { prisma } from '../lib/prisma.js';
 import { createPasswordResetToken, resetTokenResponse } from '../services/password-reset.js';
 import { assignUnassignedQr, generateQrCodes, reassignQr } from '../services/qr.js';
 import { generateQrPng, generateQrSvg } from '../services/qr-image.js';
+import PDFDocument from 'pdfkit';
 import { hashPassword, normalizeLoginIdentifier, publicVendor } from '../services/auth.js';
 import { z } from 'zod';
 
@@ -78,6 +79,47 @@ async function ensureActiveAdminRemains(transaction, userId, changes) {
 		}
 	}
 }
+
+// Deliberately sequential, not Promise.all — Supabase's free-tier pooler has a small shared
+// connection ceiling (see prisma.js's `max: 5`), and this is the first thing every Admin
+// sign-in fires. Firing 11 counts concurrently would grab up to 11 pool slots at once and
+// contend with every other request hitting the same pooler; running them one after another
+// means each query returns its connection before the next one asks for one.
+adminRoutes.get('/dashboard', requireAuth, requireAdmin, async (request, response, next) => {
+	try {
+		const totalVendors = await prisma.vendor.count({ where: { status: { not: 'DELETED' } } });
+		const activeVendors = await prisma.vendor.count({ where: { status: 'ACTIVE' } });
+		const totalQrCodes = await prisma.qrCode.count();
+		const unassignedQrCodes = await prisma.qrCode.count({ where: { status: 'UNASSIGNED' } });
+		const totalScans = await prisma.scan.count();
+		const uniqueCustomers = await prisma.customerIdentity.count();
+		const totalLeads = await prisma.lead.count();
+		const qualifiedLeads = await prisma.lead.count({ where: { status: 'QUALIFIED' } });
+		const convertedLeads = await prisma.lead.count({ where: { status: 'CONVERTED' } });
+		// Counts only — no amount/percentage is calculated anywhere, matching plan.md's rule
+		// against commission calculation. This is the same kind of plain operational count as
+		// every other tile on this dashboard (Total Leads, Qualified Leads, etc.), not a KPI.
+		const pendingCommission = await prisma.payout.count({ where: { status: { in: ['UNPAID', 'PARTIAL'] } } });
+		const paidCommission = await prisma.payout.count({ where: { status: 'PAID' } });
+
+		return response.json({
+			success: true,
+			totalVendors,
+			activeVendors,
+			totalQrCodes,
+			unassignedQrCodes,
+			totalScans,
+			uniqueCustomers,
+			totalLeads,
+			qualifiedLeads,
+			convertedLeads,
+			pendingCommission,
+			paidCommission,
+		});
+	} catch (error) {
+		return next(error);
+	}
+});
 
 adminRoutes.post('/vendors', requireAuth, requireAdmin, async (request, response, next) => {
 	try {
@@ -461,6 +503,62 @@ adminRoutes.get('/qr/print', requireAuth, requireAdmin, async (request, response
 	}
 });
 
+adminRoutes.get('/qr/pdf', requireAuth, requireAdmin, async (request, response, next) => {
+	try {
+		const filters = qrPrintFilterSchema.parse({ status: request.query.status, vendor_id: request.query.vendor_id });
+
+		const where = {
+			...(filters.status ? { status: filters.status } : {}),
+			...(filters.vendor_id ? { assignments: { some: { vendorId: filters.vendor_id, unassignedAt: null } } } : {}),
+		};
+
+		const qrCodes = await prisma.qrCode.findMany({
+			where,
+			orderBy: { code: 'asc' },
+			take: 5000,
+			select: { code: true },
+		});
+
+		if (!qrCodes.length) {
+			return response.status(404).json({ success: false, error: { code: 'QR_NOT_FOUND', message: 'No QR codes match this filter.' } });
+		}
+
+		response.setHeader('Content-Type', 'application/pdf');
+		response.setHeader('Content-Disposition', 'attachment; filename="solarium-qr-codes.pdf"');
+
+		// Only the QR image itself goes on the page — no vendor name, status, or code text —
+		// per explicit request that the PDF contain nothing but the scannable QR codes.
+		const doc = new PDFDocument({ size: 'A4', margin: 24 });
+		doc.pipe(response);
+
+		const cols = 4;
+		const cellSize = (doc.page.width - doc.page.margins.left - doc.page.margins.right) / cols;
+		const rowsPerPage = Math.floor((doc.page.height - doc.page.margins.top - doc.page.margins.bottom) / cellSize);
+		const perPage = cols * rowsPerPage;
+		const padding = 10;
+
+		for (let index = 0; index < qrCodes.length; index += 1) {
+			const positionOnPage = index % perPage;
+			if (index > 0 && positionOnPage === 0) {
+				doc.addPage();
+			}
+			const col = positionOnPage % cols;
+			const row = Math.floor(positionOnPage / cols);
+			const x = doc.page.margins.left + col * cellSize + padding / 2;
+			const y = doc.page.margins.top + row * cellSize + padding / 2;
+			const size = cellSize - padding;
+
+			// eslint-disable-next-line no-await-in-loop
+			const png = await generateQrPng(qrCodes[index].code);
+			doc.image(png, x, y, { width: size, height: size });
+		}
+
+		doc.end();
+	} catch (error) {
+		return next(error);
+	}
+});
+
 adminRoutes.get('/vendors', requireAuth, requireAdmin, async (request, response, next) => {
 	try {
 		const { page, limit, skip } = pagination(request.query);
@@ -509,6 +607,61 @@ adminRoutes.get('/leads', requireAuth, requireAdmin, async (request, response, n
 			prisma.lead.count(),
 		]);
 		return response.json({ success: true, leads, pagination: { page, limit, total } });
+	} catch (error) {
+		return next(error);
+	}
+});
+
+function csvCell(value) {
+	const text = value === null || value === undefined ? '' : String(value);
+	return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+}
+
+function toCsv(headers, rows) {
+	const lines = [headers.map(csvCell).join(',')];
+	for (const row of rows) {
+		lines.push(row.map(csvCell).join(','));
+	}
+	return lines.join('\r\n');
+}
+
+adminRoutes.get('/leads/export', requireAuth, requireAdmin, async (request, response, next) => {
+	try {
+		const leads = await prisma.lead.findMany({
+			orderBy: { createdAt: 'desc' },
+			select: {
+				customerName: true,
+				phone: true,
+				email: true,
+				location: true,
+				status: true,
+				createdAt: true,
+				vendor: { select: { businessName: true, mobileNumber: true } },
+				qr: { select: { code: true } },
+				payout: { select: { status: true, paidReference: true } },
+			},
+		});
+
+		const csv = toCsv(
+			['Customer Name', 'Customer Phone', 'Customer Email', 'Location', 'Lead Status', 'Vendor Name', 'Vendor Mobile Number', 'QR Code', 'Payout Status', 'Payout Reference', 'Created At'],
+			leads.map((lead) => [
+				lead.customerName,
+				lead.phone,
+				lead.email,
+				lead.location,
+				lead.status,
+				lead.vendor?.businessName,
+				lead.vendor?.mobileNumber,
+				lead.qr?.code,
+				lead.payout?.status,
+				lead.payout?.paidReference,
+				lead.createdAt.toISOString(),
+			])
+		);
+
+		response.setHeader('Content-Type', 'text/csv; charset=utf-8');
+		response.setHeader('Content-Disposition', 'attachment; filename="solarium-leads.csv"');
+		return response.send(csv);
 	} catch (error) {
 		return next(error);
 	}

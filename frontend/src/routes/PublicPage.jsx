@@ -1,0 +1,292 @@
+import { useEffect, useState } from 'react';
+import { useParams } from 'react-router-dom';
+import { apiRequest } from '../api/client';
+import './PublicPage.css';
+
+const ICONS = {
+  person: 'M12 12a4.5 4.5 0 1 0 0-9 4.5 4.5 0 0 0 0 9Zm0 2c-4.2 0-7.5 2.1-7.5 4.7V21h15v-2.3c0-2.6-3.3-4.7-7.5-4.7Z',
+  phone: 'M6.6 10.8c1.3 2.6 3.4 4.7 6 6l2-2c.3-.3.7-.4 1-.2 1.1.4 2.3.6 3.5.6.6 0 1 .4 1 1V20c0 .6-.4 1-1 1C10.5 21 3 13.5 3 4c0-.6.4-1 1-1h3.8c.6 0 1 .4 1 1 0 1.2.2 2.4.6 3.5.1.4 0 .8-.3 1l-2 2Z',
+  mail: 'M4 5h16a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1Zm1.5 2 6.2 5 6.3-5H5.5ZM3 7.4V17a1 1 0 0 0 1 1h16a1 1 0 0 0 1-1V7.4l-8.3 6.6a1 1 0 0 1-1.2 0L3 7.4Z',
+  pin: 'M12 2a7 7 0 0 0-7 7c0 5.3 7 13 7 13s7-7.7 7-13a7 7 0 0 0-7-7Zm0 9.7a2.7 2.7 0 1 1 0-5.4 2.7 2.7 0 0 1 0 5.4Z',
+  lock: 'M7 10V8a5 5 0 0 1 10 0v2h1a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1v-9a1 1 0 0 1 1-1h1Zm2 0h6V8a3 3 0 0 0-6 0v2Z',
+  arrow: 'M5 12h13m0 0-5-5m5 5-5 5',
+  shield: 'M12 2 4 5v6c0 5 3.4 8.7 8 11 4.6-2.3 8-6 8-11V5l-8-3Z',
+  headset: 'M12 3a8 8 0 0 0-8 8v5a3 3 0 0 0 3 3h1v-7H5v-1a7 7 0 0 1 14 0v1h-3v7h1a3 3 0 0 0 3-3v-5a8 8 0 0 0-8-8Z',
+  bolt: 'M13 2 4 14h6l-1 8 9-12h-6l1-8Z',
+  check: 'M5 13l4 4L19 7',
+  warning: 'M12 9v4m0 4h.01M10.3 3.9 2.5 17a1.5 1.5 0 0 0 1.3 2.3h16.4a1.5 1.5 0 0 0 1.3-2.3L13.7 3.9a1.5 1.5 0 0 0-2.6 0Z',
+  target: 'M12 2v3m0 14v3M2 12h3m14 0h3M12 16a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z',
+};
+
+function Icon({ path, className }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d={path} />
+    </svg>
+  );
+}
+
+const WHY_ITEMS = [
+  { icon: 'shield', title: 'Genuine enquiry', copy: 'We only use your details to respond to your solar enquiry.' },
+  { icon: 'headset', title: 'Expert guidance', copy: 'Our team will guide you with the best solar solutions.' },
+  { icon: 'bolt', title: 'Clean energy future', copy: "Together, let's build a sustainable tomorrow." },
+];
+
+const EMPTY_LEAD = { customer_name: '', phone: '', email: '', location: '' };
+
+function PublicPage() {
+  const { code: pathQrCode } = useParams();
+  // 'idle' = no QR in the URL (general enquiry); 'loading' | 'active' | 'inactive' | 'invalid' apply to a /v/:code visit.
+  const [referralStatus, setReferralStatus] = useState(pathQrCode ? 'loading' : 'idle');
+  const [referral, setReferral] = useState(null);
+  const [referralMessage, setReferralMessage] = useState('');
+  const [lead, setLead] = useState(EMPTY_LEAD);
+  const [consent, setConsent] = useState(true);
+  const [message, setMessage] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [submitted, setSubmitted] = useState(null);
+  const [locating, setLocating] = useState(false);
+  const [locationError, setLocationError] = useState('');
+
+  useEffect(() => {
+    if (!pathQrCode) return;
+    let cancelled = false;
+    (async () => {
+      setReferralStatus('loading');
+      try {
+        const result = await apiRequest(`/public/qr/${encodeURIComponent(decodeURIComponent(pathQrCode))}`);
+        if (cancelled) return;
+        setReferral(result.referral);
+        setReferralStatus('active');
+      } catch (error) {
+        if (cancelled) return;
+        // Trust the backend's status, not the browser's guess — an unassigned/inactive/retired QR
+        // must not silently fall back to a normal standalone enquiry (that would blur attribution).
+        setReferralMessage(error.message);
+        setReferralStatus(error.code === 'QR_NOT_FOUND' ? 'invalid' : 'inactive');
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [pathQrCode]);
+
+  async function submitLead(event) {
+    event.preventDefault();
+    setLoading(true);
+    setMessage('');
+    try {
+      const body = { ...lead };
+      // The backend derives vendor/QR attribution server-side from this scan_id — the browser
+      // never sends and is never trusted with a vendor or QR identifier directly.
+      if (referral?.scan_id) body.scan_id = referral.scan_id;
+      if (!body.email.trim()) delete body.email;
+      if (!body.location.trim()) delete body.location;
+      await apiRequest('/public/leads', { method: 'POST', body: JSON.stringify(body) });
+      setSubmitted({ name: lead.customer_name });
+      setLead(EMPTY_LEAD);
+      setConsent(true);
+    } catch (error) {
+      setMessage(error.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function startNewEnquiry() {
+    setSubmitted(null);
+    setMessage('');
+  }
+
+  function useMyLocation() {
+    if (!navigator.geolocation) {
+      setLocationError('Location is not available on this device.');
+      return;
+    }
+    setLocating(true);
+    setLocationError('');
+    navigator.geolocation.getCurrentPosition(
+      async (position) => {
+        try {
+          const { latitude, longitude } = position.coords;
+          // OpenStreetMap's free Nominatim endpoint — no API key needed, called directly from the
+          // browser since this is light, occasional use. If this page's traffic grows meaningfully,
+          // proxy this through the backend with caching to stay within Nominatim's usage policy.
+          const response = await fetch(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${latitude}&lon=${longitude}`, { headers: { Accept: 'application/json' } });
+          const data = await response.json();
+          const city = data?.address?.city || data?.address?.town || data?.address?.village || data?.address?.county;
+          if (city) {
+            setLead((current) => ({ ...current, location: city }));
+          } else {
+            setLocationError('Could not determine your city — enter it manually.');
+          }
+        } catch (error) {
+          setLocationError('Could not detect your location — enter it manually.');
+        } finally {
+          setLocating(false);
+        }
+      },
+      () => {
+        setLocationError('Location permission was denied — enter it manually.');
+        setLocating(false);
+      },
+      { timeout: 8000 },
+    );
+  }
+
+  function renderFormCard() {
+    if (referralStatus === 'loading') {
+      return <p className="enquiry-referral-loading">Loading referral...</p>;
+    }
+
+    if (referralStatus === 'invalid' || referralStatus === 'inactive') {
+      return (
+        <div className="enquiry-referral-blocked">
+          <Icon path={ICONS.warning} className="enquiry-referral-blocked-icon" />
+          <p>{referralMessage}</p>
+        </div>
+      );
+    }
+
+    if (submitted) {
+      return (
+        <div className="enquiry-success">
+          <span className="enquiry-success-icon"><Icon path={ICONS.check} /></span>
+          <h2>Enquiry received</h2>
+          <p>{submitted.name ? <>Thank you, <strong>{submitted.name}</strong>.</> : 'Thank you.'} Our solar team will contact you shortly.</p>
+          <button type="button" className="enquiry-submit" onClick={startNewEnquiry}>Done</button>
+        </div>
+      );
+    }
+
+    return (
+      <>
+        <h2>Share your details</h2>
+        <p className="enquiry-card-sub">Please fill in the form below</p>
+
+        <form onSubmit={submitLead} className="enquiry-form" autoComplete="on">
+          <div className="enquiry-row">
+            <div className="enquiry-field">
+              <Icon path={ICONS.person} className="enquiry-field-icon" />
+              <input
+                id="customer-name"
+                name="name"
+                type="text"
+                autoComplete="name"
+                autoCapitalize="words"
+                enterKeyHint="next"
+                required
+                placeholder="Full Name *"
+                value={lead.customer_name}
+                onChange={(event) => setLead({ ...lead, customer_name: event.target.value })}
+              />
+            </div>
+            <div className="enquiry-field">
+              <Icon path={ICONS.phone} className="enquiry-field-icon" />
+              <input
+                id="customer-phone"
+                name="tel"
+                type="tel"
+                autoComplete="tel"
+                inputMode="tel"
+                enterKeyHint="next"
+                required
+                placeholder="Mobile Number *"
+                value={lead.phone}
+                onChange={(event) => setLead({ ...lead, phone: event.target.value })}
+              />
+            </div>
+          </div>
+          <div className="enquiry-field">
+            <Icon path={ICONS.mail} className="enquiry-field-icon" />
+            <input
+              id="customer-email"
+              name="email"
+              type="email"
+              autoComplete="email"
+              inputMode="email"
+              enterKeyHint="next"
+              placeholder="Email Address"
+              value={lead.email}
+              onChange={(event) => setLead({ ...lead, email: event.target.value })}
+            />
+          </div>
+          <div className="enquiry-field">
+            <Icon path={ICONS.pin} className="enquiry-field-icon" />
+            <input
+              id="customer-location"
+              name="address-level2"
+              type="text"
+              autoComplete="address-level2"
+              autoCapitalize="words"
+              enterKeyHint="done"
+              placeholder="City / Location"
+              value={lead.location}
+              onChange={(event) => setLead({ ...lead, location: event.target.value })}
+            />
+          </div>
+          <div className="enquiry-location-row">
+            <button type="button" className="enquiry-location-button" onClick={useMyLocation} disabled={locating}>
+              <Icon path={ICONS.target} className="enquiry-location-icon" />
+              {locating ? 'Detecting...' : 'Use my location'}
+            </button>
+            {locationError && <span className="enquiry-location-error">{locationError}</span>}
+          </div>
+
+          <label className="enquiry-consent">
+            <input type="checkbox" required checked={consent} onChange={(event) => setConsent(event.target.checked)} />
+            <span>I agree to be contacted by Solarium Energy regarding my enquiry.</span>
+          </label>
+
+          <button className="enquiry-submit" disabled={loading}>
+            {loading ? 'Sending...' : 'Submit Enquiry'}
+            {!loading && <Icon path={ICONS.arrow} className="enquiry-submit-icon" />}
+          </button>
+
+          <p className="enquiry-security"><Icon path={ICONS.lock} className="enquiry-security-icon" /> Your information is safe with us.</p>
+        </form>
+
+        {message && <p className="enquiry-message" role="status">{message}</p>}
+      </>
+    );
+  }
+
+  return (
+    <div className="enquiry-page">
+      <header className="enquiry-header">
+        <span className="enquiry-brand">solarium<span className="enquiry-brand-accent">energy</span></span>
+        <span className="enquiry-tagline">India's Leading Solar Solutions Provider</span>
+      </header>
+
+      <section className="enquiry-hero">
+        <h1>Powering a sustainable tomorrow</h1>
+        <p>{referral ? <>Referred by <strong>{referral.vendor_name}</strong> — share your details and our team will get in touch.</> : 'Share your details and our team will get in touch with you shortly.'}</p>
+      </section>
+
+      <section className="enquiry-card">
+        {renderFormCard()}
+      </section>
+
+      {referralStatus !== 'invalid' && referralStatus !== 'inactive' && (
+        <section className="enquiry-why">
+          <h3>Why share your details?</h3>
+          {WHY_ITEMS.map((item) => (
+            <div className="enquiry-why-item" key={item.title}>
+              <span className="enquiry-why-icon"><Icon path={ICONS[item.icon]} /></span>
+              <div>
+                <strong>{item.title}</strong>
+                <p>{item.copy}</p>
+              </div>
+            </div>
+          ))}
+        </section>
+      )}
+
+      <footer className="enquiry-footer">
+        <span className="enquiry-brand">solarium<span className="enquiry-brand-accent">energy</span></span>
+        <p>India's Leading Solar Solutions Provider</p>
+        <p className="enquiry-copyright">© {new Date().getFullYear()} Solarium Energy. All rights reserved.</p>
+      </footer>
+    </div>
+  );
+}
+
+export default PublicPage;

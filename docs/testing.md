@@ -23,13 +23,7 @@ npm install
 npm start              # starts the UI on http://localhost:3000
 ```
 
-Frontend needs `frontend/.env.local` (or `.env`) with:
-
-```
-REACT_APP_API_BASE_URL=http://localhost:4000/api
-```
-
-(copy from `frontend/.env.example` if missing — without it the CRA dev server has no proxy and calls will fail).
+Frontend needs no `REACT_APP_API_BASE_URL` for local dev — leave it unset. `frontend/src/setupProxy.js` makes the CRA dev server forward `/api/*` calls to the backend, which works both at plain `localhost:3000` and when the frontend is opened through a tunnel (ngrok, etc.) from another device — including a full-page navigation to a server-rendered `/api` endpoint (e.g. the Admin QR print sheet), which package.json's simpler `"proxy"` field cannot do (it excludes any request whose `Accept` header includes `text/html`). See `frontend/.env.example` for when to set `REACT_APP_API_BASE_URL` explicitly (separate deployed domains only).
 
 Backend needs `backend/.env.local` (or `.env`) with at least `DIRECT_URL`, `SESSION_SECRET`, `CUSTOMER_HASH_SECRET` — copy from `backend/.env.example`. `DIRECT_URL` (Supabase's direct/session-mode connection, port 5432) is what the app actually uses at runtime — see `architecture.md`'s Database section for why the transaction-mode pooler (port 6543) is not safe here. A blank `CUSTOMER_HASH_SECRET` makes every lead submission fail with `503 CUSTOMER_IDENTITY_UNAVAILABLE`; a blank `SESSION_SECRET` doesn't currently break anything functionally (it isn't consumed by session hashing) but should still be set.
 

@@ -8,8 +8,6 @@
   --color-border-strong: #cbd8cc;
   --color-taupe: #9a8f80;
   --color-surface-alt: #eef3ec;
-  --color-surface-sidebar: #e6eee3;
-  --color-border-light: #9eb1a3;
   --color-white: #fff;
   --color-success: #6c9b63;
 }
@@ -20,16 +18,8 @@
 .brand-mark { align-items: center; background: var(--color-accent); color: var(--color-cream); display: inline-flex; font-family: Georgia, serif; font-size: 1.1rem; height: 2rem; justify-content: center; margin-right: .65rem; transform: rotate(-8deg); width: 2rem; }
 .brand-accent { color: var(--color-accent); padding: 0 .12rem; }
 .environment, .route-label { color: var(--color-muted); font-size: .72rem; letter-spacing: .08em; text-transform: uppercase; }
-.workspace { display: grid; grid-template-columns: minmax(12rem, 18rem) 1fr; min-height: calc(100vh - 4.8rem); }
-.sidebar { background: var(--color-surface-sidebar); border-right: 1px solid var(--color-border); padding: 4rem 2rem; }
-.sidebar-label, .eyebrow { color: var(--color-accent); font-size: .72rem; font-weight: 700; letter-spacing: .14em; margin: 0 0 1rem; text-transform: uppercase; }
-.view-switcher { display: grid; gap: .35rem; }
-.view-tab { align-items: center; background: transparent; border: 0; color: var(--color-muted-strong); cursor: pointer; display: flex; font: inherit; padding: .75rem .65rem; text-align: left; }
-.view-tab.active { background: var(--color-cream); color: var(--color-ink); font-weight: 700; }
-.tab-dot { border: 1px solid var(--color-border-light); border-radius: 50%; height: .55rem; margin-right: .7rem; width: .55rem; }
-.view-tab.active .tab-dot { background: var(--color-accent); border-color: var(--color-accent); }
-.sidebar-note { color: var(--color-muted); font-size: .78rem; line-height: 1.6; margin-top: 4rem; max-width: 12rem; }
-.content { background: var(--color-cream); padding: 3.5rem clamp(2rem, 8vw, 8rem); position: relative; }
+.eyebrow { color: var(--color-accent); font-size: .72rem; font-weight: 700; letter-spacing: .14em; margin: 0 0 1rem; text-transform: uppercase; }
+.content { background: var(--color-cream); min-height: calc(100vh - 4.8rem); padding: 3.5rem clamp(2rem, 8vw, 8rem); position: relative; }
 .content-header { display: flex; justify-content: space-between; }
 .status-pill { align-items: center; color: var(--color-muted-strong); display: flex; font-size: .78rem; font-weight: 700; gap: .4rem; }
 .live-dot { background: var(--color-success); border-radius: 50%; height: .5rem; width: .5rem; }
@@ -84,5 +74,15 @@ h1 { font-family: Georgia, 'Times New Roman', serif; font-size: clamp(2.7rem, 6v
 .status-row { border-bottom: 1px solid var(--color-border); display: flex; justify-content: space-between; padding: 1rem 0; }
 .status-row span { color: var(--color-muted); }
 .status-row strong { font-weight: 600; }
-.preview-note { color: var(--color-taupe); font-size: .78rem; margin-top: 2rem; }
-@media (max-width: 700px) { .workspace { display: block; } .sidebar { border-bottom: 1px solid var(--color-border); border-right: 0; padding: 1.5rem; } .view-switcher { display: flex; flex-wrap: wrap; } .view-tab { padding: .55rem; } .sidebar-note { display: none; } .content { min-height: 70vh; padding: 2rem 1.5rem 4rem; } .hero-copy { margin-top: 4rem; } .status-list { margin-top: 4rem; } .environment { display: none; } .inline-form { grid-template-columns: 1fr; } .inline-form .primary-action { grid-column: 1; grid-row: auto; } }
+@media (max-width: 700px) { .content { padding: 2rem 1.5rem 4rem; } .hero-copy { margin-top: 4rem; } .status-list { margin-top: 4rem; } .environment { display: none; } .inline-form { grid-template-columns: 1fr; } .inline-form .primary-action { grid-column: 1; grid-row: auto; } }
+
+/* Shared QR camera scanner (src/components/QrScanner.js) — used from any page that needs it. */
+.qr-scanner-overlay { align-items: center; background: rgba(10, 20, 30, .82); display: flex; inset: 0; justify-content: center; padding: 1.25rem; position: fixed; z-index: 1000; }
+.qr-scanner-panel { background: var(--color-white, #fff); border-radius: .9rem; max-width: 24rem; overflow: hidden; width: 100%; }
+.qr-scanner-header { align-items: center; background: var(--color-ink, #18332d); color: #fff; display: flex; font-size: .85rem; font-weight: 700; justify-content: space-between; padding: .85rem 1rem; }
+.qr-scanner-close { background: transparent; border: 0; color: #fff; cursor: pointer; font-size: 1.4rem; line-height: 1; padding: 0; }
+.qr-scanner-video-wrap { aspect-ratio: 1; background: #000; overflow: hidden; position: relative; }
+.qr-scanner-video { height: 100%; object-fit: cover; width: 100%; }
+.qr-scanner-frame { border: 3px solid rgba(255, 255, 255, .85); border-radius: .75rem; box-shadow: 0 0 0 999px rgba(0, 0, 0, .35); inset: 15%; position: absolute; }
+.qr-scanner-error { color: #b3413a; font-size: .85rem; line-height: 1.5; padding: 2rem 1.25rem; text-align: center; }
+.qr-scanner-hint { color: #718078; font-size: .78rem; margin: 0; padding: .75rem 1rem; text-align: center; }

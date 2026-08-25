@@ -136,21 +136,27 @@ publicRoutes.post('/leads', publicRateLimit, async (request, response, next) => 
 		}
 
 		const customerHash = createHmac('sha256', env.customerHashSecret).update(normalizedPhone).digest('hex');
+		// Scan rows are immutable once created (never updated or deleted), so looking this up
+		// before opening the transaction is safe and shortens how long the transaction below
+		// holds a pooled connection — every extra query inside it is time another request can't
+		// get a connection from Supabase's shared pooler.
+		let existingScan = null;
+		if (input.scan_id) {
+			existingScan = await prisma.scan.findUnique({
+				where: { id: input.scan_id },
+				select: { id: true, vendorId: true, qrId: true, qrAssignmentId: true },
+			});
+			if (!existingScan) {
+				const error = new Error('Scan session was not found.');
+				error.statusCode = 400;
+				error.code = 'SCAN_NOT_FOUND';
+				return next(error);
+			}
+		}
 		const lead = await prisma.$transaction(async (transaction) => {
-			let scan = null;
+			let scan = existingScan;
 
-			if (input.scan_id) {
-				scan = await transaction.scan.findUnique({
-					where: { id: input.scan_id },
-					select: { id: true, vendorId: true, qrId: true, qrAssignmentId: true },
-				});
-				if (!scan) {
-					const error = new Error('Scan session was not found.');
-					error.statusCode = 400;
-					error.code = 'SCAN_NOT_FOUND';
-					throw error;
-				}
-			} else {
+			if (!scan) {
 				const assignment = input.referral_qr
 					? await resolveActiveAssignmentByQrCode(transaction, input.referral_qr)
 					: await ensureGeneralAssignment(transaction);
