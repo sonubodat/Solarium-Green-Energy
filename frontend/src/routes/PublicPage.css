@@ -84,6 +84,7 @@
 .enquiry-location-row { align-items: center; display: flex; flex-wrap: wrap; gap: .6rem; margin-top: -.35rem; }
 .enquiry-location-button { align-items: center; background: transparent; border: 0; color: var(--eq-navy); cursor: pointer; display: flex; font: inherit; font-size: .8rem; font-weight: 600; gap: .35rem; padding: 0; }
 .enquiry-location-button:disabled { color: var(--color-muted); cursor: wait; }
+.enquiry-location-button.captured { color: var(--color-success, #2f7a4f); }
 .enquiry-location-icon { height: .95rem; width: .95rem; }
 .enquiry-location-error { color: var(--color-accent); font-size: .76rem; }
 

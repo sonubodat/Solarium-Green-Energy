@@ -80,27 +80,47 @@ async function ensureActiveAdminRemains(transaction, userId, changes) {
 	}
 }
 
-// Deliberately sequential, not Promise.all — Supabase's free-tier pooler has a small shared
-// connection ceiling (see prisma.js's `max: 5`), and this is the first thing every Admin
-// sign-in fires. Firing 11 counts concurrently would grab up to 11 pool slots at once and
-// contend with every other request hitting the same pooler; running them one after another
-// means each query returns its connection before the next one asks for one.
+// Parallelized via Promise.all — this used to be 11 sequential prisma.count() calls,
+// each paying a full network round trip to the database's region before the next one
+// started (measured ~150-900ms per round trip; ~2-8s total for this one endpoint,
+// the first thing every Admin sign-in fires). That was originally written sequential
+// out of caution about Supabase's connection pooler under the OLD transaction-mode
+// pooler config, where interactive $transaction() blocks held a connection across
+// multiple queries and could exhaust the small pool. None of that applies here: each
+// count below is an independent autocommit query (no $transaction() wrapper), so it
+// grabs a connection, runs, and immediately returns it — Promise.all just lets up to
+// `max` (see prisma.js) of them run concurrently instead of one at a time; any beyond
+// that queue safely for the next free connection rather than erroring.
 adminRoutes.get('/dashboard', requireAuth, requireAdmin, async (request, response, next) => {
 	try {
-		const totalVendors = await prisma.vendor.count({ where: { status: { not: 'DELETED' } } });
-		const activeVendors = await prisma.vendor.count({ where: { status: 'ACTIVE' } });
-		const totalQrCodes = await prisma.qrCode.count();
-		const unassignedQrCodes = await prisma.qrCode.count({ where: { status: 'UNASSIGNED' } });
-		const totalScans = await prisma.scan.count();
-		const uniqueCustomers = await prisma.customerIdentity.count();
-		const totalLeads = await prisma.lead.count();
-		const qualifiedLeads = await prisma.lead.count({ where: { status: 'QUALIFIED' } });
-		const convertedLeads = await prisma.lead.count({ where: { status: 'CONVERTED' } });
-		// Counts only — no amount/percentage is calculated anywhere, matching plan.md's rule
-		// against commission calculation. This is the same kind of plain operational count as
-		// every other tile on this dashboard (Total Leads, Qualified Leads, etc.), not a KPI.
-		const pendingCommission = await prisma.payout.count({ where: { status: { in: ['UNPAID', 'PARTIAL'] } } });
-		const paidCommission = await prisma.payout.count({ where: { status: 'PAID' } });
+		const [
+			totalVendors,
+			activeVendors,
+			totalQrCodes,
+			unassignedQrCodes,
+			totalScans,
+			uniqueCustomers,
+			totalLeads,
+			qualifiedLeads,
+			convertedLeads,
+			// Counts only — no amount/percentage is calculated anywhere, matching plan.md's rule
+			// against commission calculation. This is the same kind of plain operational count as
+			// every other tile on this dashboard (Total Leads, Qualified Leads, etc.), not a KPI.
+			pendingCommission,
+			paidCommission,
+		] = await Promise.all([
+			prisma.vendor.count({ where: { status: { not: 'DELETED' } } }),
+			prisma.vendor.count({ where: { status: 'ACTIVE' } }),
+			prisma.qrCode.count(),
+			prisma.qrCode.count({ where: { status: 'UNASSIGNED' } }),
+			prisma.scan.count(),
+			prisma.customerIdentity.count(),
+			prisma.lead.count(),
+			prisma.lead.count({ where: { status: 'QUALIFIED' } }),
+			prisma.lead.count({ where: { status: 'CONVERTED' } }),
+			prisma.payout.count({ where: { status: { in: ['UNPAID', 'PARTIAL'] } } }),
+			prisma.payout.count({ where: { status: 'PAID' } }),
+		]);
 
 		return response.json({
 			success: true,
@@ -360,6 +380,35 @@ adminRoutes.post('/qr/generate', requireAuth, requireAdmin, async (request, resp
 		const { quantity } = generateQrSchema.parse(request.body);
 		const result = await generateQrCodes(quantity, request.auth.user.id);
 		return response.status(201).json({ success: true, ...result });
+	} catch (error) {
+		// Two batches generated at the exact same instant (two Admins clicking "Generate"
+		// simultaneously) can still both compute the same starting sequence number before
+		// either commits — rare, but the unique constraint on QrCode.code is what actually
+		// prevents it from silently double-issuing codes. Surface it as a clean, retryable
+		// conflict rather than a raw/opaque error.
+		if (error.code === 'P2002') {
+			error.statusCode = 409;
+			error.code = 'QR_BATCH_CONFLICT';
+			error.message = 'Another QR batch was generated at the same moment. Please try again.';
+		}
+		return next(error);
+	}
+});
+
+adminRoutes.get('/qr/lookup/:code', requireAuth, requireAdmin, async (request, response, next) => {
+	try {
+		const qr = await prisma.qrCode.findUnique({
+			where: { code: request.params.code },
+			include: { assignments: { where: { unassignedAt: null }, include: { vendor: { select: { id: true, businessName: true } } }, take: 1 } },
+		});
+		if (!qr) {
+			return response.status(404).json({ success: false, error: { code: 'QR_NOT_FOUND', message: 'QR code was not found.' } });
+		}
+		const currentVendor = qr.assignments[0]?.vendor;
+		return response.json({
+			success: true,
+			qr: { id: qr.id, code: qr.code, status: qr.status, currentVendor: currentVendor ? { id: currentVendor.id, businessName: currentVendor.businessName } : null },
+		});
 	} catch (error) {
 		return next(error);
 	}
@@ -624,6 +673,7 @@ adminRoutes.get('/leads', requireAuth, requireAdmin, async (request, response, n
 						vendor: { select: { businessName: true } },
 						qr: { select: { code: true } },
 						payout: { select: { id: true, status: true, paidAt: true, paidReference: true } },
+						geoLocation: { select: { latitude: true, longitude: true, accuracy: true, capturedAt: true } },
 					},
 			}),
 			prisma.lead.count(),
@@ -661,16 +711,20 @@ adminRoutes.get('/leads/export', requireAuth, requireAdmin, async (request, resp
 				vendor: { select: { businessName: true, mobileNumber: true } },
 				qr: { select: { code: true } },
 				payout: { select: { status: true, paidReference: true } },
+				geoLocation: { select: { latitude: true, longitude: true, accuracy: true } },
 			},
 		});
 
 		const csv = toCsv(
-			['Customer Name', 'Customer Phone', 'Customer Email', 'Location', 'Lead Status', 'Vendor Name', 'Vendor Mobile Number', 'QR Code', 'Payout Status', 'Payout Reference', 'Created At'],
+			['Customer Name', 'Customer Phone', 'Customer Email', 'Location', 'GPS Latitude', 'GPS Longitude', 'GPS Accuracy (m)', 'Lead Status', 'Vendor Name', 'Vendor Mobile Number', 'QR Code', 'Payout Status', 'Payout Reference', 'Created At'],
 			leads.map((lead) => [
 				lead.customerName,
 				lead.phone,
 				lead.email,
 				lead.location,
+				lead.geoLocation?.latitude,
+				lead.geoLocation?.longitude,
+				lead.geoLocation?.accuracy,
 				lead.status,
 				lead.vendor?.businessName,
 				lead.vendor?.mobileNumber,

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { apiRequest } from '../api/client';
+import { SkeletonBlock } from '../components/Skeleton';
 import './PublicPage.css';
 
 const ICONS = {
@@ -50,6 +51,10 @@ function PublicPage() {
   const [submitted, setSubmitted] = useState(null);
   const [locating, setLocating] = useState(false);
   const [locationError, setLocationError] = useState('');
+  // Raw GPS coordinates for the optional LeadLocation record (pilot scope) — separate from
+  // `lead.location`, the free-text city name. Only set once real coordinates are received, not
+  // just because the button was clicked; submitted alongside the lead if present.
+  const [capturedCoords, setCapturedCoords] = useState(null);
   // 'idle' | 'checking' | 'available' | 'taken'. UX convenience only — the backend re-checks
   // (and the database enforces) uniqueness again on final submit regardless of this state.
   const [phoneCheck, setPhoneCheck] = useState('idle');
@@ -130,11 +135,20 @@ function PublicPage() {
       if (referral?.scan_id) body.scan_id = referral.scan_id;
       if (!body.email.trim()) delete body.email;
       if (!body.location.trim()) delete body.location;
+      // Optional — only sent if the customer tapped "Use my location" and coordinates were
+      // actually received (not just because the button was clicked).
+      if (capturedCoords) {
+        body.location_lat = capturedCoords.latitude;
+        body.location_lng = capturedCoords.longitude;
+        if (capturedCoords.accuracy != null) body.location_accuracy = capturedCoords.accuracy;
+        body.location_captured_at = capturedCoords.capturedAt;
+      }
       await apiRequest('/public/leads', { method: 'POST', body: JSON.stringify(body) });
       setSubmitted({ name: lead.customer_name });
       setLead(EMPTY_LEAD);
       setConsent(true);
       setPhoneCheck('idle');
+      setCapturedCoords(null);
     } catch (error) {
       setMessage(error.message);
       if (error.code === 'CUSTOMER_ALREADY_EXISTS') setPhoneCheck('taken');
@@ -147,6 +161,8 @@ function PublicPage() {
   function startNewEnquiry() {
     setSubmitted(null);
     setMessage('');
+    setCapturedCoords(null);
+    setLocationError('');
   }
 
   function useMyLocation() {
@@ -159,7 +175,12 @@ function PublicPage() {
     navigator.geolocation.getCurrentPosition(
       async (position) => {
         try {
-          const { latitude, longitude } = position.coords;
+          const { latitude, longitude, accuracy } = position.coords;
+          // Capture the raw coordinates for the optional LeadLocation record regardless of
+          // whether the reverse-geocode below succeeds — that's a separate, best-effort
+          // convenience (filling the city text field), not a prerequisite for this.
+          setCapturedCoords({ latitude, longitude, accuracy, capturedAt: new Date(position.timestamp).toISOString() });
+
           // OpenStreetMap's free Nominatim endpoint — no API key needed, called directly from the
           // browser since this is light, occasional use. If this page's traffic grows meaningfully,
           // proxy this through the backend with caching to stay within Nominatim's usage policy.
@@ -187,7 +208,22 @@ function PublicPage() {
 
   function renderFormCard() {
     if (referralStatus === 'loading') {
-      return <p className="enquiry-referral-loading">Loading referral...</p>;
+      // A blank/spinner-only state reads as broken while the backend wakes up (Render's free
+      // tier can take several seconds to respond to the first request) — a skeleton shaped
+      // like the real form makes it clear the page is working, not stuck.
+      return (
+        <div aria-hidden="true" aria-label="Loading">
+          <SkeletonBlock width="60%" height="24px" />
+          <SkeletonBlock width="40%" height="14px" style={{ marginTop: '10px' }} />
+          <div className="enquiry-row" style={{ marginTop: '20px' }}>
+            <SkeletonBlock height="46px" radius="10px" />
+            <SkeletonBlock height="46px" radius="10px" />
+          </div>
+          <SkeletonBlock height="46px" radius="10px" style={{ marginTop: '14px' }} />
+          <SkeletonBlock height="46px" radius="10px" style={{ marginTop: '14px' }} />
+          <SkeletonBlock height="48px" radius="10px" style={{ marginTop: '20px' }} />
+        </div>
+      );
     }
 
     if (referralStatus === 'invalid' || referralStatus === 'inactive') {
@@ -285,9 +321,10 @@ function PublicPage() {
             />
           </div>
           <div className="enquiry-location-row">
-            <button type="button" className="enquiry-location-button" onClick={useMyLocation} disabled={locating}>
+            <button type="button" className={`enquiry-location-button${capturedCoords ? ' captured' : ''}`} onClick={useMyLocation} disabled={locating}>
               <Icon path={ICONS.target} className="enquiry-location-icon" />
-              {locating ? 'Detecting...' : 'Use my location'}
+              {locating ? 'Detecting...' : capturedCoords ? 'Location captured' : 'Use my location'}
+              {capturedCoords && !locating && <Icon path={ICONS.check} className="enquiry-location-icon" />}
             </button>
             {locationError && <span className="enquiry-location-error">{locationError}</span>}
           </div>

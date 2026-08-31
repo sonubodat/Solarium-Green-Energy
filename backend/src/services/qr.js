@@ -8,8 +8,21 @@ function conflict(message, code = 'QR_CONFLICT') {
 }
 
 export async function generateQrCodes(quantity, actorUserId) {
-  const codes = Array.from({ length: quantity }, (_, index) => `V-${Date.now()}-${index + 1}`);
   return prisma.$transaction(async (transaction) => {
+    // Was `V-${Date.now()}-${index+1}` — ugly on a printed sticker (e.g. "V-1787651347011-1"
+    // instead of "V-0004"), inconsistent with the seeded V-0001/V-0002/V-0003 codes, and a real
+    // duplicate-batch bug: Date.now() often returns the same millisecond across two close-together
+    // requests (a double-click on "Generate", or two admins generating at once), and since index
+    // restarts at 1 each call, two batches could mint the exact same code set, failing the whole
+    // createMany on QrCode.code's unique constraint. Continuing a real sequential counter (read
+    // from the highest existing V-#### code) fixes both — clean codes and no timestamp collision.
+    const [{ max_number: maxNumber }] = await transaction.$queryRaw`
+      SELECT COALESCE(MAX((regexp_match(code, '^V-(\\d+)$'))[1]::int), 0) AS max_number
+      FROM qr_codes
+      WHERE code ~ '^V-\\d+$'
+    `;
+    const start = Number(maxNumber);
+    const codes = Array.from({ length: quantity }, (_, index) => `V-${String(start + index + 1).padStart(4, '0')}`);
     const created = await transaction.qrCode.createMany({ data: codes.map((code) => ({ code })) });
     await transaction.auditLog.create({
       data: {

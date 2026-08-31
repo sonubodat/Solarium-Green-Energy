@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { apiRequest } from '../api/client';
+import { SkeletonBlock } from '../components/Skeleton';
 import './VendorPage.css';
 
 const ICONS = {
@@ -81,12 +82,19 @@ function VendorPage() {
   });
 
   const [portalData, setPortalData] = useState(null);
+  // Distinguishes "still checking whether a session cookie is valid" from "confirmed logged
+  // out" — without this, the login form flashes on every page load/reload for an already
+  // signed-in Vendor while restoreSession()'s request is in flight (worse the slower the
+  // backend is, e.g. a cold Render instance waking up), before silently swapping to the
+  // dashboard. Shows a skeleton instead of that flash.
+  const [sessionChecked, setSessionChecked] = useState(false);
   const [newPassword, setNewPassword] = useState('');
   const [message, setMessage] = useState('');
   const [loading, setLoading] = useState(false);
   const [activeSection, setActiveSection] = useState('overview');
 
   const mountedRef = useRef(true);
+  const hasScrolledToDashboardRef = useRef(false);
 
   useEffect(() => {
     // Explicitly set true here too, not just in the useRef initializer — React StrictMode's
@@ -98,6 +106,19 @@ function VendorPage() {
       mountedRef.current = false;
     };
   }, []);
+
+  useEffect(() => {
+    // The login form and the dashboard are the same route/scroll container (no full page
+    // navigation between them) — if the customer scrolled while filling the login form
+    // (very plausible on mobile with the on-screen keyboard open), that scroll position
+    // otherwise carries straight into the dashboard, landing them mid-page with the sticky
+    // header overlapping the tab navigation. Only fires once, on the login->dashboard
+    // transition itself, not on every later data refresh.
+    if (portalData && !hasScrolledToDashboardRef.current) {
+      window.scrollTo(0, 0);
+      hasScrolledToDashboardRef.current = true;
+    }
+  }, [portalData]);
 
   useEffect(() => {
     restoreSession();
@@ -132,6 +153,8 @@ function VendorPage() {
       setPortalData(data);
     } catch (error) {
       // No active session.
+    } finally {
+      if (mountedRef.current) setSessionChecked(true);
     }
   }
 
@@ -899,6 +922,51 @@ function VendorPage() {
             © {new Date().getFullYear()} Solarium Energy
           </span>
         </footer>
+      </div>
+    );
+  }
+
+  if (!sessionChecked) {
+    return (
+      <div className="vendor-app">
+        <header className="vendor-header">
+          <div className="vendor-header-inner">
+            <div className="vendor-brand">
+              <span className="vendor-brand-main">solarium</span>
+              <span className="vendor-brand-accent">energy</span>
+            </div>
+            <SkeletonBlock width="140px" height="36px" radius="10px" />
+          </div>
+        </header>
+
+        <main className="vendor-main">
+          <nav className="vendor-tabs" aria-hidden="true">
+            {Array.from({ length: 4 }).map((_, index) => (
+              // eslint-disable-next-line react/no-array-index-key
+              <SkeletonBlock key={index} width="90px" height="20px" />
+            ))}
+          </nav>
+
+          <div className="vendor-welcome">
+            <div style={{ display: 'grid', gap: '10px' }}>
+              <SkeletonBlock width="130px" height="14px" />
+              <SkeletonBlock width="260px" height="30px" />
+              <SkeletonBlock width="320px" height="16px" />
+            </div>
+          </div>
+
+          <div className="vendor-stat-grid">
+            {Array.from({ length: 3 }).map((_, index) => (
+              <div className="vendor-stat-card" key={index}>
+                <SkeletonBlock width="38px" height="38px" radius="10px" />
+                <div style={{ display: 'grid', gap: '8px', marginTop: '10px' }}>
+                  <SkeletonBlock width="70%" height="12px" />
+                  <SkeletonBlock width="45%" height="22px" />
+                </div>
+              </div>
+            ))}
+          </div>
+        </main>
       </div>
     );
   }

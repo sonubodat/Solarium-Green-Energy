@@ -2,6 +2,8 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { apiRequest, API_BASE_URL } from '../api/client';
+import { SkeletonBlock } from '../components/Skeleton';
+import QrScanner from '../components/QrScanner';
 import './AdminPage.css';
 
 const ICONS = {
@@ -63,6 +65,12 @@ function AdminPage() {
   });
 
   const [portalData, setPortalData] = useState(null);
+  // Distinguishes "still checking whether a session cookie is valid" from "confirmed logged
+  // out" — without this, the login form flashes on every page load/reload for an already
+  // signed-in Admin while restoreSession()'s request is in flight (worse the slower the
+  // backend is, e.g. a cold Render instance waking up), before silently swapping to the
+  // dashboard. Shows a skeleton instead of that flash.
+  const [sessionChecked, setSessionChecked] = useState(false);
   const [resource, setResource] = useState('dashboard');
   const [adminPage, setAdminPage] = useState(1);
 
@@ -93,6 +101,10 @@ function AdminPage() {
 
   const [qrQuantity, setQrQuantity] = useState('20');
   const [reassignVendorInputs, setReassignVendorInputs] = useState({});
+
+  const [showScanAssign, setShowScanAssign] = useState(false);
+  const [scannedQr, setScannedQr] = useState(null);
+  const [scanVendorId, setScanVendorId] = useState('');
   const [paidReferenceInputs, setPaidReferenceInputs] = useState({});
 
   const [editingVendorId, setEditingVendorId] = useState(null);
@@ -100,12 +112,15 @@ function AdminPage() {
 
   const [staffRoleInputs, setStaffRoleInputs] = useState({});
 
+  const [detailLead, setDetailLead] = useState(null);
+
   const [message, setMessage] = useState('');
   const [messageType, setMessageType] = useState('');
   const [loading, setLoading] = useState(false);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
 
   const mountedRef = useRef(true);
+  const hasScrolledToDashboardRef = useRef(false);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -114,6 +129,18 @@ function AdminPage() {
       mountedRef.current = false;
     };
   }, []);
+
+  useEffect(() => {
+    // The login form and the dashboard are the same route/scroll container (no full page
+    // navigation between them) — if the admin scrolled while filling the login form, that
+    // scroll position otherwise carries straight into the dashboard, landing them mid-page
+    // with the sticky header overlapping content. Only fires once, on the login->dashboard
+    // transition itself, not on every later data refresh.
+    if (portalData && !hasScrolledToDashboardRef.current) {
+      window.scrollTo(0, 0);
+      hasScrolledToDashboardRef.current = true;
+    }
+  }, [portalData]);
 
   useEffect(() => {
     restoreSession();
@@ -135,6 +162,8 @@ function AdminPage() {
       await loadAdminResource('dashboard', 1);
     } catch (error) {
       // No active Admin session.
+    } finally {
+      if (mountedRef.current) setSessionChecked(true);
     }
   }
 
@@ -535,6 +564,81 @@ function AdminPage() {
           : 'QR assigned successfully.'
       );
 
+      setMessageType('success');
+    } catch (error) {
+      setMessage(error.message);
+      setMessageType('error');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function lookupScannedQr(code) {
+    setLoading(true);
+    setMessage('');
+    setMessageType('');
+
+    try {
+      const result = await apiRequest(
+        `/admin/qr/lookup/${encodeURIComponent(code.trim())}`
+      );
+      setScannedQr(result.qr);
+      setScanVendorId('');
+    } catch (error) {
+      setScannedQr(null);
+      setMessage(error.message);
+      setMessageType('error');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function handleScanAssignDetected(code) {
+    setShowScanAssign(false);
+    lookupScannedQr(code);
+  }
+
+  async function assignScannedQr() {
+    if (!scannedQr || !scanVendorId) return;
+
+    const isReassign = scannedQr.status === 'ACTIVE';
+    const vendor = vendorLookup.find(
+      (item) => item.id === scanVendorId
+    );
+
+    if (
+      !window.confirm(
+        `${isReassign ? 'Reassign' : 'Assign'} ${scannedQr.code} to ${
+          vendor?.businessName || 'the selected Vendor'
+        }?`
+      )
+    ) {
+      return;
+    }
+
+    setLoading(true);
+
+    try {
+      await apiRequest(
+        `/admin/qr/${scannedQr.id}/${
+          isReassign ? 'reassign' : 'assign'
+        }`,
+        {
+          method: 'POST',
+          body: JSON.stringify({ vendor_id: scanVendorId }),
+        }
+      );
+
+      setScannedQr(null);
+      setScanVendorId('');
+
+      await loadAdminResource('qr', adminPage);
+
+      setMessage(
+        isReassign
+          ? 'QR reassigned successfully.'
+          : 'QR assigned successfully.'
+      );
       setMessageType('success');
     } catch (error) {
       setMessage(error.message);
@@ -1270,6 +1374,14 @@ function AdminPage() {
             </button>
 
             <button
+              className="admin-outline-button"
+              onClick={() => setShowScanAssign(true)}
+            >
+              <Icon path={ICONS.qr} />
+              Scan to assign
+            </button>
+
+            <button
               className="admin-primary-button"
               onClick={() =>
                 setShowGenerateQr(
@@ -1282,6 +1394,70 @@ function AdminPage() {
             </button>
           </div>
         </div>
+
+        {showScanAssign && (
+          <QrScanner
+            onDetected={handleScanAssignDetected}
+            onClose={() => setShowScanAssign(false)}
+          />
+        )}
+
+        {scannedQr && (
+          <div className="admin-form-card admin-scan-assign">
+            <div className="admin-form-title">
+              Scanned: {scannedQr.code}
+            </div>
+
+            <p>
+              Status: <strong>{scannedQr.status}</strong>
+              {scannedQr.currentVendor && (
+                <>
+                  {' '}
+                  &middot; Currently with{' '}
+                  <strong>{scannedQr.currentVendor.businessName}</strong>
+                </>
+              )}
+            </p>
+
+            {(scannedQr.status === 'UNASSIGNED' || scannedQr.status === 'ACTIVE') ? (
+              <div className="admin-scan-assign-actions">
+                <select
+                  value={scanVendorId}
+                  onChange={(event) => setScanVendorId(event.target.value)}
+                >
+                  <option value="">Select a vendor...</option>
+                  {vendorLookup.map((vendor) => (
+                    <option key={vendor.id} value={vendor.id}>
+                      {vendor.businessName}
+                    </option>
+                  ))}
+                </select>
+
+                <button
+                  className="admin-primary-button"
+                  disabled={loading || !scanVendorId}
+                  onClick={assignScannedQr}
+                >
+                  {scannedQr.status === 'ACTIVE' ? 'Reassign' : 'Assign'}
+                </button>
+
+                <button
+                  className="admin-outline-button"
+                  onClick={() => {
+                    setScannedQr(null);
+                    setScanVendorId('');
+                  }}
+                >
+                  Cancel
+                </button>
+              </div>
+            ) : (
+              <p className="admin-scan-assign-blocked">
+                This QR is {scannedQr.status.toLowerCase()} and can&apos;t be assigned.
+              </p>
+            )}
+          </div>
+        )}
 
         {showGenerateQr && (
           <form
@@ -1598,6 +1774,7 @@ function AdminPage() {
                 <th>Customer</th>
                 <th>Vendor</th>
                 <th>QR</th>
+                <th>Location</th>
                 <th>Status</th>
                 <th>Lead date</th>
                 <th>Commission</th>
@@ -1653,8 +1830,22 @@ function AdminPage() {
 
                       <td>
                         <span className="admin-code">
-                          {lead.qrId || '—'}
+                          {lead.qr?.code || lead.qrId || '—'}
                         </span>
+                      </td>
+
+                      <td>
+                        <div className="admin-primary-cell">
+                          <strong>
+                            {lead.location || '—'}
+                          </strong>
+                          {lead.geoLocation && (
+                            <small title={`Captured ${new Date(lead.geoLocation.capturedAt).toLocaleString()}`}>
+                              {lead.geoLocation.latitude.toFixed(5)}, {lead.geoLocation.longitude.toFixed(5)}
+                              {lead.geoLocation.accuracy != null ? ` (±${Math.round(lead.geoLocation.accuracy)}m)` : ''}
+                            </small>
+                          )}
+                        </div>
                       </td>
 
                       <td>
@@ -1677,7 +1868,10 @@ function AdminPage() {
                       </td>
 
                       <td>
-                        <button className="admin-mini-button">
+                        <button
+                          className="admin-mini-button"
+                          onClick={() => setDetailLead(lead)}
+                        >
                           <Icon path={ICONS.eye} />
                           View
                         </button>
@@ -1687,7 +1881,7 @@ function AdminPage() {
               ) : (
                 <tr>
                   <td
-                    colSpan="7"
+                    colSpan="8"
                     className="admin-empty"
                   >
                     No leads yet.
@@ -1699,6 +1893,117 @@ function AdminPage() {
         </div>
 
         {renderPagination()}
+      </div>
+    );
+  }
+
+  function renderLeadDetailModal() {
+    const lead = detailLead;
+
+    return (
+      <div
+        className="admin-modal-overlay"
+        onClick={() => setDetailLead(null)}
+      >
+        <div
+          className="admin-modal"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Lead details"
+          onClick={(event) => event.stopPropagation()}
+        >
+          <div className="admin-modal-header">
+            <div>
+              <span className="admin-eyebrow">LEAD DETAILS</span>
+              <h2>{lead.customerName || 'Customer'}</h2>
+            </div>
+            <button
+              className="admin-mini-button"
+              onClick={() => setDetailLead(null)}
+              aria-label="Close"
+            >
+              <Icon path={ICONS.close} />
+            </button>
+          </div>
+
+          <div className="admin-modal-body">
+            <div className="admin-modal-section">
+              <h3>Customer</h3>
+              <dl className="admin-modal-fields">
+                <dt>Name</dt>
+                <dd>{lead.customerName || '—'}</dd>
+                <dt>Phone</dt>
+                <dd>{lead.phone || '—'}</dd>
+                <dt>Email</dt>
+                <dd>{lead.email || '—'}</dd>
+                <dt>Location (entered)</dt>
+                <dd>{lead.location || '—'}</dd>
+                <dt>GPS coordinates</dt>
+                <dd>
+                  {lead.geoLocation
+                    ? `${lead.geoLocation.latitude}, ${lead.geoLocation.longitude}${
+                        lead.geoLocation.accuracy != null ? ` (±${Math.round(lead.geoLocation.accuracy)}m)` : ''
+                      }`
+                    : 'Not captured'}
+                </dd>
+                {lead.geoLocation && (
+                  <>
+                    <dt>GPS captured at</dt>
+                    <dd>{new Date(lead.geoLocation.capturedAt).toLocaleString()}</dd>
+                  </>
+                )}
+              </dl>
+            </div>
+
+            <div className="admin-modal-section">
+              <h3>Attribution</h3>
+              <dl className="admin-modal-fields">
+                <dt>Vendor</dt>
+                <dd>{lead.vendor?.businessName || '—'}</dd>
+                <dt>QR code</dt>
+                <dd>{lead.qr?.code || '—'}</dd>
+                <dt>Lead status</dt>
+                <dd>{lead.status || '—'}</dd>
+                <dt>Submitted</dt>
+                <dd>{lead.createdAt ? new Date(lead.createdAt).toLocaleString() : '—'}</dd>
+              </dl>
+            </div>
+
+            <div className="admin-modal-section">
+              <h3>Payout</h3>
+              <dl className="admin-modal-fields">
+                <dt>Status</dt>
+                <dd>{lead.payout?.status || 'No payout record'}</dd>
+                {lead.payout?.paidAt && (
+                  <>
+                    <dt>Paid at</dt>
+                    <dd>{new Date(lead.payout.paidAt).toLocaleString()}</dd>
+                  </>
+                )}
+                {lead.payout?.paidReference && (
+                  <>
+                    <dt>Payment reference</dt>
+                    <dd>{lead.payout.paidReference}</dd>
+                  </>
+                )}
+              </dl>
+            </div>
+
+            <div className="admin-modal-section">
+              <h3>Record IDs</h3>
+              <dl className="admin-modal-fields mono">
+                <dt>Lead ID</dt>
+                <dd>{lead.id}</dd>
+                <dt>Vendor ID</dt>
+                <dd>{lead.vendorId}</dd>
+                <dt>QR ID</dt>
+                <dd>{lead.qrId}</dd>
+                <dt>Scan ID</dt>
+                <dd>{lead.scanId}</dd>
+              </dl>
+            </div>
+          </div>
+        </div>
       </div>
     );
   }
@@ -2416,6 +2721,48 @@ function AdminPage() {
     return null;
   }
 
+  if (!sessionChecked) {
+    return (
+      <div className="admin-page">
+        <aside className="admin-sidebar">
+          <div className="admin-sidebar-logo">
+            <div className="admin-logo">
+              <span>solarium</span>
+              <strong>energy</strong>
+            </div>
+          </div>
+          <div className="admin-skeleton-nav">
+            {Array.from({ length: 8 }).map((_, index) => (
+              // eslint-disable-next-line react/no-array-index-key
+              <SkeletonBlock key={index} height="38px" radius="10px" />
+            ))}
+          </div>
+        </aside>
+
+        <main className="admin-main">
+          <header className="admin-topbar">
+            <SkeletonBlock width="160px" height="20px" />
+            <SkeletonBlock width="90px" height="36px" radius="18px" />
+          </header>
+
+          <div className="admin-content">
+            <div className="admin-stat-grid">
+              {Array.from({ length: 8 }).map((_, index) => (
+                <div className="admin-stat-card" key={index}>
+                  <SkeletonBlock width="38px" height="38px" radius="10px" />
+                  <div style={{ display: 'grid', gap: '8px', marginTop: '10px' }}>
+                    <SkeletonBlock width="70%" height="12px" />
+                    <SkeletonBlock width="45%" height="22px" />
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </main>
+      </div>
+    );
+  }
+
   if (!portalData) {
     return (
       <div className="admin-page admin-login-page">
@@ -2685,6 +3032,8 @@ function AdminPage() {
             </div>
           )}
         </div>
+
+        {detailLead && renderLeadDetailModal()}
       </main>
     </div>
   );

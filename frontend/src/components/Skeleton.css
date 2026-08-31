@@ -1,0 +1,33 @@
+.skeleton-block {
+  background: linear-gradient(
+    100deg,
+    rgba(0, 0, 0, 0.06) 30%,
+    rgba(0, 0, 0, 0.11) 45%,
+    rgba(0, 0, 0, 0.06) 60%
+  );
+  background-size: 200% 100%;
+  border-radius: 8px;
+  display: inline-block;
+  animation: skeleton-shimmer 1.4s ease-in-out infinite;
+}
+
+.skeleton-text {
+  display: grid;
+  gap: 8px;
+}
+
+@keyframes skeleton-shimmer {
+  0% {
+    background-position: 150% 0;
+  }
+  100% {
+    background-position: -50% 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeleton-block {
+    animation: none;
+    background: rgba(0, 0, 0, 0.08);
+  }
+}

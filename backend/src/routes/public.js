@@ -179,12 +179,28 @@ publicRoutes.post('/leads', publicRateLimit, async (request, response, next) => 
 			phone: z.string().trim().min(10).max(20),
 			email: z.string().trim().email().max(160).optional(),
 			location: z.string().trim().max(160).optional(),
+			// Optional GPS captured client-side via the "Use my location" button (pilot scope —
+			// see LeadLocation in schema.prisma). Never trust the browser's own numbers as safe:
+			// enforce real coordinate/accuracy ranges here regardless of what was sent.
+			location_lat: z.number().min(-90).max(90).optional(),
+			location_lng: z.number().min(-180).max(180).optional(),
+			location_accuracy: z.number().min(0).optional(),
+			location_captured_at: z.string().datetime().optional(),
 		}).parse(request.body);
 		const normalizedPhone = normalizePhone(input.phone);
 		if (!/^\d{10}$/.test(normalizedPhone)) {
 			const error = new Error('Enter a valid mobile number.');
 			error.statusCode = 400;
 			error.code = 'INVALID_MOBILE_NUMBER';
+			return next(error);
+		}
+
+		const hasLat = input.location_lat !== undefined;
+		const hasLng = input.location_lng !== undefined;
+		if (hasLat !== hasLng) {
+			const error = new Error('Location requires both latitude and longitude.');
+			error.statusCode = 400;
+			error.code = 'INVALID_LOCATION';
 			return next(error);
 		}
 
@@ -246,7 +262,7 @@ publicRoutes.post('/leads', publicRateLimit, async (request, response, next) => 
 			// If a concurrent request created a lead for this identity between the pre-check
 			// above and here, Lead.customerIdentityId's unique constraint rejects this insert
 			// with P2002, caught below and mapped to the same 409 CUSTOMER_ALREADY_EXISTS.
-			return transaction.lead.create({
+			const createdLead = await transaction.lead.create({
 				data: {
 					vendorId: scan.vendorId,
 					qrId: scan.qrId,
@@ -261,6 +277,24 @@ publicRoutes.post('/leads', publicRateLimit, async (request, response, next) => 
 				},
 				select: { id: true, status: true },
 			});
+
+			// Only ever created as part of this lead's own creation — there is no separate
+			// endpoint that attaches a location to an arbitrary lead_id, so a client can never
+			// point a location at someone else's lead. Only created once real, valid
+			// coordinates were actually received (not just because the button was clicked).
+			if (hasLat && hasLng) {
+				await transaction.leadLocation.create({
+					data: {
+						leadId: createdLead.id,
+						latitude: input.location_lat,
+						longitude: input.location_lng,
+						accuracy: input.location_accuracy,
+						capturedAt: input.location_captured_at ? new Date(input.location_captured_at) : new Date(),
+					},
+				});
+			}
+
+			return createdLead;
 		});
 
 		return response.status(201).json({

@@ -188,12 +188,31 @@ model Lead {
   scan               Scan              @relation(fields: [scanId], references: [id])
   customerIdentity   CustomerIdentity  @relation(fields: [customerIdentityId], references: [id])
   payout             Payout?
+  geoLocation        LeadLocation?
 
   @@index([vendorId, createdAt])
   @@index([qrId, createdAt])
   @@index([qrAssignmentId])
   @@index([status])
   @@map("leads")
+}
+
+// Pilot scope, deliberately minimal: optional GPS captured client-side via the public
+// enquiry form's "Use my location" button, submitted only alongside a lead the customer
+// is actually creating (never a standalone endpoint a client could point at someone else's
+// lead_id). No location history, no vendor/login location, no IP geolocation — see
+// docs/data-model.md for why this stays deliberately narrow for now.
+model LeadLocation {
+  id         String   @id @default(cuid())
+  leadId     String   @unique @map("lead_id")
+  latitude   Float
+  longitude  Float
+  accuracy   Float?
+  capturedAt DateTime @map("captured_at")
+  createdAt  DateTime @default(now()) @map("created_at")
+  lead       Lead     @relation(fields: [leadId], references: [id])
+
+  @@map("lead_locations")
 }
 
 model Payout {

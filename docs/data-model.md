@@ -180,6 +180,26 @@ Index `vendor_id`, `qr_id`, `qr_assignment_id`, `customer_identity_id`, `created
 
 Duplicate prevention must be implemented with a transaction and the configured database constraint. Duplicate scans may be recorded, but they must not create duplicate commissionable or payable attribution.
 
+### LeadLocation
+
+Optional GPS captured client-side via the public enquiry form's "Use my location" button, submitted only alongside the lead the customer is actually creating in the same request — never a standalone endpoint a client could point at someone else's `lead_id`.
+
+```text
+id
+lead_id           unique — one optional location per lead
+latitude
+longitude
+accuracy          nullable
+captured_at
+created_at
+```
+
+If the customer denies the browser's location permission or never taps the button, the lead is still created normally and simply has no `LeadLocation` row — this must never block or delay submission.
+
+The backend validates real ranges regardless of what the browser sends: `latitude` in [-90, 90], `longitude` in [-180, 180], `accuracy` >= 0. `latitude`/`longitude` must be supplied together or not at all (`400 INVALID_LOCATION` otherwise).
+
+**Deliberately out of scope for this pilot** — do not add without a concrete need: vendor location/store address, login-location or location history, IP-based geolocation, maps, geofencing, distance calculations, or any location analytics view. This table exists to be built on later (e.g. "show leads on a map," "verify a scan happened at the vendor's shop"), not to pre-build those features now.
+
 ### Payout
 
 Manual payout-status record only.

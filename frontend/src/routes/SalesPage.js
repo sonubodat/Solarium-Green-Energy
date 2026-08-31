@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { apiRequest } from '../api/client';
 import QrScanner from '../components/QrScanner';
+import { SkeletonBlock } from '../components/Skeleton';
 import './SalesPage.css';
 
 const ICONS = {
@@ -42,6 +43,12 @@ function SalesPage() {
   });
 
   const [portalData, setPortalData] = useState(null);
+  // Distinguishes "still checking whether a session cookie is valid" from "confirmed logged
+  // out" — without this, the login form flashes on every page load/reload for an already
+  // signed-in Sales user while restoreSession()'s request is in flight (worse the slower the
+  // backend is, e.g. a cold Render instance waking up), before silently swapping to the
+  // dashboard. Shows a skeleton instead of that flash.
+  const [sessionChecked, setSessionChecked] = useState(false);
   const [onboardingId, setOnboardingId] = useState(null);
   const [selectedVendorId, setSelectedVendorId] = useState('');
   const [temporaryPassword, setTemporaryPassword] = useState('');
@@ -56,6 +63,7 @@ function SalesPage() {
   const [loading, setLoading] = useState(false);
 
   const mountedRef = useRef(true);
+  const hasScrolledToDashboardRef = useRef(false);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -64,6 +72,18 @@ function SalesPage() {
       mountedRef.current = false;
     };
   }, []);
+
+  useEffect(() => {
+    // The login form and the dashboard are the same route/scroll container (no full page
+    // navigation between them) — if the user scrolled while filling the login form, that
+    // scroll position otherwise carries straight into the dashboard, landing them mid-page
+    // with the sticky header overlapping content. Only fires once, on the login->dashboard
+    // transition itself, not on every later data refresh.
+    if (portalData && !hasScrolledToDashboardRef.current) {
+      window.scrollTo(0, 0);
+      hasScrolledToDashboardRef.current = true;
+    }
+  }, [portalData]);
 
   useEffect(() => {
     restoreSession();
@@ -89,6 +109,8 @@ function SalesPage() {
       loadSalesVendors();
     } catch (error) {
       // No active Sales session.
+    } finally {
+      if (mountedRef.current) setSessionChecked(true);
     }
   }
 
@@ -300,7 +322,33 @@ function SalesPage() {
       <div className="sales-background" />
 
       <main className="sales-container">
-        {!portalData ? (
+        {!sessionChecked ? (
+          <>
+            <section className="sales-welcome" aria-hidden="true">
+              <div style={{ display: 'grid', gap: '10px' }}>
+                <SkeletonBlock width="150px" height="14px" />
+                <SkeletonBlock width="280px" height="34px" />
+                <SkeletonBlock width="340px" height="16px" />
+              </div>
+            </section>
+
+            <section className="sales-grid" aria-hidden="true">
+              {Array.from({ length: 2 }).map((_, index) => (
+                <article className="sales-card" key={index}>
+                  <div className="sales-card-header">
+                    <SkeletonBlock width="42px" height="42px" radius="10px" />
+                    <div style={{ display: 'grid', gap: '8px' }}>
+                      <SkeletonBlock width="70px" height="11px" />
+                      <SkeletonBlock width="150px" height="20px" />
+                    </div>
+                  </div>
+                  <SkeletonBlock width="90%" height="14px" style={{ marginTop: '14px' }} />
+                  <SkeletonBlock width="60%" height="14px" style={{ marginTop: '8px' }} />
+                </article>
+              ))}
+            </section>
+          </>
+        ) : !portalData ? (
           <section className="sales-login-card">
             <div className="sales-brand">
               <span className="sales-brand-main">solarium</span>

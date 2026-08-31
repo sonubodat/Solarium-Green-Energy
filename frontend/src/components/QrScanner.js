@@ -15,6 +15,7 @@ function QrScanner({ onDetected, onClose }) {
   const streamRef = useRef(null);
   const frameRef = useRef(null);
   const [error, setError] = useState('');
+  const [manualCode, setManualCode] = useState('');
 
   useEffect(() => {
     let cancelled = false;
@@ -76,7 +77,27 @@ function QrScanner({ onDetected, onClose }) {
           <button type="button" className="qr-scanner-close" onClick={onClose} aria-label="Close scanner">×</button>
         </div>
         {error ? (
-          <div className="qr-scanner-error">{error}</div>
+          <div className="qr-scanner-error">
+            <p>{error}</p>
+            <form
+              className="qr-scanner-manual-form"
+              onSubmit={(event) => {
+                event.preventDefault();
+                if (manualCode.trim()) onDetected(extractQrCode(manualCode));
+              }}
+            >
+              <input
+                type="text"
+                placeholder="Enter QR code (e.g. V-0001)"
+                value={manualCode}
+                onChange={(event) => setManualCode(event.target.value)}
+                autoFocus
+              />
+              <button type="submit" disabled={!manualCode.trim()}>
+                Use this code
+              </button>
+            </form>
+          </div>
         ) : (
           <div className="qr-scanner-video-wrap">
             <video ref={videoRef} className="qr-scanner-video" muted playsInline />

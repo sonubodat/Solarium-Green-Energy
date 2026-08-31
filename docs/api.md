@@ -110,9 +110,15 @@ Request example:
 	"customer_name": "Customer Name",
 	"phone": "+91 9876543210",
 	"email": "customer@example.com",
-	"location": "Pune"
+	"location": "Pune",
+	"location_lat": 18.5204,
+	"location_lng": 73.8567,
+	"location_accuracy": 25,
+	"location_captured_at": "2026-08-26T10:15:00.000Z"
 }
 ```
+
+**Optional GPS capture (pilot scope).** `location_lat`/`location_lng`/`location_accuracy`/`location_captured_at` are all optional — sent only if the customer tapped "Use my location" and the browser actually returned coordinates; omitted entirely (not sent as `null`) if they declined or skipped it, and the lead is created normally either way. When present, `location_lat` and `location_lng` must both be present (`400 INVALID_LOCATION` otherwise) and are validated server-side regardless of what the browser sent: latitude in [-90, 90], longitude in [-180, 180], accuracy >= 0 (`400 VALIDATION_ERROR` otherwise). A valid pair creates a `LeadLocation` row 1:1 with the new lead, created only inside the same lead-creation transaction — there is no separate endpoint that could attach a location to an arbitrary `lead_id`. See `data-model.md`'s LeadLocation section for what's deliberately out of scope for this pilot (no vendor/login location, no IP geolocation, no maps/analytics).
 
 **Duplicate rule (confirmed): global uniqueness.** One phone number can create at most one lead across the entire system, not one per vendor — a customer already attributed to one vendor is rejected if they scan a different vendor's QR and try to submit again. The server normalizes the phone number and stores only its HMAC identity (`CustomerIdentity.hash`) for deduplication; the hash is never exposed to the client.
 
