@@ -60,6 +60,9 @@ function SalesPage() {
   const [salesVendorOptions, setSalesVendorOptions] = useState([]);
   const [message, setMessage] = useState('');
   const [messageType, setMessageType] = useState('');
+  // Full-screen animated checkmark instead of the bottom banner for success only — errors
+  // still use the bottom .sales-message banner unchanged.
+  const [showSuccessOverlay, setShowSuccessOverlay] = useState(false);
   const [loading, setLoading] = useState(false);
 
   const mountedRef = useRef(true);
@@ -84,6 +87,23 @@ function SalesPage() {
       hasScrolledToDashboardRef.current = true;
     }
   }, [portalData]);
+
+  useEffect(() => {
+    if (messageType !== 'success' || !message) return undefined;
+
+    // Replaces the bottom banner for success only — shows the animated checkmark instead,
+    // then clears both the overlay and the message together after 2s so no stale success
+    // text is left behind for the (now-unused-for-success) bottom banner to pick up.
+    setShowSuccessOverlay(true);
+    const timer = setTimeout(() => {
+      setShowSuccessOverlay(false);
+      setMessage('');
+      setMessageType('');
+    }, 2000);
+
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [message, messageType]);
 
   useEffect(() => {
     restoreSession();
@@ -893,22 +913,43 @@ function SalesPage() {
               <QrScanner onDetected={handleScanDetected} onClose={() => setShowScanner(false)} />
             )}
 
-            {message && (
-              <div
-                className={`sales-message ${
-                  messageType === 'error' ? 'error' : 'success'
-                }`}
-                role="status"
-              >
-                <Icon
-                  path={
-                    messageType === 'error'
-                      ? ICONS.alert
-                      : ICONS.check
-                  }
-                />
-
+            {message && messageType === 'error' && (
+              <div className="sales-message error" role="status">
+                <Icon path={ICONS.alert} />
                 <span>{message}</span>
+              </div>
+            )}
+
+            {showSuccessOverlay && (
+              <div
+                className="sales-success-overlay"
+                role="status"
+                onClick={() => {
+                  setShowSuccessOverlay(false);
+                  setMessage('');
+                  setMessageType('');
+                }}
+              >
+                <div className="sales-success-card">
+                  <svg
+                    className="sales-success-check"
+                    viewBox="0 0 52 52"
+                  >
+                    <circle
+                      className="sales-success-check-circle"
+                      cx="26"
+                      cy="26"
+                      r="24"
+                      fill="none"
+                    />
+                    <path
+                      className="sales-success-check-mark"
+                      fill="none"
+                      d="M14 27l7 7 17-17"
+                    />
+                  </svg>
+                  <p>{message}</p>
+                </div>
               </div>
             )}
 

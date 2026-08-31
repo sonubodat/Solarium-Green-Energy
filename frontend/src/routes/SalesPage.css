@@ -982,3 +982,96 @@
   display: flex;
   gap: 8px;
 }
+
+/* -------------------------------------------------
+   SUCCESS OVERLAY (animated checkmark)
+------------------------------------------------- */
+
+.sales-success-overlay {
+  align-items: center;
+  background: rgba(16, 47, 74, 0.55);
+  cursor: pointer;
+  display: flex;
+  inset: 0;
+  justify-content: center;
+  position: fixed;
+  z-index: 80;
+}
+
+.sales-success-card {
+  align-items: center;
+  background: #fff;
+  border-radius: 18px;
+  box-shadow: 0 30px 70px rgba(4, 20, 31, 0.3);
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding: 40px 44px;
+  animation: sales-success-pop 0.25s ease-out;
+}
+
+.sales-success-card p {
+  color: var(--sales-navy);
+  font-size: 14px;
+  font-weight: 700;
+  margin: 0;
+  text-align: center;
+}
+
+.sales-success-check {
+  height: 88px;
+  width: 88px;
+}
+
+.sales-success-check-circle {
+  stroke: var(--sales-blue);
+  stroke-width: 3;
+  stroke-miterlimit: 10;
+  stroke-dasharray: 151;
+  stroke-dashoffset: 151;
+  animation: sales-success-circle 0.5s cubic-bezier(0.65, 0, 0.45, 1) forwards;
+}
+
+.sales-success-check-mark {
+  stroke: var(--sales-blue);
+  stroke-width: 4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-dasharray: 34;
+  stroke-dashoffset: 34;
+  animation: sales-success-mark 0.35s 0.45s cubic-bezier(0.65, 0, 0.45, 1) forwards;
+}
+
+@keyframes sales-success-pop {
+  from {
+    opacity: 0;
+    transform: scale(0.85);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes sales-success-circle {
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+@keyframes sales-success-mark {
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sales-success-card,
+  .sales-success-check-circle,
+  .sales-success-check-mark {
+    animation: none;
+    stroke-dashoffset: 0;
+    opacity: 1;
+    transform: none;
+  }
+}

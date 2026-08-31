@@ -56,8 +56,11 @@ salesRoutes.get('/qr/:code', requireAuth, requireSales, async (request, response
 salesRoutes.post('/qr/assign', requireAuth, requireSales, async (request, response, next) => {
 	try {
 		const input = qrAssignmentSchema.parse(request.body);
+		// Same OR-with-null ownership rule as GET /sales/vendors — a vendor with no salesUserId
+		// isn't owned by anyone, so it must be assignable by any Sales user, not rejected here
+		// after already being offered in that same user's picker.
 		const vendor = await prisma.vendor.findFirst({
-			where: { id: input.vendor_id, salesUserId: request.auth.user.id },
+			where: { id: input.vendor_id, OR: [{ salesUserId: request.auth.user.id }, { salesUserId: null }] },
 		});
 		if (!vendor) {
 			return response.status(403).json({ success: false, error: { code: 'VENDOR_NOT_ASSIGNED', message: 'Vendor is not assigned to this Sales user.' } });
@@ -77,8 +80,18 @@ salesRoutes.post('/qr/assign', requireAuth, requireSales, async (request, respon
 salesRoutes.get('/vendors', requireAuth, requireSales, async (request, response, next) => {
 	try {
 		const vendors = await prisma.vendor.findMany({
+			// A Vendor with no salesUserId (e.g. created directly by Admin, not through any Sales
+			// rep's onboarding flow) isn't owned by anyone — matches the same OR-with-null pattern
+			// GET /sales/registrations already uses so an unclaimed resource is visible to every
+			// Sales user, not invisible to all of them. Was strictly `salesUserId: <this user>`
+			// with no null fallback, which silently hid every vendor a Sales rep didn't personally
+			// onboard themselves — including ones Admin created directly — from the QR-assign picker.
 			// Excludes a Vendor already holding an active QR — one active QR per Vendor is enforced here.
-			where: { salesUserId: request.auth.user.id, status: 'ACTIVE', assignments: { none: { unassignedAt: null } } },
+			where: {
+				OR: [{ salesUserId: request.auth.user.id }, { salesUserId: null }],
+				status: 'ACTIVE',
+				assignments: { none: { unassignedAt: null } },
+			},
 			orderBy: { businessName: 'asc' },
 			take: 100,
 			select: { id: true, businessName: true, loginIdentifier: true },

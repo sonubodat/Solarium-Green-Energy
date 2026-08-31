@@ -15,6 +15,9 @@ const ICONS = {
   phone: 'M6.6 10.8c1.3 2.6 3.4 4.7 6 6l2-2c.3-.3.7-.4 1-.2 1.1.4 2.3.6 3.5.6.6 0 1 .4 1 1V20c0 .6-.4 1-1 1C10.5 21 3 13.5 3 4c0-.6.4-1 1-1h3.8c.6 0 1 .4 1 1 0 1.2.2 2.4.6 3.5.1.4 0 .8-.3 1l-2 2Z',
   check: 'M20 6 9 17l-5-5',
   clock: 'M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20Zm0-6V12l4-2',
+  // Was missing entirely — the "Dedicated support" bullet on the login page referenced
+  // ICONS.headset with a `|| ICONS.person` fallback, so it silently rendered the wrong icon.
+  headset: 'M4 18v-6a8 8 0 0 1 16 0v6M4 18a2 2 0 0 0 2 2h1v-6H5a1 1 0 0 0-1 1v3Zm16 0a2 2 0 0 1-2 2h-1v-6h2a1 1 0 0 1 1 1v3Z',
 };
 
 function Icon({ path, className = '' }) {
@@ -246,10 +249,17 @@ function VendorPage() {
         }),
       });
 
-      setPortalData((current) => ({
-        ...current,
-        account: result.vendor,
-      }));
+      setPortalData((current) => {
+        // renderWorkspace() derives the rendered `vendor` from `data[0].vendor` (the profile
+        // slot) first, falling back to `account` only when that's absent — since the profile
+        // slot is always present after login, updating only `account` here had no visible
+        // effect. `mustChangePassword` stayed true in what was actually rendered even though
+        // the backend had already correctly flipped it to false, so the one-time password
+        // banner never went away without a full page reload.
+        const data = [...current.data];
+        data[0] = { ...data[0], vendor: result.vendor };
+        return { ...current, account: result.vendor, data };
+      });
 
       setLogin((current) => ({
         ...current,
@@ -311,7 +321,7 @@ function VendorPage() {
 
               <div>
                 <span className="vendor-point-icon">
-                  <Icon path={ICONS.headset || ICONS.person} />
+                  <Icon path={ICONS.headset} />
                 </span>
                 <div>
                   <strong>Dedicated support</strong>

@@ -94,13 +94,14 @@
 }
 
 .vendor-auth-layout {
-  width: min(1080px, 100%);
-  margin: auto;
+  width: min(1080px, calc(100% - 48px));
+  margin: 0 auto;
   display: grid;
-  grid-template-columns: 1fr 430px;
+  grid-template-columns: minmax(0, 1fr) 430px;
   gap: 90px;
   align-items: center;
   padding: 70px 0;
+  flex: 1;
 }
 
 .vendor-auth-intro {
@@ -433,7 +434,7 @@
 
 .vendor-password-banner {
   display: grid;
-  grid-template-columns: auto 1fr auto;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   gap: 16px;
   align-items: center;
   margin-bottom: 28px;
@@ -476,7 +477,9 @@
 
 .vendor-password-form {
   display: flex;
+  align-items: center;
   gap: 8px;
+  min-width: 0;
 }
 
 .vendor-password-form input {
@@ -654,6 +657,10 @@
   box-shadow: var(--vendor-shadow);
 }
 
+.vendor-stat-card > div {
+  min-width: 0;
+}
+
 .vendor-stat-icon {
   width: 43px;
   height: 43px;
@@ -700,7 +707,7 @@
 
 .vendor-content-grid {
   display: grid;
-  grid-template-columns: 1.5fr 1fr;
+  grid-template-columns: minmax(0, 1.6fr) minmax(320px, 1fr);
   gap: 20px;
 }
 
@@ -1295,11 +1302,12 @@
   }
 
   .vendor-password-banner {
-    grid-template-columns: auto 1fr;
+    grid-template-columns: auto minmax(0, 1fr);
   }
 
   .vendor-password-form {
-    grid-column: 2;
+    grid-column: 1 / -1;
+    width: 100%;
   }
 
   .vendor-stat-grid {
@@ -1391,7 +1399,7 @@
   }
 
   .vendor-password-banner {
-    grid-template-columns: auto 1fr;
+    grid-template-columns: auto minmax(0, 1fr);
     gap: 11px;
     padding: 14px;
   }
@@ -1488,13 +1496,20 @@
   }
 
   .vendor-profile-card {
-    align-items: flex-start;
-    flex-wrap: wrap;
+    display: grid;
+    grid-template-columns: 52px minmax(0, 1fr);
+    align-items: start;
+    gap: 12px;
+  }
+
+  .vendor-profile-card > div:nth-child(2) {
+    min-width: 0;
   }
 
   .vendor-active-pill {
-    margin-left: 66px;
-    margin-top: -7px;
+    grid-column: 2;
+    margin: 0 !important;
+    width: fit-content;
   }
 
   .vendor-detail-grid {
@@ -1515,6 +1530,19 @@
     justify-content: stretch;
     gap: 8px;
     padding: 20px 0;
+  }
+
+  .vendor-pagination {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .vendor-pagination > div {
+    width: 100%;
+  }
+
+  .vendor-pagination-button {
+    flex: 1;
   }
 
   .vendor-footer span {
@@ -1567,6 +1595,12 @@
   margin-top: 18px;
 }
 
+.vendor-pagination > div {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+}
+
 .vendor-pagination span {
   color: var(--color-muted, #718078);
   font-size: .82rem;
@@ -1588,6 +1622,3 @@
   opacity: .45;
 }
 
-.vendor-pagination-button + .vendor-pagination-button {
-  margin-left: 8px;
-}

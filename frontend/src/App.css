@@ -83,7 +83,13 @@ h1 { font-family: Georgia, 'Times New Roman', serif; font-size: clamp(2.7rem, 6v
 .qr-scanner-close { background: transparent; border: 0; color: #fff; cursor: pointer; font-size: 1.4rem; line-height: 1; padding: 0; }
 .qr-scanner-video-wrap { aspect-ratio: 1; background: #000; overflow: hidden; position: relative; }
 .qr-scanner-video { height: 100%; object-fit: cover; width: 100%; }
-.qr-scanner-frame { border: 3px solid rgba(255, 255, 255, .85); border-radius: .75rem; box-shadow: 0 0 0 999px rgba(0, 0, 0, .35); inset: 15%; position: absolute; }
+.qr-scanner-frame { border-radius: .75rem; box-shadow: 0 0 0 999px rgba(0, 0, 0, .35); inset: 15%; position: absolute; }
+.qr-scanner-corner { border-color: #fff; border-style: solid; height: 1.75rem; position: absolute; width: 1.75rem; }
+.qr-scanner-corner.top-left { border-width: 3px 0 0 3px; left: 0; top: 0; border-top-left-radius: .5rem; }
+.qr-scanner-corner.top-right { border-width: 3px 3px 0 0; right: 0; top: 0; border-top-right-radius: .5rem; }
+.qr-scanner-corner.bottom-left { border-width: 0 0 3px 3px; bottom: 0; left: 0; border-bottom-left-radius: .5rem; }
+.qr-scanner-corner.bottom-right { border-width: 0 3px 3px 0; bottom: 0; right: 0; border-bottom-right-radius: .5rem; }
+.qr-scanner-loading { background: rgba(0, 0, 0, .55); border-radius: 999px; bottom: 1.1rem; color: #fff; font-size: .7rem; left: 50%; padding: .4rem .75rem; position: absolute; transform: translateX(-50%); }
 .qr-scanner-error { color: #b3413a; font-size: .85rem; line-height: 1.5; padding: 2rem 1.25rem; text-align: center; }
 .qr-scanner-manual-form { display: flex; gap: .5rem; margin-top: 1rem; }
 .qr-scanner-manual-form input { border: 1px solid #cbd8cc; border-radius: .5rem; color: #18332d; flex: 1; font-size: .85rem; padding: .6rem .75rem; }
