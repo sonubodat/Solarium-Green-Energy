@@ -112,7 +112,14 @@ publicRoutes.get('/qr/:qrCode', publicRateLimit, async (request, response, next)
 });
 
 function normalizePhone(rawPhone) {
-	return rawPhone.replace(/\D/g, '').replace(/^91(?=\d{10}$)/, '');
+	if (typeof rawPhone !== 'string') return '';
+	const digits = rawPhone.replace(/\D/g, '');
+	// Handles +91/91/0091-prefixed and pasted/formatted Indian numbers
+	// (+91 98765 43210, 0091 9876543210, etc.) down to the bare 10 digits — same convention
+	// as the staff-facing normalizeMobile() in admin.js/sales.js/registrations.js.
+	if (digits.startsWith('0091') && digits.length === 14) return digits.slice(4);
+	if (digits.startsWith('91') && digits.length === 12) return digits.slice(2);
+	return digits;
 }
 
 function customerHashFor(normalizedPhone) {
@@ -150,8 +157,8 @@ publicRoutes.post('/leads/check-phone', publicRateLimit, async (request, respons
 	try {
 		const input = z.object({ phone: z.string().trim().min(10).max(20) }).parse(request.body);
 		const normalizedPhone = normalizePhone(input.phone);
-		if (!/^\d{10}$/.test(normalizedPhone)) {
-			const error = new Error('Enter a valid mobile number.');
+		if (!/^[6-9]\d{9}$/.test(normalizedPhone)) {
+			const error = new Error('Enter a valid Indian mobile number.');
 			error.statusCode = 400;
 			error.code = 'INVALID_MOBILE_NUMBER';
 			return next(error);
@@ -188,8 +195,8 @@ publicRoutes.post('/leads', publicRateLimit, async (request, response, next) => 
 			location_captured_at: z.string().datetime().optional(),
 		}).parse(request.body);
 		const normalizedPhone = normalizePhone(input.phone);
-		if (!/^\d{10}$/.test(normalizedPhone)) {
-			const error = new Error('Enter a valid mobile number.');
+		if (!/^[6-9]\d{9}$/.test(normalizedPhone)) {
+			const error = new Error('Enter a valid Indian mobile number.');
 			error.statusCode = 400;
 			error.code = 'INVALID_MOBILE_NUMBER';
 			return next(error);

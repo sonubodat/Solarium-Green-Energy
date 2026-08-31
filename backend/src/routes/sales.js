@@ -31,8 +31,13 @@ function pagination(query) {
 }
 
 function normalizeMobile(value) {
+	if (typeof value !== 'string') return '';
 	const digits = value.replace(/\D/g, '');
-	return digits.startsWith('91') && digits.length === 12 ? digits.slice(2) : digits;
+	// Handles +91/91/0091-prefixed and pasted/formatted Indian numbers
+	// (+91 98765 43210, 0091 9876543210, etc.) down to the bare 10 digits.
+	if (digits.startsWith('0091') && digits.length === 14) return digits.slice(4);
+	if (digits.startsWith('91') && digits.length === 12) return digits.slice(2);
+	return digits;
 }
 
 async function writeAudit(transaction, request, action, entity, entityId, metadata = {}) {
@@ -174,8 +179,8 @@ salesRoutes.post('/vendors', requireAuth, requireSales, async (request, response
 	try {
 		const input = vendorCreateSchema.parse(request.body);
 		const mobileNumber = normalizeMobile(input.mobile_number);
-		if (!/^\d{10}$/.test(mobileNumber)) {
-			return response.status(400).json({ success: false, error: { code: 'INVALID_MOBILE_NUMBER', message: 'Enter a valid mobile number.' } });
+		if (!/^[6-9]\d{9}$/.test(mobileNumber)) {
+			return response.status(400).json({ success: false, error: { code: 'INVALID_MOBILE_NUMBER', message: 'Enter a valid Indian mobile number.' } });
 		}
 		const vendor = await prisma.$transaction(async (transaction) => {
 			const created = await transaction.vendor.create({

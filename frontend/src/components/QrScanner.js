@@ -1,12 +1,31 @@
 import { useEffect, useRef, useState } from 'react';
 import jsQR from 'jsqr';
 
-// Extracts the code from either a raw code ("V-0001") or a full scanned referral URL
-// (".../v/V-0001") — physical QR codes encode the full URL, not the bare code.
-export function extractQrCode(decodedText) {
-  const trimmed = (decodedText || '').trim();
-  const match = trimmed.match(/\/v\/([^/?#]+)\/?$/i);
-  return match ? decodeURIComponent(match[1]) : trimmed;
+// Physical QR codes encode the full referral URL (".../v/V-0001"), not the bare code, but the
+// scanner also needs to accept a pasted/typed bare code directly. Strictly validates both forms
+// instead of falling back to "whatever text was decoded" — a misread camera frame or a pasted
+// unrelated URL/QR must not silently become "the QR code" and get sent to the backend as one.
+// Returns '' (not the raw input) when nothing recognizable was found.
+export function extractQrCode(value) {
+  if (typeof value !== 'string') return '';
+  const trimmed = value.trim();
+  if (!trimmed) return '';
+
+  try {
+    const url = new URL(trimmed);
+    const match = url.pathname.match(/^\/v\/([^/]+)\/?$/i);
+    if (match) {
+      const code = decodeURIComponent(match[1]).trim();
+      return /^V-\d+$/i.test(code) ? code.toUpperCase() : '';
+    }
+    // A well-formed URL that isn't a Solarium referral link — never fall through to
+    // treating the whole URL as a bare code.
+    return '';
+  } catch {
+    // Not a URL — fall through to bare-code matching below.
+  }
+
+  return /^V-\d+$/i.test(trimmed) ? trimmed.toUpperCase() : '';
 }
 
 const SCAN_INTERVAL_MS = 80; // ~12 decode attempts/sec — plenty for a printed sticker, far
@@ -43,8 +62,9 @@ function QrScanner({ onDetected, onClose }) {
   const detectedRef = useRef(false); // one-shot lock — the same physical code sitting in
                                       // frame for multiple decode cycles must only fire once.
   const lastScanAtRef = useRef(0);
-  const [error, setError] = useState('');
+  const [cameraError, setCameraError] = useState('');
   const [manualCode, setManualCode] = useState('');
+  const [manualError, setManualError] = useState('');
   const [starting, setStarting] = useState(true);
 
   useEffect(() => {
@@ -52,7 +72,7 @@ function QrScanner({ onDetected, onClose }) {
 
     async function start() {
       if (!navigator.mediaDevices?.getUserMedia) {
-        setError('Camera scanning is not supported in this browser. Enter the code manually instead.');
+        setCameraError('Camera scanning is not supported in this browser. Enter the code manually instead.');
         setStarting(false);
         return;
       }
@@ -76,10 +96,17 @@ function QrScanner({ onDetected, onClose }) {
         // eslint-disable-next-line no-console
         console.error('QR camera error:', requestError);
         if (!cancelled) {
-          setError(cameraErrorMessage(requestError));
+          setCameraError(cameraErrorMessage(requestError));
           setStarting(false);
         }
       }
+    }
+
+    function stopCamera() {
+      scanningRef.current = false;
+      if (frameRef.current) cancelAnimationFrame(frameRef.current);
+      streamRef.current?.getTracks().forEach((track) => track.stop());
+      streamRef.current = null;
     }
 
     function scanFrame() {
@@ -113,9 +140,12 @@ function QrScanner({ onDetected, onClose }) {
 
       if (result?.data) {
         const code = extractQrCode(result.data);
+        // A decoded-but-unrecognized QR (someone's WiFi QR, a business card, etc.) is ignored
+        // rather than surfaced as an error — keep scanning silently rather than interrupting
+        // the camera view for every non-Solarium code that drifts into frame.
         if (code) {
           detectedRef.current = true;
-          scanningRef.current = false;
+          stopCamera();
           if (navigator.vibrate) navigator.vibrate(100);
           onDetected(code);
           return;
@@ -127,21 +157,23 @@ function QrScanner({ onDetected, onClose }) {
     start();
     return () => {
       cancelled = true;
-      scanningRef.current = false;
-      if (frameRef.current) cancelAnimationFrame(frameRef.current);
-      streamRef.current?.getTracks().forEach((track) => track.stop());
-      streamRef.current = null;
+      stopCamera();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  function submitManualCode(event) {
-    event.preventDefault();
+  function submitCode(rawValue) {
     if (detectedRef.current) return;
-    const code = extractQrCode(manualCode);
-    if (!code) return;
+    const code = extractQrCode(rawValue);
+    if (!code) {
+      setManualError('Enter a valid Solarium QR code or link, e.g. V-0001.');
+      return;
+    }
+    setManualError('');
     detectedRef.current = true;
     scanningRef.current = false;
+    if (frameRef.current) cancelAnimationFrame(frameRef.current);
+    streamRef.current?.getTracks().forEach((track) => track.stop());
     onDetected(code);
   }
 
@@ -152,21 +184,9 @@ function QrScanner({ onDetected, onClose }) {
           <span>Scan QR code</span>
           <button type="button" className="qr-scanner-close" onClick={onClose} aria-label="Close scanner">×</button>
         </div>
-        {error ? (
+        {cameraError ? (
           <div className="qr-scanner-error">
-            <p>{error}</p>
-            <form className="qr-scanner-manual-form" onSubmit={submitManualCode}>
-              <input
-                type="text"
-                placeholder="Enter QR code (e.g. V-0001)"
-                value={manualCode}
-                onChange={(event) => setManualCode(event.target.value)}
-                autoFocus
-              />
-              <button type="submit" disabled={!manualCode.trim()}>
-                Use this code
-              </button>
-            </form>
+            <p>{cameraError}</p>
           </div>
         ) : (
           <div className="qr-scanner-video-wrap">
@@ -180,8 +200,44 @@ function QrScanner({ onDetected, onClose }) {
             {starting && <div className="qr-scanner-loading">Starting camera...</div>}
           </div>
         )}
+        <form
+          className="qr-scanner-manual-form"
+          onSubmit={(event) => {
+            event.preventDefault();
+            submitCode(manualCode);
+          }}
+        >
+          <input
+            type="text"
+            inputMode="text"
+            autoCapitalize="characters"
+            autoCorrect="off"
+            spellCheck="false"
+            placeholder="Paste QR link or enter code (e.g. V-0001)"
+            value={manualCode}
+            onChange={(event) => {
+              setManualCode(event.target.value);
+              if (manualError) setManualError('');
+            }}
+            onPaste={(event) => {
+              // iOS/Android both support a normal user-initiated paste into a text input —
+              // don't rely on programmatic clipboard reads (iOS restricts those), just react
+              // to the paste event on this field and auto-submit if it parses cleanly.
+              const pasted = event.clipboardData?.getData('text') || '';
+              if (!pasted) return;
+              event.preventDefault();
+              setManualCode(pasted);
+              submitCode(pasted);
+            }}
+            autoFocus={Boolean(cameraError)}
+          />
+          <button type="submit" disabled={!manualCode.trim()}>
+            Use this code
+          </button>
+        </form>
+        {manualError && <p className="qr-scanner-manual-error">{manualError}</p>}
         <canvas ref={canvasRef} style={{ display: 'none' }} />
-        <p className="qr-scanner-hint">Point the camera at the printed QR code.</p>
+        <p className="qr-scanner-hint">Point the camera at the printed QR code, or paste its link/code above.</p>
       </div>
     </div>
   );
