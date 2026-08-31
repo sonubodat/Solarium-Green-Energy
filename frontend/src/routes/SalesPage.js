@@ -145,6 +145,17 @@ function SalesPage() {
     }
   }
 
+  async function loadRegistrationsPage(page) {
+    try {
+      const data = await apiRequest(`/sales/registrations?page=${page}&limit=25`);
+      if (!mountedRef.current) return;
+      setPortalData((current) => ({ ...current, data }));
+    } catch (error) {
+      setMessage(error.message);
+      setMessageType('error');
+    }
+  }
+
   async function signIn(event) {
     event.preventDefault();
 
@@ -573,6 +584,36 @@ function SalesPage() {
                     <span>No pending registrations right now.</span>
                   </div>
                 )}
+
+                {(() => {
+                  const meta = portalData?.data?.pagination;
+                  if (!meta || meta.total <= meta.limit) return null;
+                  const start = meta.total === 0 ? 0 : (meta.page - 1) * meta.limit + 1;
+                  const end = Math.min(meta.page * meta.limit, meta.total);
+                  return (
+                    <div className="sales-registration-pagination">
+                      <span>{`Showing ${start}–${end} of ${meta.total}`}</span>
+                      <div>
+                        <button
+                          type="button"
+                          className="sales-cancel-button"
+                          disabled={loading || meta.page <= 1}
+                          onClick={() => loadRegistrationsPage(meta.page - 1)}
+                        >
+                          Previous
+                        </button>
+                        <button
+                          type="button"
+                          className="sales-cancel-button"
+                          disabled={loading || end >= meta.total}
+                          onClick={() => loadRegistrationsPage(meta.page + 1)}
+                        >
+                          Next
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })()}
               </article>
 
               <article className="sales-card">
@@ -748,56 +789,86 @@ function SalesPage() {
                   </button>
                 ) : (
                   <form onSubmit={createVendorDirect} className="sales-work-form sales-create-vendor-grid">
-                    <div className="sales-field">
-                      <Icon path={ICONS.store} className="sales-field-icon" />
-                      <input
-                        required
-                        placeholder="Business name"
-                        value={newVendor.business_name}
-                        onChange={(event) => setNewVendor({ ...newVendor, business_name: event.target.value })}
-                      />
-                    </div>
-                    <div className="sales-field">
-                      <Icon path={ICONS.user} className="sales-field-icon" />
-                      <input
-                        required
-                        placeholder="Owner name"
-                        value={newVendor.owner_name}
-                        onChange={(event) => setNewVendor({ ...newVendor, owner_name: event.target.value })}
-                      />
-                    </div>
-                    <div className="sales-field">
-                      <Icon path={ICONS.user} className="sales-field-icon" />
-                      <input
-                        required
-                        type="tel"
-                        inputMode="tel"
-                        placeholder="Mobile number"
-                        value={newVendor.mobile_number}
-                        onChange={(event) => setNewVendor({ ...newVendor, mobile_number: event.target.value })}
-                      />
-                    </div>
-                    <div className="sales-field">
-                      <Icon path={ICONS.user} className="sales-field-icon" />
-                      <input
-                        required
-                        placeholder="Login identifier"
-                        value={newVendor.login_identifier}
-                        onChange={(event) => setNewVendor({ ...newVendor, login_identifier: event.target.value })}
-                      />
-                    </div>
-                    <div className="sales-field">
-                      <Icon path={ICONS.lock} className="sales-field-icon" />
-                      <input
-                        required
-                        minLength="8"
-                        type="text"
-                        autoComplete="off"
-                        placeholder="Temporary password"
-                        value={newVendor.password}
-                        onChange={(event) => setNewVendor({ ...newVendor, password: event.target.value })}
-                      />
-                    </div>
+                    <label className="sales-field-labeled">
+                      <span>Business name</span>
+                      <div className="sales-field-input">
+                        <Icon path={ICONS.store} className="sales-field-icon" />
+                        <input
+                          id="sales-new-vendor-business-name"
+                          name="business_name"
+                          required
+                          autoComplete="off"
+                          placeholder="e.g. Sunrise Solar"
+                          value={newVendor.business_name}
+                          onChange={(event) => setNewVendor({ ...newVendor, business_name: event.target.value })}
+                        />
+                      </div>
+                    </label>
+                    <label className="sales-field-labeled">
+                      <span>Owner name</span>
+                      <div className="sales-field-input">
+                        <Icon path={ICONS.user} className="sales-field-icon" />
+                        <input
+                          id="sales-new-vendor-owner-name"
+                          name="owner_name"
+                          required
+                          autoComplete="off"
+                          placeholder="e.g. Ram Kumar"
+                          value={newVendor.owner_name}
+                          onChange={(event) => setNewVendor({ ...newVendor, owner_name: event.target.value })}
+                        />
+                      </div>
+                    </label>
+                    <label className="sales-field-labeled">
+                      <span>Mobile number</span>
+                      <div className="sales-field-input">
+                        <Icon path={ICONS.user} className="sales-field-icon" />
+                        <input
+                          id="sales-new-vendor-mobile"
+                          name="mobile_number"
+                          required
+                          type="tel"
+                          inputMode="tel"
+                          autoComplete="off"
+                          placeholder="10-digit mobile number"
+                          value={newVendor.mobile_number}
+                          onChange={(event) => setNewVendor({ ...newVendor, mobile_number: event.target.value })}
+                        />
+                      </div>
+                    </label>
+                    <label className="sales-field-labeled">
+                      <span>Username</span>
+                      <div className="sales-field-input">
+                        <Icon path={ICONS.user} className="sales-field-icon" />
+                        <input
+                          id="sales-new-vendor-username"
+                          name="vendor_username"
+                          required
+                          autoComplete="off"
+                          placeholder="e.g. sunrise-solar"
+                          value={newVendor.login_identifier}
+                          onChange={(event) => setNewVendor({ ...newVendor, login_identifier: event.target.value })}
+                        />
+                      </div>
+                      <small>This is what the vendor will type to sign in — not their name or business name.</small>
+                    </label>
+                    <label className="sales-field-labeled">
+                      <span>Temporary password</span>
+                      <div className="sales-field-input">
+                        <Icon path={ICONS.lock} className="sales-field-icon" />
+                        <input
+                          id="sales-new-vendor-password"
+                          name="vendor_password"
+                          required
+                          minLength="8"
+                          type="password"
+                          autoComplete="new-password"
+                          placeholder="At least 8 characters"
+                          value={newVendor.password}
+                          onChange={(event) => setNewVendor({ ...newVendor, password: event.target.value })}
+                        />
+                      </div>
+                    </label>
 
                     <div className="sales-create-vendor-actions">
                       <button type="submit" className="sales-primary-button" disabled={loading}>

@@ -1,6 +1,6 @@
 // AdminPage.js
 
-import { useEffect, useRef, useState } from 'react';
+import { Fragment, useEffect, useRef, useState } from 'react';
 import { apiRequest, API_BASE_URL } from '../api/client';
 import { SkeletonBlock } from '../components/Skeleton';
 import QrScanner from '../components/QrScanner';
@@ -72,6 +72,12 @@ function AdminPage() {
   // dashboard. Shows a skeleton instead of that flash.
   const [sessionChecked, setSessionChecked] = useState(false);
   const [resource, setResource] = useState('dashboard');
+  // Scoped to switching resources specifically (sidebar nav clicks), not every filter change,
+  // pagination click, or Refresh — those already show their own loading state on the button and
+  // switching skeletons under them would be more distracting than helpful. Without this, clicking
+  // a sidebar item briefly rendered an empty "No leads yet" (etc.) state while the new resource's
+  // data was still in flight, which looked like a bug rather than a load in progress.
+  const [resourceLoading, setResourceLoading] = useState(false);
   const [adminPage, setAdminPage] = useState(1);
 
   const [vendorLookup, setVendorLookup] = useState([]);
@@ -103,6 +109,7 @@ function AdminPage() {
   const [reassignVendorInputs, setReassignVendorInputs] = useState({});
 
   const [showScanAssign, setShowScanAssign] = useState(false);
+  const [singleQrCode, setSingleQrCode] = useState('');
   const [scannedQr, setScannedQr] = useState(null);
   const [scanVendorId, setScanVendorId] = useState('');
   const [paidReferenceInputs, setPaidReferenceInputs] = useState({});
@@ -113,6 +120,8 @@ function AdminPage() {
   const [staffRoleInputs, setStaffRoleInputs] = useState({});
 
   const [detailLead, setDetailLead] = useState(null);
+  const [detailAuditLog, setDetailAuditLog] = useState(null);
+  const [expandedVendorGroups, setExpandedVendorGroups] = useState({});
 
   const [message, setMessage] = useState('');
   const [messageType, setMessageType] = useState('');
@@ -303,8 +312,11 @@ function AdminPage() {
     setAdminPage(1);
     setSearch('');
     setMobileNavOpen(false);
+    setResourceLoading(true);
 
-    loadAdminResource(nextResource, 1);
+    loadAdminResource(nextResource, 1).finally(() =>
+      setResourceLoading(false)
+    );
   }
 
   async function createVendor(event) {
@@ -564,6 +576,30 @@ function AdminPage() {
           : 'QR assigned successfully.'
       );
 
+      setMessageType('success');
+    } catch (error) {
+      setMessage(error.message);
+      setMessageType('error');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function deleteQr(qr) {
+    if (
+      !window.confirm(
+        `Delete ${qr.code}? This only works for QR codes that have never been assigned, and cannot be undone.`
+      )
+    ) {
+      return;
+    }
+
+    setLoading(true);
+
+    try {
+      await apiRequest(`/admin/qr/${qr.id}/delete`, { method: 'POST' });
+      await loadAdminResource('qr', adminPage);
+      setMessage('QR code deleted.');
       setMessageType('success');
     } catch (error) {
       setMessage(error.message);
@@ -841,6 +877,30 @@ function AdminPage() {
     window.location.href = `${API_BASE_URL}/admin/qr/pdf${query ? `?${query}` : ''}`;
   }
 
+  async function downloadSingleQrPdf(event) {
+    event.preventDefault();
+    const code = singleQrCode.trim();
+    if (!code) return;
+
+    setMessage('');
+    setMessageType('');
+
+    try {
+      // Confirm the code exists before navigating — a bare window.location.href to a 404
+      // takes over the whole page with the raw API JSON instead of staying in the app, since
+      // that's a full-page navigation, not a fetch this UI can catch and show nicely.
+      await apiRequest(`/admin/qr/lookup/${encodeURIComponent(code)}`);
+      window.location.href = `${API_BASE_URL}/admin/qr/pdf?code=${encodeURIComponent(code)}`;
+    } catch (error) {
+      setMessage(
+        error.code === 'QR_NOT_FOUND'
+          ? `No QR code matching "${code}" was found. Check the code and try again.`
+          : error.message
+      );
+      setMessageType('error');
+    }
+  }
+
   function downloadLeadsCsv() {
     window.location.href = `${API_BASE_URL}/admin/leads/export`;
   }
@@ -1024,71 +1084,106 @@ function AdminPage() {
             </div>
 
             <div className="admin-form-grid">
-              <input
-                required
-                placeholder="Business name"
-                value={newVendor.business_name}
-                onChange={(event) =>
-                  setNewVendor({
-                    ...newVendor,
-                    business_name:
-                      event.target.value,
-                  })
-                }
-              />
+              <label className="admin-form-field">
+                <span>Business name</span>
+                <input
+                  id="new-vendor-business-name"
+                  name="business_name"
+                  required
+                  autoComplete="off"
+                  placeholder="e.g. Sunrise Solar"
+                  value={newVendor.business_name}
+                  onChange={(event) =>
+                    setNewVendor({
+                      ...newVendor,
+                      business_name:
+                        event.target.value,
+                    })
+                  }
+                />
+              </label>
 
-              <input
-                required
-                placeholder="Owner name"
-                value={newVendor.owner_name}
-                onChange={(event) =>
-                  setNewVendor({
-                    ...newVendor,
-                    owner_name:
-                      event.target.value,
-                  })
-                }
-              />
+              <label className="admin-form-field">
+                <span>Owner name</span>
+                <input
+                  id="new-vendor-owner-name"
+                  name="owner_name"
+                  required
+                  autoComplete="off"
+                  placeholder="e.g. Ram Kumar"
+                  value={newVendor.owner_name}
+                  onChange={(event) =>
+                    setNewVendor({
+                      ...newVendor,
+                      owner_name:
+                        event.target.value,
+                    })
+                  }
+                />
+              </label>
 
-              <input
-                required
-                placeholder="Login identifier"
-                value={newVendor.login_identifier}
-                onChange={(event) =>
-                  setNewVendor({
-                    ...newVendor,
-                    login_identifier:
-                      event.target.value,
-                  })
-                }
-              />
+              <label className="admin-form-field">
+                <span>Username</span>
+                <input
+                  id="new-vendor-username"
+                  name="vendor_username"
+                  required
+                  autoComplete="off"
+                  placeholder="e.g. sunrise-solar"
+                  value={newVendor.login_identifier}
+                  onChange={(event) =>
+                    setNewVendor({
+                      ...newVendor,
+                      login_identifier:
+                        event.target.value,
+                    })
+                  }
+                />
+                <small>
+                  This is what the Vendor will type to sign in — not their name or business name.
+                </small>
+              </label>
 
-              <input
-                required
-                placeholder="Mobile number"
-                value={newVendor.mobile_number}
-                onChange={(event) =>
-                  setNewVendor({
-                    ...newVendor,
-                    mobile_number:
-                      event.target.value,
-                  })
-                }
-              />
+              <label className="admin-form-field">
+                <span>Mobile number</span>
+                <input
+                  id="new-vendor-mobile"
+                  name="mobile_number"
+                  required
+                  type="tel"
+                  inputMode="tel"
+                  autoComplete="off"
+                  placeholder="10-digit mobile number"
+                  value={newVendor.mobile_number}
+                  onChange={(event) =>
+                    setNewVendor({
+                      ...newVendor,
+                      mobile_number:
+                        event.target.value,
+                    })
+                  }
+                />
+              </label>
 
-              <input
-                minLength="8"
-                type="password"
-                placeholder="Initial password (optional)"
-                value={newVendor.password}
-                onChange={(event) =>
-                  setNewVendor({
-                    ...newVendor,
-                    password:
-                      event.target.value,
-                  })
-                }
-              />
+              <label className="admin-form-field">
+                <span>Initial password (optional)</span>
+                <input
+                  id="new-vendor-password"
+                  name="vendor_password"
+                  minLength="8"
+                  type="password"
+                  autoComplete="new-password"
+                  placeholder="Leave blank to set later via Reset Password"
+                  value={newVendor.password}
+                  onChange={(event) =>
+                    setNewVendor({
+                      ...newVendor,
+                      password:
+                        event.target.value,
+                    })
+                  }
+                />
+              </label>
             </div>
 
             <div className="admin-form-actions">
@@ -1211,10 +1306,24 @@ function AdminPage() {
                     </td>
 
                     <td>
-                      <span className="admin-code">
-                        {vendor.currentQr ||
-                          'Unassigned'}
-                      </span>
+                      <div className="admin-primary-cell">
+                        <span
+                          className={`admin-status ${
+                            vendor.qrAssigned
+                              ? 'active'
+                              : 'inactive'
+                          }`}
+                        >
+                          {vendor.qrAssigned
+                            ? 'Assigned'
+                            : 'Unassigned'}
+                        </span>
+                        {vendor.currentQr && (
+                          <small className="admin-code">
+                            {vendor.currentQr}
+                          </small>
+                        )}
+                      </div>
                     </td>
 
                     <td>
@@ -1395,6 +1504,31 @@ function AdminPage() {
           </div>
         </div>
 
+        <form
+          className="admin-single-qr-form"
+          onSubmit={downloadSingleQrPdf}
+        >
+          <input
+            type="text"
+            placeholder="e.g. V-0023"
+            value={singleQrCode}
+            onChange={(event) =>
+              setSingleQrCode(event.target.value)
+            }
+          />
+          <button
+            type="submit"
+            className="admin-outline-button"
+            disabled={!singleQrCode.trim()}
+          >
+            Download this QR as PDF
+          </button>
+          <small>
+            Just need one code? Type it above instead of downloading the
+            whole batch.
+          </small>
+        </form>
+
         {showScanAssign && (
           <QrScanner
             onDetected={handleScanAssignDetected}
@@ -1491,6 +1625,15 @@ function AdminPage() {
               {loading
                 ? 'Generating...'
                 : 'Generate'}
+            </button>
+
+            <button
+              type="button"
+              className="admin-outline-button"
+              disabled={loading}
+              onClick={() => setShowGenerateQr(false)}
+            >
+              Cancel
             </button>
           </form>
         )}
@@ -1674,6 +1817,16 @@ function AdminPage() {
                               ? 'Reassign'
                               : 'Assign'}
                           </button>
+
+                          {qr.status === 'UNASSIGNED' && (
+                            <button
+                              className="admin-mini-button danger"
+                              disabled={loading}
+                              onClick={() => deleteQr(qr)}
+                            >
+                              Delete
+                            </button>
+                          )}
                         </div>
                       </td>
                     </tr>
@@ -1767,132 +1920,150 @@ function AdminPage() {
           </div>
         </div>
 
-        <div className="admin-table-wrap">
-          <table className="admin-table">
-            <thead>
-              <tr>
-                <th>Customer</th>
-                <th>Vendor</th>
-                <th>QR</th>
-                <th>Location</th>
-                <th>Status</th>
-                <th>Lead date</th>
-                <th>Commission</th>
-                <th />
-              </tr>
-            </thead>
-
-            <tbody>
-              {leads.length ? (
-                leads
-                  .filter((lead) => {
-                    if (!search.trim()) {
-                      return true;
-                    }
-
-                    const q =
-                      search.toLowerCase();
-
-                    return [
-                      lead.customerName,
-                      lead.phone,
-                      lead.email,
-                      lead.id,
-                      lead.vendor?.businessName,
-                    ]
-                      .filter(Boolean)
-                      .some((value) =>
-                        String(value)
-                          .toLowerCase()
-                          .includes(q)
-                      );
-                  })
-                  .map((lead) => (
-                    <tr key={lead.id}>
-                      <td>
-                        <div className="admin-primary-cell">
-                          <strong>
-                            {lead.customerName}
-                          </strong>
-                          <small>
-                            {lead.phone ||
-                              lead.email ||
-                              lead.id}
-                          </small>
-                        </div>
-                      </td>
-
-                      <td>
-                        {lead.vendor?.businessName ||
-                          lead.vendorName ||
-                          '—'}
-                      </td>
-
-                      <td>
-                        <span className="admin-code">
-                          {lead.qr?.code || lead.qrId || '—'}
-                        </span>
-                      </td>
-
-                      <td>
-                        <div className="admin-primary-cell">
-                          <strong>
-                            {lead.location || '—'}
-                          </strong>
-                          {lead.geoLocation && (
-                            <small title={`Captured ${new Date(lead.geoLocation.capturedAt).toLocaleString()}`}>
-                              {lead.geoLocation.latitude.toFixed(5)}, {lead.geoLocation.longitude.toFixed(5)}
-                              {lead.geoLocation.accuracy != null ? ` (±${Math.round(lead.geoLocation.accuracy)}m)` : ''}
-                            </small>
-                          )}
-                        </div>
-                      </td>
-
-                      <td>
-                        <span className="admin-status active">
-                          {lead.status}
-                        </span>
-                      </td>
-
-                      <td>
-                        {lead.createdAt
-                          ? new Date(
-                              lead.createdAt
-                            ).toLocaleDateString()
-                          : '—'}
-                      </td>
-
-                      <td>
-                        {lead.commission?.status ||
-                          '—'}
-                      </td>
-
-                      <td>
-                        <button
-                          className="admin-mini-button"
-                          onClick={() => setDetailLead(lead)}
-                        >
-                          <Icon path={ICONS.eye} />
-                          View
-                        </button>
-                      </td>
-                    </tr>
-                  ))
-              ) : (
-                <tr>
-                  <td
-                    colSpan="8"
-                    className="admin-empty"
-                  >
-                    No leads yet.
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
+        {renderLeadsByVendor(leads)}
 
         {renderPagination()}
+      </div>
+    );
+  }
+
+  function renderLeadsByVendor(leads) {
+    const query = search.trim().toLowerCase();
+
+    const filtered = leads.filter((lead) => {
+      if (!query) return true;
+      return [
+        lead.customerName,
+        lead.phone,
+        lead.email,
+        lead.id,
+        lead.vendor?.businessName,
+      ]
+        .filter(Boolean)
+        .some((value) => String(value).toLowerCase().includes(query));
+    });
+
+    if (!filtered.length) {
+      return <div className="admin-empty admin-empty-block">No leads yet.</div>;
+    }
+
+    // One vendor's leads together under a collapsible header, instead of a flat table where
+    // finding "everything for vendor X" means scanning every row — this is per-page grouping
+    // (grouping the leads already loaded for the current page), not a separate unbounded fetch.
+    const groups = new Map();
+    for (const lead of filtered) {
+      const key = lead.vendorId || 'unknown';
+      if (!groups.has(key)) {
+        groups.set(key, { vendorName: lead.vendor?.businessName || lead.vendorName || 'Unknown vendor', leads: [] });
+      }
+      groups.get(key).leads.push(lead);
+    }
+
+    // Searching should surface matches immediately rather than requiring the admin to also
+    // expand the right group by hand.
+    const autoExpand = Boolean(query);
+
+    return (
+      <div className="admin-vendor-groups">
+        {Array.from(groups.entries()).map(([vendorId, group]) => {
+          const isOpen = autoExpand || Boolean(expandedVendorGroups[vendorId]);
+
+          return (
+            <div className="admin-vendor-group" key={vendorId}>
+              <button
+                type="button"
+                className="admin-vendor-group-header"
+                onClick={() =>
+                  setExpandedVendorGroups({
+                    ...expandedVendorGroups,
+                    [vendorId]: !expandedVendorGroups[vendorId],
+                  })
+                }
+                aria-expanded={isOpen}
+              >
+                <Icon
+                  path={ICONS.arrow}
+                  className={`admin-vendor-group-chevron ${isOpen ? 'open' : ''}`}
+                />
+                <span className="admin-vendor-group-name">{group.vendorName}</span>
+                <span className="admin-vendor-group-count">
+                  {group.leads.length} {group.leads.length === 1 ? 'lead' : 'leads'}
+                </span>
+              </button>
+
+              {isOpen && (
+                <div className="admin-table-wrap">
+                  <table className="admin-table">
+                    <thead>
+                      <tr>
+                        <th>Customer</th>
+                        <th>QR</th>
+                        <th>Location</th>
+                        <th>Status</th>
+                        <th>Lead date</th>
+                        <th>Commission</th>
+                        <th />
+                      </tr>
+                    </thead>
+
+                    <tbody>
+                      {group.leads.map((lead) => (
+                        <tr key={lead.id}>
+                          <td>
+                            <div className="admin-primary-cell">
+                              <strong>{lead.customerName}</strong>
+                              <small>{lead.phone || lead.email || lead.id}</small>
+                            </div>
+                          </td>
+
+                          <td>
+                            <span className="admin-code">
+                              {lead.qr?.code || lead.qrId || '—'}
+                            </span>
+                          </td>
+
+                          <td>
+                            <div className="admin-primary-cell">
+                              <strong>{lead.location || '—'}</strong>
+                              {lead.geoLocation && (
+                                <small title={`Captured ${new Date(lead.geoLocation.capturedAt).toLocaleString()}`}>
+                                  {lead.geoLocation.latitude.toFixed(5)}, {lead.geoLocation.longitude.toFixed(5)}
+                                  {lead.geoLocation.accuracy != null ? ` (±${Math.round(lead.geoLocation.accuracy)}m)` : ''}
+                                </small>
+                              )}
+                            </div>
+                          </td>
+
+                          <td>
+                            <span className="admin-status active">{lead.status}</span>
+                          </td>
+
+                          <td>
+                            {lead.createdAt
+                              ? new Date(lead.createdAt).toLocaleDateString()
+                              : '—'}
+                          </td>
+
+                          <td>{lead.commission?.status || '—'}</td>
+
+                          <td>
+                            <button
+                              className="admin-mini-button"
+                              onClick={() => setDetailLead(lead)}
+                            >
+                              <Icon path={ICONS.eye} />
+                              View
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          );
+        })}
       </div>
     );
   }
@@ -2551,70 +2722,143 @@ function AdminPage() {
           </button>
         </div>
 
-        <div className="admin-table-wrap">
-          <table className="admin-table">
-            <thead>
-              <tr>
-                <th>Time</th>
-                <th>Actor</th>
-                <th>Action</th>
-                <th>Resource</th>
-                <th>Details</th>
-              </tr>
-            </thead>
+        <div className="admin-audit-list">
+          {logs.length ? (
+            logs.map((log) => (
+              <div className="admin-audit-row" key={log.id}>
+                <span className={`admin-audit-icon ${auditActionTone(log.action)}`}>
+                  <Icon path={auditActionIcon(log.action)} />
+                </span>
 
-            <tbody>
-              {logs.length ? (
-                logs.map((log) => (
-                  <tr key={log.id}>
-                    <td>
-                      {log.timestamp
-                        ? new Date(
-                            log.timestamp
-                          ).toLocaleString()
-                        : '—'}
-                    </td>
+                <div className="admin-audit-main">
+                  <div className="admin-audit-line">
+                    <strong>{formatAuditAction(log.action)}</strong>
+                    <span className="admin-audit-entity">
+                      {log.entity ? `${log.entity}${log.entityId ? ` · ${log.entityId}` : ''}` : ''}
+                    </span>
+                  </div>
+                  <div className="admin-audit-meta">
+                    {log.actor?.name || log.actorRole || 'System'}
+                    {' · '}
+                    {log.timestamp ? new Date(log.timestamp).toLocaleString() : '—'}
+                  </div>
+                </div>
 
-                    <td>
-                      {log.actor?.name ||
-                        log.actorRole ||
-                        'System'}
-                    </td>
-
-                    <td>
-                      <span className="admin-code">
-                        {log.action}
-                      </span>
-                    </td>
-
-                    <td>
-                      {log.entity
-                        ? `${log.entity} ${log.entityId || ''}`.trim()
-                        : '—'}
-                    </td>
-
-                    <td>
-                      {log.metadata && Object.keys(log.metadata).length
-                        ? JSON.stringify(log.metadata)
-                        : '—'}
-                    </td>
-                  </tr>
-                ))
-              ) : (
-                <tr>
-                  <td
-                    colSpan="5"
-                    className="admin-empty"
-                  >
-                    No audit records yet.
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
+                <button
+                  className="admin-mini-button"
+                  onClick={() => setDetailAuditLog(log)}
+                  aria-label="View details"
+                >
+                  <Icon path={ICONS.eye} />
+                  Details
+                </button>
+              </div>
+            ))
+          ) : (
+            <div className="admin-empty admin-empty-block">No audit records yet.</div>
+          )}
         </div>
 
         {renderPagination()}
+      </div>
+    );
+  }
+
+  // Server-side pagination already bounds every audit-log request to 50 rows by default
+  // (100 max — see pagination() in backend/src/routes/admin.js) — this view never fetches
+  // the full table, which will grow into the millions over time. Full metadata for a single
+  // row is only ever fetched implicitly (it's already in the page payload) and only rendered
+  // on demand via the Details modal below, not dumped inline for every row at once.
+  function auditActionTone(action) {
+    const value = String(action || '');
+    if (/DELETE|DEACTIVAT|REJECT|LOCKOUT/.test(value)) return 'danger';
+    if (/CREATE|GENERAT|ONBOARD|ASSIGN(?!ED_)/.test(value)) return 'success';
+    if (/REASSIGN|UPDATE|CHANGE|RESET/.test(value)) return 'info';
+    return 'neutral';
+  }
+
+  function auditActionIcon(action) {
+    const value = String(action || '');
+    if (/DELETE|DEACTIVAT|REJECT|LOCKOUT/.test(value)) return ICONS.close;
+    if (/CREATE|GENERAT|ONBOARD/.test(value)) return ICONS.plus;
+    if (/ASSIGN/.test(value)) return ICONS.qr;
+    if (/PAYOUT|PAID/.test(value)) return ICONS.money;
+    if (/LEAD/.test(value)) return ICONS.lead;
+    return ICONS.dashboard;
+  }
+
+  function formatAuditAction(action) {
+    return String(action || '')
+      .split('_')
+      .map((word) => word.charAt(0) + word.slice(1).toLowerCase())
+      .join(' ');
+  }
+
+  function renderAuditLogDetailModal() {
+    const log = detailAuditLog;
+
+    return (
+      <div
+        className="admin-modal-overlay"
+        onClick={() => setDetailAuditLog(null)}
+      >
+        <div
+          className="admin-modal"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Audit log details"
+          onClick={(event) => event.stopPropagation()}
+        >
+          <div className="admin-modal-header">
+            <div>
+              <span className="admin-eyebrow">AUDIT LOG</span>
+              <h2>{formatAuditAction(log.action)}</h2>
+            </div>
+            <button
+              className="admin-mini-button"
+              onClick={() => setDetailAuditLog(null)}
+              aria-label="Close"
+            >
+              <Icon path={ICONS.close} />
+            </button>
+          </div>
+
+          <div className="admin-modal-body">
+            <div className="admin-modal-section">
+              <h3>Event</h3>
+              <dl className="admin-modal-fields">
+                <dt>Actor</dt>
+                <dd>{log.actor?.name || log.actorRole || 'System'}</dd>
+                <dt>Role</dt>
+                <dd>{log.actorRole || '—'}</dd>
+                <dt>Timestamp</dt>
+                <dd>{log.timestamp ? new Date(log.timestamp).toLocaleString() : '—'}</dd>
+                <dt>Entity</dt>
+                <dd>{log.entity || '—'}</dd>
+                <dt>Entity ID</dt>
+                <dd>{log.entityId || '—'}</dd>
+              </dl>
+            </div>
+
+            <div className="admin-modal-section">
+              <h3>Metadata</h3>
+              {log.metadata && Object.keys(log.metadata).length ? (
+                <dl className="admin-modal-fields mono">
+                  {Object.entries(log.metadata).map(([key, value]) => (
+                    <Fragment key={key}>
+                      <dt>{key}</dt>
+                      <dd>
+                        {typeof value === 'object' ? JSON.stringify(value) : String(value)}
+                      </dd>
+                    </Fragment>
+                  ))}
+                </dl>
+              ) : (
+                <p className="admin-scan-assign-blocked">No additional metadata for this event.</p>
+              )}
+            </div>
+          </div>
+        </div>
       </div>
     );
   }
@@ -2685,7 +2929,30 @@ function AdminPage() {
     );
   }
 
+  function renderResourceSkeleton() {
+    return (
+      <div className="admin-resource" aria-hidden="true">
+        <div className="admin-resource-heading">
+          <div style={{ display: 'grid', gap: '8px' }}>
+            <SkeletonBlock width="120px" height="12px" />
+            <SkeletonBlock width="200px" height="26px" />
+          </div>
+        </div>
+
+        <div className="admin-skeleton-table">
+          {Array.from({ length: 6 }).map((_, index) => (
+            <SkeletonBlock key={index} height="48px" radius="8px" />
+          ))}
+        </div>
+      </div>
+    );
+  }
+
   function renderCurrentResource() {
+    if (resourceLoading) {
+      return renderResourceSkeleton();
+    }
+
     if (resource === 'dashboard') {
       return renderStats();
     }
@@ -3034,6 +3301,7 @@ function AdminPage() {
         </div>
 
         {detailLead && renderLeadDetailModal()}
+        {detailAuditLog && renderAuditLogDetailModal()}
       </main>
     </div>
   );

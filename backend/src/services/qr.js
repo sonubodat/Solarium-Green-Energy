@@ -46,6 +46,16 @@ export async function assignUnassignedQr({ code, vendorId, assignedById, assigne
     if (!vendor) throw conflict('Vendor was not found.', 'VENDOR_NOT_FOUND');
     if (qr.status !== 'UNASSIGNED') throw conflict('Only an unassigned QR can be activated.', 'QR_NOT_UNASSIGNED');
 
+    // The "one active QR per vendor" rule was previously only enforced by the vendor-lookup
+    // picker excluding already-assigned vendors from the dropdown — a UI convenience, not real
+    // enforcement. Nothing stopped this function itself from being called (directly, or via a
+    // stale/cached picker) with a vendor that already held an active QR, silently giving that
+    // vendor a second (or third) simultaneous active assignment. Found from exactly that: a
+    // vendor with 3 concurrent active assignments, which is why the "assign" dropdown showed
+    // almost no eligible vendors — most of them incorrectly already looked "assigned".
+    const existingActive = await transaction.qrAssignment.findFirst({ where: { vendorId, unassignedAt: null } });
+    if (existingActive) throw conflict('This Vendor already holds an active QR. Reassign or unassign it first.', 'VENDOR_ALREADY_HAS_ACTIVE_QR');
+
     const assignment = await transaction.qrAssignment.create({
       data: { qrCodeId: qr.id, vendorId, assignedById, assignedAt: new Date() },
     });
@@ -73,6 +83,11 @@ export async function reassignQr({ qrId, vendorId, assignedById }) {
     if (!vendor) throw conflict('Vendor was not found.', 'VENDOR_NOT_FOUND');
     if (!current || qr.status !== 'ACTIVE') throw conflict('Only an active QR can be reassigned.', 'QR_NOT_ACTIVE');
     if (current.vendorId === vendorId) throw conflict('QR is already assigned to this Vendor.', 'QR_ALREADY_ASSIGNED');
+
+    // Same missing check as assignUnassignedQr had — the target vendor could already hold a
+    // different active QR, and nothing stopped them from silently ending up with two at once.
+    const targetAlreadyActive = await transaction.qrAssignment.findFirst({ where: { vendorId, unassignedAt: null } });
+    if (targetAlreadyActive) throw conflict('This Vendor already holds a different active QR. Reassign or unassign it first.', 'VENDOR_ALREADY_HAS_ACTIVE_QR');
 
     await transaction.qrAssignment.update({ where: { id: current.id }, data: { unassignedAt: new Date() } });
     const replacement = await transaction.qrAssignment.create({

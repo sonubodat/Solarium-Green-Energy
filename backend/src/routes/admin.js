@@ -80,17 +80,8 @@ async function ensureActiveAdminRemains(transaction, userId, changes) {
 	}
 }
 
-// Parallelized via Promise.all — this used to be 11 sequential prisma.count() calls,
-// each paying a full network round trip to the database's region before the next one
-// started (measured ~150-900ms per round trip; ~2-8s total for this one endpoint,
-// the first thing every Admin sign-in fires). That was originally written sequential
-// out of caution about Supabase's connection pooler under the OLD transaction-mode
-// pooler config, where interactive $transaction() blocks held a connection across
-// multiple queries and could exhaust the small pool. None of that applies here: each
-// count below is an independent autocommit query (no $transaction() wrapper), so it
-// grabs a connection, runs, and immediately returns it — Promise.all just lets up to
-// `max` (see prisma.js) of them run concurrently instead of one at a time; any beyond
-// that queue safely for the next free connection rather than erroring.
+// Parallelized via Promise.all — independent autocommit counts, no shared transaction,
+// safe to run concurrently. Was sequential (~2.0s); now ~0.87s measured. See progress.md.
 adminRoutes.get('/dashboard', requireAuth, requireAdmin, async (request, response, next) => {
 	try {
 		const [
@@ -395,6 +386,40 @@ adminRoutes.post('/qr/generate', requireAuth, requireAdmin, async (request, resp
 	}
 });
 
+adminRoutes.post('/qr/:qrId/delete', requireAuth, requireAdmin, async (request, response, next) => {
+	try {
+		const qrId = request.params.qrId;
+		const qr = await prisma.qrCode.findUnique({ where: { id: qrId } });
+		if (!qr) {
+			return response.status(404).json({ success: false, error: { code: 'QR_NOT_FOUND', message: 'QR code was not found.' } });
+		}
+		if (qr.status !== 'UNASSIGNED') {
+			return response.status(409).json({
+				success: false,
+				error: { code: 'QR_NOT_UNASSIGNED', message: 'Only an unassigned QR code can be deleted.' },
+			});
+		}
+		// Even an UNASSIGNED QR can carry assignment history (e.g. it was manually reset after
+		// an earlier assignment was closed) — a hard delete here would either fail on the
+		// QrAssignment foreign key or, worse, cascade away real historical attribution that
+		// leads/scans/payouts still reference. Only ever delete a QR that was truly never used.
+		const assignmentCount = await prisma.qrAssignment.count({ where: { qrCodeId: qrId } });
+		if (assignmentCount) {
+			return response.status(409).json({
+				success: false,
+				error: { code: 'QR_HAS_HISTORY', message: 'This QR code has assignment history and cannot be deleted.' },
+			});
+		}
+		await prisma.$transaction(async (transaction) => {
+			await transaction.qrCode.delete({ where: { id: qrId } });
+			await writeAudit(transaction, request, 'QR_DELETED', 'QrCode', qrId, { qrCode: qr.code });
+		});
+		return response.json({ success: true });
+	} catch (error) {
+		return next(error);
+	}
+});
+
 adminRoutes.get('/qr/lookup/:code', requireAuth, requireAdmin, async (request, response, next) => {
 	try {
 		const qr = await prisma.qrCode.findUnique({
@@ -466,6 +491,9 @@ const qrPrintFilterSchema = z.object({
 	status: z.enum(['UNASSIGNED', 'ACTIVE', 'INACTIVE', 'RETIRED']).optional(),
 	vendor_id: z.string().trim().min(1).optional(),
 	assignment: z.enum(['ASSIGNED', 'UNASSIGNED']).optional(),
+	// Downloading a single named code (e.g. "V-0023") for the "just give me this one QR"
+	// case — no need to page through or filter the whole batch to find one code.
+	code: z.string().trim().min(1).optional(),
 });
 
 function qrAssignmentWhere(assignment) {
@@ -498,10 +526,11 @@ adminRoutes.get('/qr/:qrId/image', requireAuth, requireAdmin, async (request, re
 
 adminRoutes.get('/qr/print', requireAuth, requireAdmin, async (request, response, next) => {
 	try {
-		const filters = qrPrintFilterSchema.parse({ status: request.query.status, vendor_id: request.query.vendor_id, assignment: request.query.assignment });
+		const filters = qrPrintFilterSchema.parse({ status: request.query.status, vendor_id: request.query.vendor_id, assignment: request.query.assignment, code: request.query.code });
 		const { page, limit, skip } = pagination(request.query);
 
 		const where = {
+			...(filters.code ? { code: filters.code } : {}),
 			...(filters.status ? { status: filters.status } : {}),
 			...(filters.vendor_id ? { assignments: { some: { vendorId: filters.vendor_id, unassignedAt: null } } } : {}),
 			...qrAssignmentWhere(filters.assignment),
@@ -562,9 +591,10 @@ adminRoutes.get('/qr/print', requireAuth, requireAdmin, async (request, response
 
 adminRoutes.get('/qr/pdf', requireAuth, requireAdmin, async (request, response, next) => {
 	try {
-		const filters = qrPrintFilterSchema.parse({ status: request.query.status, vendor_id: request.query.vendor_id, assignment: request.query.assignment });
+		const filters = qrPrintFilterSchema.parse({ status: request.query.status, vendor_id: request.query.vendor_id, assignment: request.query.assignment, code: request.query.code });
 
 		const where = {
+			...(filters.code ? { code: filters.code } : {}),
 			...(filters.status ? { status: filters.status } : {}),
 			...(filters.vendor_id ? { assignments: { some: { vendorId: filters.vendor_id, unassignedAt: null } } } : {}),
 			...qrAssignmentWhere(filters.assignment),
@@ -578,11 +608,17 @@ adminRoutes.get('/qr/pdf', requireAuth, requireAdmin, async (request, response, 
 		});
 
 		if (!qrCodes.length) {
-			return response.status(404).json({ success: false, error: { code: 'QR_NOT_FOUND', message: 'No QR codes match this filter.' } });
+			const message = filters.code
+				? `No QR code matching "${filters.code}" was found.`
+				: 'No QR codes match this filter.';
+			return response.status(404).json({ success: false, error: { code: 'QR_NOT_FOUND', message } });
 		}
 
 		response.setHeader('Content-Type', 'application/pdf');
-		response.setHeader('Content-Disposition', 'attachment; filename="solarium-qr-codes.pdf"');
+		response.setHeader(
+			'Content-Disposition',
+			`attachment; filename="${filters.code ? safeFilenameSegment(filters.code) : 'solarium-qr-codes'}.pdf"`
+		);
 
 		// Only the QR image itself goes on the page — no vendor name, status, or code text —
 		// per explicit request that the PDF contain nothing but the scannable QR codes.
@@ -637,14 +673,22 @@ adminRoutes.get('/vendors', requireAuth, requireAdmin, async (request, response,
 					salesUserId: true,
 					createdAt: true,
 					_count: { select: { leads: true } },
+					assignments: { where: { unassignedAt: null }, select: { qrCode: { select: { code: true } } }, take: 1 },
 				},
 			}),
 			prisma.vendor.count({ where }),
 		]);
-		// Flatten Prisma's { _count: { leads } } shape to a plain leadCount field —
-		// the frontend list/CSV don't need to know about Prisma's relation-count wrapper.
-		const vendorsWithLeadCount = vendors.map(({ _count, ...vendor }) => ({ ...vendor, leadCount: _count.leads }));
-		return response.json({ success: true, vendors: vendorsWithLeadCount, pagination: { page, limit, total } });
+		// Flatten Prisma's { _count: { leads } } shape to a plain leadCount field, and the
+		// assignment relation to a plain currentQr/qrAssigned pair — the frontend previously
+		// read a `vendor.currentQr` field that this endpoint never actually sent, so every
+		// vendor silently showed "Unassigned" in the UI regardless of their real QR status.
+		const vendorsWithExtras = vendors.map(({ _count, assignments, ...vendor }) => ({
+			...vendor,
+			leadCount: _count.leads,
+			currentQr: assignments[0]?.qrCode.code || null,
+			qrAssigned: assignments.length > 0,
+		}));
+		return response.json({ success: true, vendors: vendorsWithExtras, pagination: { page, limit, total } });
 	} catch (error) {
 		return next(error);
 	}

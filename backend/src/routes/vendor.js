@@ -84,12 +84,22 @@ vendorRoutes.post('/change-password', requireAuth, requireVendor, async (request
 	}
 });
 
-vendorRoutes.get('/profile', requireAuth, requireVendor, (request, response) => {
-	const { vendor } = request.auth;
-	return response.json({
-		success: true,
-		vendor: publicVendor(vendor),
-	});
+vendorRoutes.get('/profile', requireAuth, requireVendor, async (request, response, next) => {
+	try {
+		const { vendor } = request.auth;
+		const assignment = await prisma.qrAssignment.findFirst({
+			where: { vendorId: vendor.id, unassignedAt: null },
+			select: { qrCode: { select: { code: true } } },
+		});
+		return response.json({
+			success: true,
+			vendor: publicVendor(vendor),
+			currentQr: assignment?.qrCode.code || null,
+			qrAssigned: Boolean(assignment),
+		});
+	} catch (error) {
+		return next(error);
+	}
 });
 
 vendorRoutes.get('/leads', requireAuth, requireVendor, async (request, response, next) => {

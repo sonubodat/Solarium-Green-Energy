@@ -890,6 +890,24 @@
   gap: 9px;
 }
 
+.admin-form-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.admin-form-field > span {
+  color: var(--admin-text);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.admin-form-field > small {
+  color: var(--admin-muted);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
 .admin-form-grid input,
 .admin-form-grid select,
 .admin-qr-generate input {
@@ -920,7 +938,7 @@
 
 .admin-qr-generate {
   display: grid;
-  grid-template-columns: 1fr 120px auto;
+  grid-template-columns: 1fr 120px auto auto;
   align-items: center;
   gap: 15px;
 }
@@ -1396,4 +1414,181 @@
   color: var(--admin-muted);
   font-size: .85rem;
   margin-top: 8px;
+}
+
+.admin-skeleton-table {
+  display: grid;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+/* --------------------------------------------------
+   VENDOR-GROUPED LEADS
+-------------------------------------------------- */
+
+.admin-vendor-groups {
+  display: grid;
+  gap: 10px;
+}
+
+.admin-vendor-group {
+  background: #fff;
+  border: 1px solid var(--admin-border);
+  border-radius: 11px;
+  overflow: hidden;
+}
+
+.admin-vendor-group-header {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  display: flex;
+  gap: 10px;
+  padding: 14px 16px;
+  text-align: left;
+  width: 100%;
+}
+
+.admin-vendor-group-header:hover {
+  background: var(--admin-bg);
+}
+
+.admin-vendor-group-chevron {
+  color: var(--admin-muted);
+  flex: 0 0 14px;
+  height: 14px;
+  transform: rotate(90deg);
+  transition: transform .15s ease;
+  width: 14px;
+}
+
+.admin-vendor-group-chevron.open {
+  transform: rotate(-90deg);
+}
+
+.admin-vendor-group-name {
+  color: var(--admin-navy);
+  flex: 1;
+  font-size: 13px;
+  font-weight: 750;
+}
+
+.admin-vendor-group-count {
+  background: var(--admin-bg);
+  border-radius: 999px;
+  color: var(--admin-muted);
+  font-size: 11px;
+  font-weight: 700;
+  padding: 4px 10px;
+}
+
+.admin-vendor-group .admin-table-wrap {
+  border-top: 1px solid var(--admin-border);
+}
+
+.admin-empty-block {
+  background: #fff;
+  border: 1px solid var(--admin-border);
+  border-radius: 11px;
+  padding: 30px;
+  text-align: center;
+}
+
+/* --------------------------------------------------
+   AUDIT LOGS
+-------------------------------------------------- */
+
+.admin-audit-list {
+  display: grid;
+  gap: 8px;
+}
+
+.admin-audit-row {
+  align-items: center;
+  background: #fff;
+  border: 1px solid var(--admin-border);
+  border-radius: 11px;
+  display: flex;
+  gap: 12px;
+  padding: 12px 14px;
+}
+
+.admin-audit-icon {
+  align-items: center;
+  border-radius: 9px;
+  display: flex;
+  flex: 0 0 34px;
+  height: 34px;
+  justify-content: center;
+  width: 34px;
+}
+
+.admin-audit-icon svg {
+  height: 16px;
+  width: 16px;
+}
+
+.admin-audit-icon.success { background: #e8f5ec; color: #2f9e5c; }
+.admin-audit-icon.danger { background: #fdecea; color: #d64545; }
+.admin-audit-icon.info { background: #e8f2fb; color: var(--admin-blue); }
+.admin-audit-icon.neutral { background: var(--admin-bg); color: var(--admin-muted); }
+
+.admin-audit-main {
+  display: grid;
+  flex: 1;
+  gap: 3px;
+  min-width: 0;
+}
+
+.admin-audit-line {
+  align-items: baseline;
+  display: flex;
+  gap: 8px;
+}
+
+.admin-audit-line strong {
+  color: var(--admin-navy);
+  font-size: 12.5px;
+}
+
+.admin-audit-entity {
+  color: var(--admin-muted);
+  font-size: 10.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.admin-audit-meta {
+  color: var(--admin-muted);
+  font-size: 10.5px;
+}
+
+.admin-single-qr-form {
+  align-items: center;
+  background: #fff;
+  border: 1px solid var(--admin-border);
+  border-radius: 11px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 15px;
+  padding: 14px 16px;
+}
+
+.admin-single-qr-form input {
+  border: 1px solid var(--admin-border);
+  border-radius: 8px;
+  color: var(--admin-text);
+  flex: 0 1 200px;
+  font-size: 12px;
+  height: 38px;
+  padding: 0 12px;
+}
+
+.admin-single-qr-form small {
+  color: var(--admin-muted);
+  flex-basis: 100%;
+  font-size: 10.5px;
 }

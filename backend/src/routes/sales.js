@@ -24,6 +24,12 @@ const vendorCreateSchema = z.object({
 	password: z.string().min(8),
 });
 
+function pagination(query) {
+	const page = Math.max(Number.parseInt(query.page, 10) || 1, 1);
+	const limit = Math.min(Math.max(Number.parseInt(query.limit, 10) || 25, 1), 100);
+	return { page, limit, skip: (page - 1) * limit };
+}
+
 function normalizeMobile(value) {
 	const digits = value.replace(/\D/g, '');
 	return digits.startsWith('91') && digits.length === 12 ? digits.slice(2) : digits;
@@ -85,15 +91,21 @@ salesRoutes.get('/vendors', requireAuth, requireSales, async (request, response,
 
 salesRoutes.get('/registrations', requireAuth, requireSales, async (request, response, next) => {
 	try {
-		const registrations = await prisma.vendorRegistration.findMany({
-			where: {
-				status: 'PENDING',
-				OR: [{ salesUserId: request.auth.user.id }, { salesUserId: null }],
-			},
-			orderBy: { createdAt: 'asc' },
-			take: 50,
-		});
-		return response.json({ success: true, registrations });
+		const { page, limit, skip } = pagination(request.query);
+		const where = {
+			status: 'PENDING',
+			OR: [{ salesUserId: request.auth.user.id }, { salesUserId: null }],
+		};
+		const [registrations, total] = await Promise.all([
+			prisma.vendorRegistration.findMany({
+				where,
+				orderBy: { createdAt: 'asc' },
+				skip,
+				take: limit,
+			}),
+			prisma.vendorRegistration.count({ where }),
+		]);
+		return response.json({ success: true, registrations, pagination: { page, limit, total } });
 	} catch (error) {
 		return next(error);
 	}

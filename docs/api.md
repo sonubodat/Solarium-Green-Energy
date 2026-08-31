@@ -146,15 +146,16 @@ Create a vendor registration.
 List registrations visible to the authenticated Sales user.
 
 - Authentication: Sales
-- Query: bounded pagination and approved search/filter fields
+- Query: real page-based pagination (`page`, `limit` — default 25, capped at 100); response includes `pagination: { page, limit, total }`
 - Rules: scope results by explicit Sales ownership or assignment; do not return unrestricted lead or payout data
+- Corrected from a prior mismatch: this previously had no `page`/`skip` support at all — just a fixed `take: 50` with no way to reach anything beyond the first 50 pending registrations — despite this doc claiming pagination existed. Now genuinely paginated, matching every other Admin/Sales list endpoint's convention.
 
 ### `GET /api/sales/vendors`
 
-List vendors operationally available to the authenticated Sales user.
+List vendors operationally available to the authenticated Sales user, for the QR-assignment picker.
 
 - Authentication: Sales
-- Query: bounded pagination; indexed identifier/name lookup
+- Response: bounded to 100, name-sorted — a capped picker list (like `GET /api/admin/vendors/lookup`), not page-based pagination; this doc previously overclaimed "pagination" here
 - Rules: scope results by Sales ownership or assignment; excludes any Vendor already holding an active QR assignment
 
 ### `POST /api/sales/vendors/:vendorId/onboard`
@@ -393,6 +394,7 @@ Authenticate using a login identifier or registered mobile number and password.
 
 - Authentication: Vendor
 - Rules: return only the authenticated Vendor's profile
+- Response also includes `currentQr` (the code, or `null`) and `qrAssigned` (boolean) — the Vendor's own active QR assignment status
 
 ### `PATCH /api/vendor/profile`
 
@@ -402,14 +404,16 @@ Authenticate using a login identifier or registered mobile number and password.
 ### `GET /api/vendor/leads`
 
 - Authentication: Vendor
-- Query: bounded pagination
+- Query: bounded pagination (`page`, `limit` — default 25, capped at 100)
 - Rules: scope exclusively to the authenticated Vendor; protect customer phone data
+- The frontend now actually uses this (Prev/Next controls on the Referrals tab) — previously the backend supported pagination but the UI never sent `page`/`limit` or exposed page controls, so a Vendor with more than 25 leads had no way to see the rest.
 
 ### `GET /api/vendor/payouts`
 
 - Authentication: Vendor
-- Query: bounded pagination
+- Query: bounded pagination (`page`, `limit` — default 25, capped at 100)
 - Rules: return only that Vendor's `UNPAID` or `PAID` status and permitted payment details; never expose other Vendors' records
+- Same frontend fix as `GET /api/vendor/leads` — Prev/Next controls added to the Payouts tab.
 
 ### `POST /api/vendor/change-password`
 

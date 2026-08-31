@@ -127,17 +127,39 @@ function VendorPage() {
   }, []);
 
   async function loadVendorData(account = null) {
-    // Sequential, not Promise.all — avoids grabbing 3 pooled DB connections at once on every
-    // sign-in/session-restore against a pooler with a small shared connection ceiling.
-    const profile = await apiRequest('/vendor/profile');
-    const leads = await apiRequest('/vendor/leads');
-    const payouts = await apiRequest('/vendor/payouts');
-    const data = [profile, leads, payouts];
+    // Parallelized — these are three independent GET requests, not steps of one transaction,
+    // so there is no held connection for them to contend over. (This used to be sequential
+    // specifically to avoid grabbing 3 pooled connections at once under the old transaction-mode
+    // pooler; that root cause was fixed separately — see prisma.js/env.js — and this codebase's
+    // Admin dashboard was parallelized the same way once that fix landed.)
+    const [profile, leads, payouts] = await Promise.all([
+      apiRequest('/vendor/profile'),
+      apiRequest('/vendor/leads'),
+      apiRequest('/vendor/payouts'),
+    ]);
 
     return {
       account,
-      data,
+      data: [profile, leads, payouts],
     };
+  }
+
+  async function loadLeadsPage(page) {
+    const leadsResult = await apiRequest(`/vendor/leads?page=${page}&limit=25`);
+    setPortalData((current) => {
+      const data = [...current.data];
+      data[1] = leadsResult;
+      return { ...current, data };
+    });
+  }
+
+  async function loadPayoutsPage(page) {
+    const payoutsResult = await apiRequest(`/vendor/payouts?page=${page}&limit=25`);
+    setPortalData((current) => {
+      const data = [...current.data];
+      data[2] = payoutsResult;
+      return { ...current, data };
+    });
   }
 
   async function restoreSession() {
@@ -592,6 +614,15 @@ function VendorPage() {
                 <small>Access</small>
                 <strong>Vendor Partner</strong>
               </div>
+
+              <div>
+                <small>QR code</small>
+                <strong>
+                  {vendor.qrAssigned
+                    ? `Assigned (${vendor.currentQr})`
+                    : 'Unassigned'}
+                </strong>
+              </div>
             </div>
           </section>
         </div>
@@ -599,7 +630,39 @@ function VendorPage() {
     );
   }
 
-  function renderReferrals(leads) {
+  function renderVendorPagination(pagination, onPageChange) {
+    if (!pagination || pagination.total <= pagination.limit) return null;
+
+    const { page, limit, total } = pagination;
+    const start = total === 0 ? 0 : (page - 1) * limit + 1;
+    const end = Math.min(page * limit, total);
+
+    return (
+      <div className="vendor-pagination">
+        <span>{`Showing ${start}–${end} of ${total}`}</span>
+        <div>
+          <button
+            type="button"
+            className="vendor-pagination-button"
+            disabled={loading || page <= 1}
+            onClick={() => onPageChange(page - 1)}
+          >
+            Previous
+          </button>
+          <button
+            type="button"
+            className="vendor-pagination-button"
+            disabled={loading || end >= total}
+            onClick={() => onPageChange(page + 1)}
+          >
+            Next
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  function renderReferrals(leads, leadsPagination) {
     return (
       <section className="vendor-panel vendor-full-panel">
         <div className="vendor-panel-heading">
@@ -672,11 +735,13 @@ function VendorPage() {
             </p>
           </div>
         )}
+
+        {renderVendorPagination(leadsPagination, loadLeadsPage)}
       </section>
     );
   }
 
-  function renderPayouts(payouts) {
+  function renderPayouts(payouts, payoutsPagination) {
     return (
       <section className="vendor-panel vendor-full-panel">
         <div className="vendor-panel-heading">
@@ -722,6 +787,8 @@ function VendorPage() {
             </p>
           </div>
         )}
+
+        {renderVendorPagination(payoutsPagination, loadPayoutsPage)}
       </section>
     );
   }
@@ -775,6 +842,15 @@ function VendorPage() {
             <small>Account access</small>
             <strong>Vendor Partner</strong>
           </div>
+
+          <div>
+            <small>QR code</small>
+            <strong>
+              {vendor.qrAssigned
+                ? `Assigned (${vendor.currentQr})`
+                : 'Unassigned'}
+            </strong>
+          </div>
         </div>
 
         <div className="vendor-security-box">
@@ -797,10 +873,11 @@ function VendorPage() {
   function renderWorkspace() {
     const [profileResult, leadsResult, payoutsResult] = portalData.data;
 
-    const vendor =
-      profileResult.vendor ||
-      portalData.account ||
-      {};
+    const vendor = {
+      ...(profileResult.vendor || portalData.account || {}),
+      currentQr: profileResult.currentQr || null,
+      qrAssigned: Boolean(profileResult.qrAssigned),
+    };
 
     const leads = leadsResult.leads || [];
     const payouts = payoutsResult.payouts || [];
@@ -892,10 +969,10 @@ function VendorPage() {
             renderOverview(vendor, leads, payouts, totalLeads)}
 
           {activeSection === 'referrals' &&
-            renderReferrals(leads)}
+            renderReferrals(leads, leadsResult.pagination)}
 
           {activeSection === 'payouts' &&
-            renderPayouts(payouts)}
+            renderPayouts(payouts, payoutsResult.pagination)}
 
           {activeSection === 'account' &&
             renderAccount(vendor)}

@@ -1558,3 +1558,36 @@
     width: 100%;
   }
 }
+.vendor-pagination {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  justify-content: space-between;
+  margin-top: 18px;
+}
+
+.vendor-pagination span {
+  color: var(--color-muted, #718078);
+  font-size: .82rem;
+}
+
+.vendor-pagination-button {
+  background: #fff;
+  border: 1px solid var(--color-border, #cbd8cc);
+  border-radius: 8px;
+  color: var(--color-ink, #18332d);
+  cursor: pointer;
+  font-size: .82rem;
+  font-weight: 600;
+  padding: .5rem .9rem;
+}
+
+.vendor-pagination-button:disabled {
+  cursor: not-allowed;
+  opacity: .45;
+}
+
+.vendor-pagination-button + .vendor-pagination-button {
+  margin-left: 8px;
+}
