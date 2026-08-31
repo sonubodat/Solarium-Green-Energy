@@ -578,11 +578,24 @@ adminRoutes.get('/vendors', requireAuth, requireAdmin, async (request, response,
 				orderBy: { createdAt: 'desc' },
 				skip,
 				take: limit,
-				select: { id: true, businessName: true, ownerName: true, loginIdentifier: true, mobileNumber: true, status: true, salesUserId: true, createdAt: true },
+				select: {
+					id: true,
+					businessName: true,
+					ownerName: true,
+					loginIdentifier: true,
+					mobileNumber: true,
+					status: true,
+					salesUserId: true,
+					createdAt: true,
+					_count: { select: { leads: true } },
+				},
 			}),
 			prisma.vendor.count({ where }),
 		]);
-		return response.json({ success: true, vendors, pagination: { page, limit, total } });
+		// Flatten Prisma's { _count: { leads } } shape to a plain leadCount field —
+		// the frontend list/CSV don't need to know about Prisma's relation-count wrapper.
+		const vendorsWithLeadCount = vendors.map(({ _count, ...vendor }) => ({ ...vendor, leadCount: _count.leads }));
+		return response.json({ success: true, vendors: vendorsWithLeadCount, pagination: { page, limit, total } });
 	} catch (error) {
 		return next(error);
 	}

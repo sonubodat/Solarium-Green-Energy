@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { apiRequest } from '../api/client';
 import './PublicPage.css';
@@ -33,6 +33,9 @@ const WHY_ITEMS = [
 ];
 
 const EMPTY_LEAD = { customer_name: '', phone: '', email: '', location: '' };
+// TODO: placeholder — replace with Solarium's real support inbox before launch.
+const SUPPORT_EMAIL = 'support@solariumenergy.in';
+const SLOW_REQUEST_MS = 6000;
 
 function PublicPage() {
   const { code: pathQrCode } = useParams();
@@ -47,6 +50,45 @@ function PublicPage() {
   const [submitted, setSubmitted] = useState(null);
   const [locating, setLocating] = useState(false);
   const [locationError, setLocationError] = useState('');
+  // 'idle' | 'checking' | 'available' | 'taken'. UX convenience only — the backend re-checks
+  // (and the database enforces) uniqueness again on final submit regardless of this state.
+  const [phoneCheck, setPhoneCheck] = useState('idle');
+  const [slowRequest, setSlowRequest] = useState(false);
+  const phoneCheckSeq = useRef(0);
+  const slowRequestTimer = useRef(null);
+
+  function startSlowRequestWatch() {
+    setSlowRequest(false);
+    clearTimeout(slowRequestTimer.current);
+    slowRequestTimer.current = setTimeout(() => setSlowRequest(true), SLOW_REQUEST_MS);
+  }
+
+  function stopSlowRequestWatch() {
+    clearTimeout(slowRequestTimer.current);
+    setSlowRequest(false);
+  }
+
+  useEffect(() => () => clearTimeout(slowRequestTimer.current), []);
+
+  async function checkPhoneAvailability(rawPhone) {
+    const digits = rawPhone.replace(/\D/g, '');
+    if (digits.length < 10) {
+      setPhoneCheck('idle');
+      return;
+    }
+    const seq = ++phoneCheckSeq.current;
+    setPhoneCheck('checking');
+    startSlowRequestWatch();
+    try {
+      await apiRequest('/public/leads/check-phone', { method: 'POST', body: JSON.stringify({ phone: rawPhone }) });
+      if (seq === phoneCheckSeq.current) setPhoneCheck('available');
+    } catch (error) {
+      if (seq !== phoneCheckSeq.current) return;
+      setPhoneCheck(error.code === 'CUSTOMER_ALREADY_EXISTS' ? 'taken' : 'idle');
+    } finally {
+      if (seq === phoneCheckSeq.current) stopSlowRequestWatch();
+    }
+  }
 
   useEffect(() => {
     if (!pathQrCode) return;
@@ -71,8 +113,16 @@ function PublicPage() {
 
   async function submitLead(event) {
     event.preventDefault();
+    // Frontend check is UX only — repeat it here rather than trusting the earlier blur check,
+    // since the customer could still submit before that check resolves. The backend/database
+    // enforce this for real regardless of what the frontend does or doesn't catch.
+    if (phoneCheck === 'taken') {
+      setMessage('This phone number has already been used to submit an enquiry.');
+      return;
+    }
     setLoading(true);
     setMessage('');
+    startSlowRequestWatch();
     try {
       const body = { ...lead };
       // The backend derives vendor/QR attribution server-side from this scan_id — the browser
@@ -84,10 +134,13 @@ function PublicPage() {
       setSubmitted({ name: lead.customer_name });
       setLead(EMPTY_LEAD);
       setConsent(true);
+      setPhoneCheck('idle');
     } catch (error) {
       setMessage(error.message);
+      if (error.code === 'CUSTOMER_ALREADY_EXISTS') setPhoneCheck('taken');
     } finally {
       setLoading(false);
+      stopSlowRequestWatch();
     }
   }
 
@@ -191,10 +244,18 @@ function PublicPage() {
                 required
                 placeholder="Mobile Number *"
                 value={lead.phone}
-                onChange={(event) => setLead({ ...lead, phone: event.target.value })}
+                onChange={(event) => {
+                  setLead({ ...lead, phone: event.target.value });
+                  setPhoneCheck('idle');
+                }}
+                onBlur={(event) => checkPhoneAvailability(event.target.value)}
               />
             </div>
           </div>
+          {phoneCheck === 'checking' && <p className="enquiry-phone-status checking">Checking...</p>}
+          {phoneCheck === 'taken' && (
+            <p className="enquiry-phone-status taken">This phone number has already been used to submit an enquiry.</p>
+          )}
           <div className="enquiry-field">
             <Icon path={ICONS.mail} className="enquiry-field-icon" />
             <input
@@ -236,7 +297,7 @@ function PublicPage() {
             <span>I agree to be contacted by Solarium Energy regarding my enquiry.</span>
           </label>
 
-          <button className="enquiry-submit" disabled={loading}>
+          <button className="enquiry-submit" disabled={loading || phoneCheck === 'taken' || phoneCheck === 'checking'}>
             {loading ? 'Sending...' : 'Submit Enquiry'}
             {!loading && <Icon path={ICONS.arrow} className="enquiry-submit-icon" />}
           </button>
@@ -245,6 +306,13 @@ function PublicPage() {
         </form>
 
         {message && <p className="enquiry-message" role="status">{message}</p>}
+
+        {slowRequest && (
+          <p className="enquiry-slow-notice" role="status">
+            This is taking longer than expected. If it doesn't go through, email your details to{' '}
+            <a href={`mailto:${SUPPORT_EMAIL}`}>{SUPPORT_EMAIL}</a> and our team will follow up.
+          </p>
+        )}
       </>
     );
   }

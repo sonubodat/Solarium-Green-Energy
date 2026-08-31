@@ -396,8 +396,7 @@ function VendorPage() {
     );
   }
 
-  function renderOverview(vendor, leads, payouts) {
-    const totalLeads = leads.length;
+  function renderOverview(vendor, leads, payouts, totalLeads) {
 
     const pendingLeads = leads.filter((item) => {
       const status = String(item.status || '').toLowerCase();
@@ -782,6 +781,10 @@ function VendorPage() {
 
     const leads = leadsResult.leads || [];
     const payouts = payoutsResult.payouts || [];
+    // The leads array is capped at one page (25) — pagination.total is the vendor's true
+    // customer/referral count across every page, which is what the "Total referrals" stat
+    // and the Referrals tab badge should show, not just how many happen to be on page 1.
+    const totalLeads = leadsResult.pagination?.total ?? leads.length;
 
     return (
       <div className="vendor-app">
@@ -838,8 +841,8 @@ function VendorPage() {
             >
               <Icon path={ICONS.users} />
               Referrals
-              {leads.length > 0 && (
-                <span className="vendor-tab-count">{leads.length}</span>
+              {totalLeads > 0 && (
+                <span className="vendor-tab-count">{totalLeads}</span>
               )}
             </button>
 
@@ -863,7 +866,7 @@ function VendorPage() {
           </nav>
 
           {activeSection === 'overview' &&
-            renderOverview(vendor, leads, payouts)}
+            renderOverview(vendor, leads, payouts, totalLeads)}
 
           {activeSection === 'referrals' &&
             renderReferrals(leads)}

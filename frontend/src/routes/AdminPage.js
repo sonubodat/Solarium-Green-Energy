@@ -1127,7 +1127,7 @@ function AdminPage() {
                     </td>
 
                     <td>
-                      {vendor.totalLeads ?? 0}
+                      {vendor.leadCount ?? 0}
                     </td>
 
                     <td>

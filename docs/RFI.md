@@ -224,8 +224,8 @@ Please confirm or provide the following information.
 
 ### Business rules
 
-1. What is the final definition of a duplicate customer referral?
-2. Is the duplicate rule global, campaign-based, vendor-based, or limited to a defined attribution period?
+1. ~~What is the final definition of a duplicate customer referral?~~ **Answered:** the same phone number submitting more than once, anywhere in the system.
+2. ~~Is the duplicate rule global, campaign-based, vendor-based, or limited to a defined attribution period?~~ **Answered: global.** One phone number = one lead across the entire system, regardless of vendor. Enforced via a database unique constraint on `Lead.customer_identity_id` (see `data-model.md`'s CustomerIdentity section and `api.md`'s `POST /api/public/leads`).
 3. Which lead statuses should Admin users be allowed to use?
 4. What conditions make a lead eligible for manual payout marking?
 5. Who is authorized to mark a payout as paid?

@@ -171,7 +171,10 @@ model Lead {
   qrId               String            @map("qr_id")
   qrAssignmentId     String            @map("qr_assignment_id")
   scanId             String            @unique @map("scan_id")
-  customerIdentityId String            @map("customer_identity_id")
+  // Enforces global one-lead-per-customer at the database level (chosen business rule: a
+  // customer already attributed to one vendor cannot generate a second lead under another
+  // vendor's QR). Application-level checks alone cannot prevent this under concurrent requests.
+  customerIdentityId String            @unique @map("customer_identity_id")
   customerName       String            @map("customer_name")
   phone              String
   email              String?
@@ -189,7 +192,6 @@ model Lead {
   @@index([vendorId, createdAt])
   @@index([qrId, createdAt])
   @@index([qrAssignmentId])
-  @@index([customerIdentityId])
   @@index([status])
   @@map("leads")
 }

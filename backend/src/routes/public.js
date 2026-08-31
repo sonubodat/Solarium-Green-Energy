@@ -111,6 +111,65 @@ publicRoutes.get('/qr/:qrCode', publicRateLimit, async (request, response, next)
 	}
 });
 
+function normalizePhone(rawPhone) {
+	return rawPhone.replace(/\D/g, '').replace(/^91(?=\d{10}$)/, '');
+}
+
+function customerHashFor(normalizedPhone) {
+	if (!env.customerHashSecret) {
+		const error = new Error('Customer identity protection is not configured.');
+		error.statusCode = 503;
+		error.code = 'CUSTOMER_IDENTITY_UNAVAILABLE';
+		throw error;
+	}
+	return createHmac('sha256', env.customerHashSecret).update(normalizedPhone).digest('hex');
+}
+
+function customerAlreadyExistsError() {
+	const error = new Error('This phone number has already been used to submit an enquiry.');
+	error.statusCode = 409;
+	error.code = 'CUSTOMER_ALREADY_EXISTS';
+	return error;
+}
+
+// Business rule: one phone number can create at most one lead across the entire system
+// (global uniqueness, not per-vendor) — confirmed explicitly, not assumed. A customer already
+// attributed to one vendor cannot generate a second lead under a different vendor's QR.
+// The database's unique constraint on Lead.customerIdentityId is the real enforcement (see the
+// migration and the P2002 handling below); this lookup is purely a fast, non-transactional
+// pre-check so the common "already submitted" case never needs to open a transaction or hold a
+// pooled connection at all.
+async function findExistingLeadByHash(customerHash) {
+	return prisma.lead.findFirst({
+		where: { customerIdentity: { hash: customerHash } },
+		select: { id: true },
+	});
+}
+
+publicRoutes.post('/leads/check-phone', publicRateLimit, async (request, response, next) => {
+	try {
+		const input = z.object({ phone: z.string().trim().min(10).max(20) }).parse(request.body);
+		const normalizedPhone = normalizePhone(input.phone);
+		if (!/^\d{10}$/.test(normalizedPhone)) {
+			const error = new Error('Enter a valid mobile number.');
+			error.statusCode = 400;
+			error.code = 'INVALID_MOBILE_NUMBER';
+			return next(error);
+		}
+
+		// The customer/frontend never receives the HMAC hash itself — only an availability
+		// result. The hash exists purely as a privacy-preserving server-side lookup key.
+		const customerHash = customerHashFor(normalizedPhone);
+		const existingLead = await findExistingLeadByHash(customerHash);
+		if (existingLead) {
+			return next(customerAlreadyExistsError());
+		}
+		return response.json({ success: true, available: true });
+	} catch (error) {
+		return next(error);
+	}
+});
+
 publicRoutes.post('/leads', publicRateLimit, async (request, response, next) => {
 	try {
 		const input = z.object({
@@ -121,21 +180,24 @@ publicRoutes.post('/leads', publicRateLimit, async (request, response, next) => 
 			email: z.string().trim().email().max(160).optional(),
 			location: z.string().trim().max(160).optional(),
 		}).parse(request.body);
-		const normalizedPhone = input.phone.replace(/\D/g, '').replace(/^91(?=\d{10}$)/, '');
+		const normalizedPhone = normalizePhone(input.phone);
 		if (!/^\d{10}$/.test(normalizedPhone)) {
 			const error = new Error('Enter a valid mobile number.');
 			error.statusCode = 400;
 			error.code = 'INVALID_MOBILE_NUMBER';
 			return next(error);
 		}
-		if (!env.customerHashSecret) {
-			const error = new Error('Customer identity protection is not configured.');
-			error.statusCode = 503;
-			error.code = 'CUSTOMER_IDENTITY_UNAVAILABLE';
-			return next(error);
+
+		const customerHash = customerHashFor(normalizedPhone);
+		// Fast pre-check outside the transaction — handles the common case (customer already
+		// exists) without ever opening a transaction. This alone is NOT the real protection:
+		// two concurrent requests can both pass this check before either creates a row. The
+		// database's unique constraint (caught as P2002 below) is what actually prevents that.
+		const existingLead = await findExistingLeadByHash(customerHash);
+		if (existingLead) {
+			return next(customerAlreadyExistsError());
 		}
 
-		const customerHash = createHmac('sha256', env.customerHashSecret).update(normalizedPhone).digest('hex');
 		// Scan rows are immutable once created (never updated or deleted), so looking this up
 		// before opening the transaction is safe and shortens how long the transaction below
 		// holds a pooled connection — every extra query inside it is time another request can't
@@ -179,10 +241,11 @@ publicRoutes.post('/leads', publicRateLimit, async (request, response, next) => 
 				update: {},
 				select: { id: true },
 			});
-			const previousLead = await transaction.lead.findFirst({
-				where: { customerIdentityId: customerIdentity.id },
-				select: { id: true },
-			});
+			// No DUPLICATE-status fallback here — a repeat submission must never become a second
+			// Lead row (that produces garbage data: broken counts, exports, and payout tracking).
+			// If a concurrent request created a lead for this identity between the pre-check
+			// above and here, Lead.customerIdentityId's unique constraint rejects this insert
+			// with P2002, caught below and mapped to the same 409 CUSTOMER_ALREADY_EXISTS.
 			return transaction.lead.create({
 				data: {
 					vendorId: scan.vendorId,
@@ -194,7 +257,7 @@ publicRoutes.post('/leads', publicRateLimit, async (request, response, next) => 
 					phone: normalizedPhone,
 					email: input.email,
 					location: input.location,
-					status: previousLead ? 'DUPLICATE' : 'NEW',
+					status: 'NEW',
 				},
 				select: { id: true, status: true },
 			});
@@ -203,9 +266,12 @@ publicRoutes.post('/leads', publicRateLimit, async (request, response, next) => 
 		return response.status(201).json({
 			success: true,
 			lead: { id: lead.id, status: lead.status },
-			message: lead.status === 'DUPLICATE' ? 'This customer has already been referred.' : 'Enquiry submitted successfully.',
+			message: 'Enquiry submitted successfully.',
 		});
 	} catch (error) {
+		if (error.code === 'P2002') {
+			return next(customerAlreadyExistsError());
+		}
 		return next(error);
 	}
 });

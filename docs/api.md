@@ -81,6 +81,17 @@ Resolve a public QR and record a scan.
 - Rules: lookup unique `QrCode.code`, resolve the current active assignment, create immutable scan attribution, and rate-limit the request
 - Errors: invalid, unassigned, inactive, or retired QR returns a safe public error response
 
+### `POST /api/public/leads/check-phone`
+
+Check whether a phone number can still submit a lead, before the customer fills out the rest of the form.
+
+- Authentication: public
+- Request: `{ "phone": "9876543210" }`
+- Rules: normalize the mobile number and generate the server-side HMAC identity; the hash itself is never returned to the client
+- Response: `{ "success": true, "available": true }` when no lead exists yet for this identity
+- Errors: `400 INVALID_MOBILE_NUMBER` for an unparseable number; `409 CUSTOMER_ALREADY_EXISTS` when a lead already exists for this identity (global — see below)
+- This is a UX convenience only (lets the frontend block the form early). It is **not** the enforcement point — `POST /api/public/leads` repeats the same check and the database's unique constraint is what actually prevents a race between two concurrent submissions.
+
 ### `POST /api/public/leads`
 
 Submit a customer referral lead.
@@ -103,7 +114,11 @@ Request example:
 }
 ```
 
-The server normalizes the phone number and stores only its HMAC identity for deduplication. The first lead is `NEW`; a later lead for the same identity is recorded as `DUPLICATE` and must not create payable attribution.
+**Duplicate rule (confirmed): global uniqueness.** One phone number can create at most one lead across the entire system, not one per vendor — a customer already attributed to one vendor is rejected if they scan a different vendor's QR and try to submit again. The server normalizes the phone number and stores only its HMAC identity (`CustomerIdentity.hash`) for deduplication; the hash is never exposed to the client.
+
+A repeat submission for an identity that already has a lead does **not** create a second `Lead` row (a "DUPLICATE"-status row would pollute lead counts, exports, and payout tracking with garbage data). Instead the request is rejected outright with `409 CUSTOMER_ALREADY_EXISTS`. This is checked twice: once as a fast pre-check before opening a transaction (handles the common case without holding a pooled connection), and again via `Lead.customer_identity_id`'s database-level unique constraint, which is the actual enforcement — it is what protects against two concurrent requests both passing the pre-check before either has created a row. A unique-constraint violation (Prisma `P2002`) on this insert is caught and mapped to the same `409 CUSTOMER_ALREADY_EXISTS`.
+
+`DUPLICATE` remains a valid **Admin-assigned** lead status (see `PATCH /api/admin/leads/:leadId`) for Admin's own manual triage — it is no longer something the system assigns automatically at submission time.
 
 When `scan_id` is omitted, the backend accepts a direct public enquiry and creates attribution using `referral_qr` when provided; if no referral QR is provided, it records the enquiry under the configured general public assignment.
 

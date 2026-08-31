@@ -44,7 +44,7 @@
 - Verify valid, unassigned, inactive, and retired public QR responses.
 - Verify a valid public scan stores the current QR assignment and Vendor attribution.
 - Continue with public lead capture after QR verification.
-- Verify the first lead is `NEW` and a repeat customer is recorded as `DUPLICATE` without a second payable attribution.
+- Verify the first lead is `NEW` and a repeat customer (globally, across any vendor) is rejected with `409 CUSTOMER_ALREADY_EXISTS` rather than creating a second `DUPLICATE`-status lead row.
 - Verify lead attribution retains the scan's Vendor and QR assignment after QR reassignment.
 - Continue with Vendor lead views after lead verification.
 - Verify Vendor lead and payout queries cannot access another Vendor even when request parameters are modified.

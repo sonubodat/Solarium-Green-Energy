@@ -139,7 +139,7 @@ updated_at
 
 Generate `customer_hash` server-side from a normalized mobile number using an application secret HMAC key. Never use the raw phone number as the identity key. Enforce the configured uniqueness rule at the database level.
 
-The current product rule remains configurable and is not assumed to mean one lead per customer globally. `CustomerIdentity.hash` identifies the normalized customer; lead-level duplicate attribution rules determine whether a later lead is payable in the relevant campaign or referral context.
+**Confirmed rule: global uniqueness.** One phone number can produce at most one `Lead` across the entire system, regardless of which vendor's QR it came through — a customer already attributed to one vendor is rejected outright (not silently recorded as a second lead) if they try to submit again under a different vendor. Enforced by a unique constraint on `Lead.customer_identity_id` (migration `20260826090000_lead_customer_identity_unique`), not application logic alone — see `api.md`'s `POST /api/public/leads` for the exact mechanics (fast pre-check, then a `P2002` unique-violation catch to close the concurrent-request race). `CustomerIdentity.hash` itself is separately unique and identifies the normalized customer independent of any lead; `Scan` rows may still reference a `CustomerIdentity` freely (a scan is not a lead and duplicate scans are expected/harmless).
 
 ### Scan
 
