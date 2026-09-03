@@ -88,7 +88,7 @@ function AdminPage() {
 
   const [showCreateVendor, setShowCreateVendor] = useState(false);
   const [showGenerateQr, setShowGenerateQr] = useState(false);
-  const [showQrProductionTools, setShowQrProductionTools] = useState(false);
+  const [outputMode, setOutputMode] = useState(null);
   const [showTemplateForm, setShowTemplateForm] = useState(false);
   const [showCreateStaff, setShowCreateStaff] = useState(false);
 
@@ -1800,7 +1800,7 @@ function AdminPage() {
             <button
               className="admin-primary-button"
               onClick={() => {
-                setShowQrProductionTools(true);
+                setOutputMode('quick');
                 setShowGenerateQr((current) => !current);
               }}
             >
@@ -1911,55 +1911,50 @@ function AdminPage() {
           </div>
         )}
 
-        <button
-          type="button"
-          className={`admin-qr-tools-bar ${showQrProductionTools ? 'open' : ''}`}
-          onClick={() => setShowQrProductionTools((current) => !current)}
-          aria-expanded={showQrProductionTools}
-        >
-          <span className="admin-qr-tools-bar-icon"><Icon path={ICONS.qr} /></span>
-          <span>
-            <strong>Generation and print tools</strong>
-            <small>Open only when you need to create codes or prepare a print batch.</small>
-          </span>
-          <Icon path={ICONS.arrow} className="admin-qr-tools-bar-arrow" />
-        </button>
+        <section className="admin-qr-output-section">
+          <div className="admin-qr-section-heading">
+            <div>
+              <span className="admin-eyebrow">OUTPUT</span>
+              <h3>What do you want to produce?</h3>
+              <p>Choose a quick QR export or a designed print using saved artwork.</p>
+            </div>
+          </div>
+          <div className="admin-qr-output-grid">
+            <button type="button" className={`admin-qr-output-card ${outputMode === 'quick' ? 'selected' : ''}`} onClick={() => setOutputMode(outputMode === 'quick' ? null : 'quick')}>
+              <span className="admin-qr-output-icon"><Icon path={ICONS.qr} /></span>
+              <span className="admin-qr-output-copy"><strong>Quick QR export</strong><small>Simple PDF containing QR codes only. No artwork or template required.</small></span>
+              <span className="admin-qr-output-action">{outputMode === 'quick' ? 'Close' : 'Generate PDF'} <Icon path={ICONS.arrow} /></span>
+            </button>
+            <button type="button" className={`admin-qr-output-card designed ${outputMode === 'designed' ? 'selected' : ''}`} onClick={() => setOutputMode(outputMode === 'designed' ? null : 'designed')}>
+              <span className="admin-qr-output-icon"><Icon path={ICONS.edit} /></span>
+              <span className="admin-qr-output-copy"><strong>Designed print</strong><small>Use artwork and a saved template, then review the proof before PDF generation.</small></span>
+              <span className="admin-qr-output-action">{outputMode === 'designed' ? 'Close' : 'Create print job'} <Icon path={ICONS.arrow} /></span>
+            </button>
+          </div>
+        </section>
 
-        {showQrProductionTools && (
-          <>
+        {outputMode === 'quick' && (
+          <section className="admin-qr-output-panel admin-qr-quick-panel">
+            <div className="admin-qr-panel-heading"><div><span className="admin-eyebrow">QUICK EXPORT</span><h3>Generate a QR-only PDF</h3><p>Use the current inventory filters, or enter one code below.</p></div></div>
             {showGenerateQr && (
-              <form
-                onSubmit={generateQrBatch}
-                className="admin-form-card admin-qr-generate"
-              >
-                <div>
-                  <div className="admin-form-title">Batch generation</div>
-                  <p>Generate a new batch of unassigned QR codes.</p>
-                </div>
-
-                <input
-                  type="number"
-                  min="1"
-                  max="5000"
-                  value={qrQuantity}
-                  onChange={(event) => setQrQuantity(event.target.value)}
-                />
-
-                <button className="admin-primary-button" disabled={loading}>
-                  {loading ? 'Generating...' : 'Generate'}
-                </button>
-
-                <button
-                  type="button"
-                  className="admin-outline-button"
-                  disabled={loading}
-                  onClick={() => setShowGenerateQr(false)}
-                >
-                  Cancel
-                </button>
+              <form onSubmit={generateQrBatch} className="admin-form-card admin-qr-generate">
+                <div><div className="admin-form-title">Add QR codes to inventory</div><p>Generate a new batch of unassigned QR codes.</p></div>
+                <input type="number" min="1" max="5000" value={qrQuantity} onChange={(event) => setQrQuantity(event.target.value)} />
+                <button className="admin-primary-button" disabled={loading}>{loading ? 'Generating...' : 'Generate'}</button>
+                <button type="button" className="admin-outline-button" disabled={loading} onClick={() => setShowGenerateQr(false)}>Cancel</button>
               </form>
             )}
+            <div className="admin-qr-quick-actions">
+              <button type="button" className="admin-primary-button" onClick={downloadQrPdf}>Generate filtered PDF</button>
+              <button type="button" className="admin-outline-button" onClick={openQrPrintSheet}>Open print sheet</button>
+            </div>
+          </section>
+        )}
 
+        {outputMode === 'designed' && (
+          <section className="admin-qr-output-panel admin-qr-designed-panel">
+            <div className="admin-qr-panel-heading"><div><span className="admin-eyebrow">DESIGNED PRINT</span><h3>Create print job</h3><p>Select QR codes, choose a published template, then generate and approve the proof.</p></div><span className="admin-workspace-status"><i /> Proof-first</span></div>
+            <div className="admin-qr-wizard-steps"><span className="active"><b>1</b> QR codes</span><span><b>2</b> Template</span><span><b>3</b> Review proof</span><span><b>4</b> PDF ready</span></div>
         <div className="admin-form-card admin-qr-workspace">
           <div className="admin-workspace-heading">
             <div>
@@ -2190,7 +2185,7 @@ function AdminPage() {
             </div>
           )}
         </div>
-          </>
+          </section>
         )}
 
         <div className="admin-filter-bar">
