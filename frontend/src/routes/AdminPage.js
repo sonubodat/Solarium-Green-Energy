@@ -120,8 +120,10 @@ function AdminPage() {
   const [staffRoleInputs, setStaffRoleInputs] = useState({});
 
   const [detailLead, setDetailLead] = useState(null);
+  const [detailBank, setDetailBank] = useState(null);
   const [detailAuditLog, setDetailAuditLog] = useState(null);
   const [expandedVendorGroups, setExpandedVendorGroups] = useState({});
+  const [expandedCommissionGroups, setExpandedCommissionGroups] = useState({});
 
   const [message, setMessage] = useState('');
   const [messageType, setMessageType] = useState('');
@@ -734,6 +736,39 @@ function AdminPage() {
       await loadAdminResource('payouts', adminPage);
 
       setMessage(`Payout marked as ${status.toLowerCase()}.`);
+      setMessageType('success');
+    } catch (error) {
+      setMessage(error.message);
+      setMessageType('error');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function viewVendorBankDetails(vendor) {
+    setLoading(true);
+    try {
+      const result = await apiRequest(`/admin/vendors/${vendor.id}/bank-details`, { forceRefresh: true });
+      setDetailBank({ vendor, details: result.bank_details });
+    } catch (error) {
+      setMessage(error.message);
+      setMessageType('error');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function updateLeadStatus(lead, status) {
+    if (status === lead.status) return;
+    setLoading(true);
+    try {
+      await apiRequest(`/admin/leads/${lead.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ status }),
+      });
+      await loadAdminResource('leads', adminPage, undefined, undefined, true);
+      setDetailLead(null);
+      setMessage(`Lead marked as ${status.toLowerCase()}.`);
       setMessageType('success');
     } catch (error) {
       setMessage(error.message);
@@ -1936,6 +1971,9 @@ function AdminPage() {
         lead.customerName,
         lead.phone,
         lead.email,
+        lead.pincode,
+        lead.averageElectricityBill,
+        lead.solarSize,
         lead.id,
         lead.vendor?.businessName,
       ]
@@ -1999,6 +2037,7 @@ function AdminPage() {
                         <th>Customer</th>
                         <th>QR</th>
                         <th>Location</th>
+                        <th>Qualification</th>
                         <th>Status</th>
                         <th>Lead date</th>
                         <th>Commission</th>
@@ -2035,7 +2074,23 @@ function AdminPage() {
                           </td>
 
                           <td>
-                            <span className="admin-status active">{lead.status}</span>
+                            <div className="admin-primary-cell">
+                              <strong>{lead.pincode || '—'}</strong>
+                              <small>{[lead.averageElectricityBill, lead.solarSize].filter(Boolean).join(' · ') || 'No details'}</small>
+                            </div>
+                          </td>
+
+                          <td>
+                            <select
+                              className="admin-inline-select"
+                              value={lead.status || 'NEW'}
+                              disabled={loading}
+                              onChange={(event) => updateLeadStatus(lead, event.target.value)}
+                            >
+                              {['NEW', 'CONTACTED', 'QUALIFIED', 'CONVERTED', 'LOST', 'REJECTED', 'DUPLICATE'].map((status) => (
+                                <option key={status} value={status}>{status}</option>
+                              ))}
+                            </select>
                           </td>
 
                           <td>
@@ -2109,6 +2164,12 @@ function AdminPage() {
                 <dd>{lead.email || '—'}</dd>
                 <dt>Location (entered)</dt>
                 <dd>{lead.location || '—'}</dd>
+                <dt>Pincode</dt>
+                <dd>{lead.pincode || '—'}</dd>
+                <dt>Average electricity bill</dt>
+                <dd>{lead.averageElectricityBill || '—'}</dd>
+                <dt>Solar system size</dt>
+                <dd>{lead.solarSize || '—'}</dd>
                 <dt>GPS coordinates</dt>
                 <dd>
                   {lead.geoLocation
@@ -2135,6 +2196,8 @@ function AdminPage() {
                 <dd>{lead.qr?.code || '—'}</dd>
                 <dt>Lead status</dt>
                 <dd>{lead.status || '—'}</dd>
+                <dt>Commission</dt>
+                <dd>{lead.payout?.status || 'Not created'}</dd>
                 <dt>Submitted</dt>
                 <dd>{lead.createdAt ? new Date(lead.createdAt).toLocaleString() : '—'}</dd>
               </dl>
@@ -2285,6 +2348,18 @@ function AdminPage() {
     const payouts =
       portalData?.data?.payouts || [];
 
+    const groups = new Map();
+    for (const payout of payouts) {
+      const vendorId = payout.vendor?.id || 'unknown';
+      if (!groups.has(vendorId)) {
+        groups.set(vendorId, {
+          vendor: payout.vendor,
+          payouts: [],
+        });
+      }
+      groups.get(vendorId).payouts.push(payout);
+    }
+
     return (
       <div className="admin-resource">
         <div className="admin-resource-heading">
@@ -2316,121 +2391,86 @@ function AdminPage() {
           </button>
         </div>
 
-        <div className="admin-table-wrap">
-          <table className="admin-table">
-            <thead>
-              <tr>
-                <th>Vendor</th>
-                <th>Lead</th>
-                <th>Status</th>
-                <th>Payment reference</th>
-                <th>Created / paid</th>
-                <th>Update</th>
-              </tr>
-            </thead>
-
-            <tbody>
-              {payouts.length ? (
-                payouts.map((payout) => (
-                  <tr key={payout.id}>
-                    <td>
-                      <strong>
-                        {payout.vendor
-                          ?.businessName ||
-                          'Unknown vendor'}
-                      </strong>
-                    </td>
-
-                    <td>
-                      <span className="admin-code">
-                        {payout.leadId}
-                      </span>
-                    </td>
-
-                    <td>
-                      <span className="admin-status active">
-                        {payout.status}
-                      </span>
-                    </td>
-
-                    <td>
-                      <input
-                        className="admin-table-input"
-                        placeholder="Payment reference"
-                        value={
-                          paidReferenceInputs[
-                            payout.id
-                          ] || ''
-                        }
-                        onChange={(event) =>
-                          setPaidReferenceInputs({
-                            ...paidReferenceInputs,
-                            [payout.id]:
-                              event.target.value,
-                          })
-                        }
-                      />
-                    </td>
-
-                    <td>
-                      {payout.paidAt
-                        ? new Date(
-                            payout.paidAt
-                          ).toLocaleDateString()
-                        : payout.createdAt
-                        ? new Date(
-                            payout.createdAt
-                          ).toLocaleDateString()
-                        : '—'}
-                    </td>
-
-                    <td>
-                      <div className="admin-row-actions">
-                        {[
-                          'UNPAID',
-                          'PARTIAL',
-                          'PAID',
-                        ].map((status) => (
-                          <button
-                            key={status}
-                            className={`admin-mini-button ${
-                              payout.status ===
-                              status
-                                ? 'selected'
-                                : ''
-                            }`}
-                            disabled={loading}
-                            onClick={() =>
-                              updatePayoutStatus(
-                                payout,
-                                status
-                              )
-                            }
-                          >
-                            {payout.status ===
-                            status
-                              ? '✓ '
-                              : ''}
-                            {status}
-                          </button>
-                        ))}
-                      </div>
-                    </td>
-                  </tr>
-                ))
-              ) : (
-                <tr>
-                  <td
-                    colSpan="6"
-                    className="admin-empty"
+        {payouts.length ? (
+          <div className="admin-vendor-groups">
+            {Array.from(groups.entries()).map(([vendorId, group]) => {
+              const isOpen = Boolean(expandedCommissionGroups[vendorId]);
+              return (
+                <div className="admin-vendor-group" key={vendorId}>
+                  <button
+                    type="button"
+                    className="admin-vendor-group-header"
+                    onClick={() => setExpandedCommissionGroups({
+                      ...expandedCommissionGroups,
+                      [vendorId]: !isOpen,
+                    })}
+                    aria-expanded={isOpen}
                   >
-                    No payout records yet.
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
+                    <Icon path={ICONS.arrow} className={`admin-vendor-group-chevron ${isOpen ? 'open' : ''}`} />
+                    <span className="admin-vendor-group-name">{group.vendor?.businessName || 'Unknown vendor'}</span>
+                    <span className="admin-vendor-group-count">{group.payouts.length} {group.payouts.length === 1 ? 'commission' : 'commissions'}</span>
+                  </button>
+
+                  {isOpen && (
+                    <div className="admin-table-wrap">
+                      <table className="admin-table">
+                        <thead>
+                          <tr>
+                            <th>Customer</th>
+                            <th>Lead</th>
+                            <th>Lead status</th>
+                            <th>Status</th>
+                            <th>Payment reference</th>
+                            <th>Created / paid</th>
+                            <th>Update</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {group.payouts.map((payout) => (
+                            <tr key={payout.id}>
+                              <td><strong>{payout.lead?.customerName || 'Customer'}</strong></td>
+                              <td><span className="admin-code">{payout.leadId}</span></td>
+                              <td>{payout.lead?.status || '—'}</td>
+                              <td><span className="admin-status active">{payout.status}</span></td>
+                              <td>
+                                <input
+                                  className="admin-table-input"
+                                  placeholder="Payment reference"
+                                  value={paidReferenceInputs[payout.id] || ''}
+                                  onChange={(event) => setPaidReferenceInputs({ ...paidReferenceInputs, [payout.id]: event.target.value })}
+                                />
+                              </td>
+                              <td>{payout.paidAt ? new Date(payout.paidAt).toLocaleDateString() : payout.createdAt ? new Date(payout.createdAt).toLocaleDateString() : '—'}</td>
+                              <td>
+                                <div className="admin-row-actions">
+                                  {['UNPAID', 'PARTIAL', 'PAID'].map((status) => (
+                                    <button
+                                      key={status}
+                                      className={`admin-mini-button ${payout.status === status ? 'selected' : ''}`}
+                                      disabled={loading}
+                                      onClick={() => updatePayoutStatus(payout, status)}
+                                    >
+                                      {payout.status === status ? '✓ ' : ''}{status}
+                                    </button>
+                                  ))}
+                                  {group.vendor && (
+                                    <button className="admin-mini-button" onClick={() => viewVendorBankDetails(group.vendor)}>
+                                      Bank details
+                                    </button>
+                                  )}
+                                </div>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        ) : <div className="admin-empty admin-empty-block">No payout records yet.</div>}
 
         {renderPagination()}
       </div>
@@ -2863,6 +2903,40 @@ function AdminPage() {
     );
   }
 
+  function renderBankDetailsModal() {
+    const details = detailBank.details;
+    return (
+      <div className="admin-modal-overlay" onClick={() => setDetailBank(null)}>
+        <div className="admin-modal" role="dialog" aria-modal="true" aria-label="Vendor bank details" onClick={(event) => event.stopPropagation()}>
+          <div className="admin-modal-header">
+            <div>
+              <span className="admin-eyebrow">PAYOUT ACCOUNT</span>
+              <h2>{detailBank.vendor.businessName}</h2>
+            </div>
+            <button className="admin-mini-button" onClick={() => setDetailBank(null)} aria-label="Close"><Icon path={ICONS.close} /></button>
+          </div>
+          <div className="admin-modal-body">
+            {details ? (
+              <>
+                <dl className="admin-modal-fields">
+                  <dt>UPI number</dt><dd>{details.upiNumber || '—'}</dd>
+                  <dt>UPI ID</dt><dd>{details.upiId || '—'}</dd>
+                  <dt>Account holder</dt><dd>{details.accountHolderName || '—'}</dd>
+                  <dt>Account number</dt><dd>{details.accountNumber || '—'}</dd>
+                  <dt>IFSC code</dt><dd>{details.ifscCode || '—'}</dd>
+                </dl>
+                <div className="admin-row-actions">
+                  {details.passbookUrl && <a className="admin-mini-button" href={details.passbookUrl} target="_blank" rel="noreferrer">Open passbook</a>}
+                  {details.chequeUrl && <a className="admin-mini-button" href={details.chequeUrl} target="_blank" rel="noreferrer">Open cancelled cheque</a>}
+                </div>
+              </>
+            ) : <p className="admin-scan-assign-blocked">No bank details submitted yet.</p>}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   function renderPagination() {
     const meta =
       portalData?.data?.pagination;
@@ -2994,8 +3068,7 @@ function AdminPage() {
         <aside className="admin-sidebar">
           <div className="admin-sidebar-logo">
             <div className="admin-logo">
-              <span>solarium</span>
-              <strong>energy</strong>
+              <img className="admin-logo-image" src="/Sol_logo.jpg" alt="Solarium" />
             </div>
           </div>
           <div className="admin-skeleton-nav">
@@ -3037,8 +3110,7 @@ function AdminPage() {
 
         <main className="admin-login-card">
           <div className="admin-logo">
-            <span>solarium</span>
-            <strong>energy</strong>
+            <img className="admin-logo-image" src="/Sol_logo.jpg" alt="Solarium" />
           </div>
 
           <div className="admin-login-heading">
@@ -3146,8 +3218,7 @@ function AdminPage() {
       >
         <div className="admin-sidebar-logo">
           <div className="admin-logo">
-            <span>solarium</span>
-            <strong>energy</strong>
+              <img className="admin-logo-image" src="/Sol_logo.jpg" alt="Solarium" />
           </div>
 
           <button
@@ -3301,6 +3372,7 @@ function AdminPage() {
         </div>
 
         {detailLead && renderLeadDetailModal()}
+        {detailBank && renderBankDetailsModal()}
         {detailAuditLog && renderAuditLogDetailModal()}
       </main>
     </div>

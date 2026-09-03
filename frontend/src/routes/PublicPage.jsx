@@ -33,7 +33,9 @@ const WHY_ITEMS = [
   { icon: 'bolt', title: 'Clean energy future', copy: "Together, let's build a sustainable tomorrow." },
 ];
 
-const EMPTY_LEAD = { customer_name: '', phone: '', email: '', location: '' };
+const EMPTY_LEAD = { customer_name: '', phone: '', email: '', location: '', pincode: '', average_electricity_bill: '', solar_size: '' };
+const BILL_BANDS = ['1-2k', '2-3k', '3-4k', '4-5k', '5-6k', '6-7k', '7-8k', '8-9k', '9-10k', '10k+'];
+const SOLAR_SIZE_BANDS = ['1-2 kW', '2-3 kW', '3-4 kW', '4-5 kW', '5-6 kW', '6-7 kW', '7-8 kW', '8-9 kW', '9-10 kW', '10+ kW'];
 // TODO: placeholder — replace with Solarium's real support inbox before launch.
 const SUPPORT_EMAIL = 'support@solariumenergy.in';
 const SLOW_REQUEST_MS = 6000;
@@ -135,6 +137,8 @@ function PublicPage() {
       if (referral?.scan_id) body.scan_id = referral.scan_id;
       if (!body.email.trim()) delete body.email;
       if (!body.location.trim()) delete body.location;
+      if (!body.average_electricity_bill) delete body.average_electricity_bill;
+      if (!body.solar_size) delete body.solar_size;
       // Optional — only sent if the customer tapped "Use my location" and coordinates were
       // actually received (not just because the button was clicked).
       if (capturedCoords) {
@@ -320,6 +324,48 @@ function PublicPage() {
               onChange={(event) => setLead({ ...lead, location: event.target.value })}
             />
           </div>
+          <div className="enquiry-row">
+            <div className="enquiry-field">
+              <Icon path={ICONS.pin} className="enquiry-field-icon" />
+              <input
+                id="customer-pincode"
+                name="postal-code"
+                type="text"
+                inputMode="numeric"
+                autoComplete="postal-code"
+                pattern="[1-9][0-9]{5}"
+                maxLength="6"
+                required
+                placeholder="Pincode *"
+                value={lead.pincode}
+                onChange={(event) => setLead({ ...lead, pincode: event.target.value.replace(/\D/g, '').slice(0, 6) })}
+              />
+            </div>
+            <label className="enquiry-select">
+              <span>Average electricity bill</span>
+              <select
+                id="average-electricity-bill"
+                name="average_electricity_bill"
+                value={lead.average_electricity_bill}
+                onChange={(event) => setLead({ ...lead, average_electricity_bill: event.target.value })}
+              >
+                <option value="">Select monthly bill</option>
+                {BILL_BANDS.map((band) => <option key={band} value={band}>{band}</option>)}
+              </select>
+            </label>
+          </div>
+          <label className="enquiry-select">
+            <span>Solar system size</span>
+            <select
+              id="solar-size"
+              name="solar_size"
+              value={lead.solar_size}
+              onChange={(event) => setLead({ ...lead, solar_size: event.target.value })}
+            >
+              <option value="">Select system size</option>
+              {SOLAR_SIZE_BANDS.map((band) => <option key={band} value={band}>{band}</option>)}
+            </select>
+          </label>
           <div className="enquiry-location-row">
             <button type="button" className={`enquiry-location-button${capturedCoords ? ' captured' : ''}`} onClick={useMyLocation} disabled={locating}>
               <Icon path={ICONS.target} className="enquiry-location-icon" />
@@ -357,7 +403,7 @@ function PublicPage() {
   return (
     <div className="enquiry-page">
       <header className="enquiry-header">
-        <span className="enquiry-brand">solarium<span className="enquiry-brand-accent">energy</span></span>
+        <span className="enquiry-brand"><img className="enquiry-logo" src="/Sol_logo.jpg" alt="Solarium" /></span>
         <span className="enquiry-tagline">India's Leading Solar Solutions Provider</span>
       </header>
 
@@ -386,7 +432,7 @@ function PublicPage() {
       )}
 
       <footer className="enquiry-footer">
-        <span className="enquiry-brand">solarium<span className="enquiry-brand-accent">energy</span></span>
+        <span className="enquiry-brand"><img className="enquiry-logo" src="/Sol_logo.jpg" alt="Solarium" /></span>
         <p>India's Leading Solar Solutions Provider</p>
         <p className="enquiry-copyright">© {new Date().getFullYear()} Solarium Energy. All rights reserved.</p>
       </footer>

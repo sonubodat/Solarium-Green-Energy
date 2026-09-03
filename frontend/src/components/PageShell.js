@@ -2,7 +2,7 @@ function PageShell({ routeLabel, statusLabel, eyebrow, title, description, child
   return (
     <main className="App">
       <nav className="topbar" aria-label="Solarium navigation">
-        <div className="brand"><span className="brand-mark">S</span><span>solarium<span className="brand-accent">/</span>energy</span></div>
+        <div className="brand"><img className="shared-logo" src="/Sol_logo.jpg" alt="Solarium" /></div>
         <span className="environment">{routeLabel}</span>
       </nav>
 

@@ -171,6 +171,9 @@ customer_name
 phone                protected
 email                protected as appropriate
 location
+pincode              six-digit Indian postal code
+average_electricity_bill  selected monthly bill band
+solar_size           selected solar capacity band in kW
 status
 created_at
 updated_at

@@ -9,6 +9,8 @@ export const publicRoutes = Router();
 
 const GENERAL_QR_CODE = 'PUBLIC-GENERAL';
 const GENERAL_VENDOR_LOGIN = 'public-general';
+const billBands = ['1-2k', '2-3k', '3-4k', '4-5k', '5-6k', '6-7k', '7-8k', '8-9k', '9-10k', '10k+'];
+const solarSizeBands = ['1-2 kW', '2-3 kW', '3-4 kW', '4-5 kW', '5-6 kW', '6-7 kW', '7-8 kW', '8-9 kW', '9-10 kW', '10+ kW'];
 
 async function resolveActiveAssignmentByQrCode(transaction, qrCode) {
 	return transaction.qrAssignment.findFirst({
@@ -186,6 +188,9 @@ publicRoutes.post('/leads', publicRateLimit, async (request, response, next) => 
 			phone: z.string().trim().min(10).max(20),
 			email: z.string().trim().email().max(160).optional(),
 			location: z.string().trim().max(160).optional(),
+			pincode: z.string().trim().regex(/^[1-9]\d{5}$/, 'Enter a valid six-digit pincode.'),
+			average_electricity_bill: z.enum(billBands).optional(),
+			solar_size: z.enum(solarSizeBands).optional(),
 			// Optional GPS captured client-side via the "Use my location" button (pilot scope —
 			// see LeadLocation in schema.prisma). Never trust the browser's own numbers as safe:
 			// enforce real coordinate/accuracy ranges here regardless of what was sent.
@@ -280,6 +285,9 @@ publicRoutes.post('/leads', publicRateLimit, async (request, response, next) => 
 					phone: normalizedPhone,
 					email: input.email,
 					location: input.location,
+					pincode: input.pincode,
+					averageElectricityBill: input.average_electricity_bill,
+					solarSize: input.solar_size,
 					status: 'NEW',
 				},
 				select: { id: true, status: true },

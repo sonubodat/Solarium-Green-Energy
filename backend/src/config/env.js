@@ -23,4 +23,7 @@ export const env = {
   databaseUrl: process.env.DIRECT_URL || process.env.DATABASE_URL || '',
   sessionSecret: process.env.SESSION_SECRET || '',
   customerHashSecret: process.env.CUSTOMER_HASH_SECRET || '',
+  supabaseUrl: process.env.SUPABASE_URL || '',
+  supabaseServiceRoleKey: process.env.SUPABASE_SERVICE_ROLE_KEY || '',
+  supabaseStorageBucket: process.env.SUPABASE_STORAGE_BUCKET || 'vendor-documents',
 };

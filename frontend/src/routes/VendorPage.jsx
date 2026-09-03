@@ -95,6 +95,10 @@ function VendorPage() {
   const [message, setMessage] = useState('');
   const [loading, setLoading] = useState(false);
   const [activeSection, setActiveSection] = useState('overview');
+  const [bankDetails, setBankDetails] = useState({
+    upi_number: '', upi_id: '', account_holder_name: '', account_number: '', ifsc_code: '',
+  });
+  const [bankMessage, setBankMessage] = useState('');
 
   const mountedRef = useRef(true);
   const hasScrolledToDashboardRef = useRef(false);
@@ -135,15 +139,26 @@ function VendorPage() {
     // specifically to avoid grabbing 3 pooled connections at once under the old transaction-mode
     // pooler; that root cause was fixed separately — see prisma.js/env.js — and this codebase's
     // Admin dashboard was parallelized the same way once that fix landed.)
-    const [profile, leads, payouts] = await Promise.all([
+    const [profile, leads, payouts, bank] = await Promise.all([
       apiRequest('/vendor/profile'),
       apiRequest('/vendor/leads'),
       apiRequest('/vendor/payouts'),
+      apiRequest('/vendor/bank-details'),
     ]);
+
+    if (bank.bank_details) {
+      setBankDetails({
+        upi_number: bank.bank_details.upiNumber || '',
+        upi_id: bank.bank_details.upiId || '',
+        account_holder_name: bank.bank_details.accountHolderName || '',
+        account_number: bank.bank_details.accountNumber || '',
+        ifsc_code: bank.bank_details.ifscCode || '',
+      });
+    }
 
     return {
       account,
-      data: [profile, leads, payouts],
+      data: [profile, leads, payouts, bank],
     };
   }
 
@@ -275,12 +290,57 @@ function VendorPage() {
     }
   }
 
+  async function saveBankDetails(event) {
+    event.preventDefault();
+    setLoading(true);
+    setBankMessage('');
+    try {
+      await apiRequest('/vendor/bank-details', { method: 'PATCH', body: JSON.stringify(bankDetails) });
+      setBankMessage('Bank details saved.');
+    } catch (error) {
+      setBankMessage(error.message || 'Unable to save bank details.');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function uploadBankDocument(type, event) {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+    if (file.size > 200 * 1024) {
+      setBankMessage('Documents must be 200 KB or smaller.');
+      return;
+    }
+    if (!['application/pdf', 'image/jpeg', 'image/png'].includes(file.type)) {
+      setBankMessage('Upload a PDF, JPG, or PNG document.');
+      return;
+    }
+    const body = new FormData();
+    body.append('file', file);
+    setLoading(true);
+    setBankMessage('');
+    try {
+      await apiRequest(`/vendor/bank-details/${type}`, { method: 'POST', body });
+      setBankMessage(`${type === 'passbook' ? 'Passbook' : 'Cancelled cheque'} uploaded.`);
+      const bank = await apiRequest('/vendor/bank-details', { forceRefresh: true });
+      setPortalData((current) => {
+        const data = [...current.data];
+        data[3] = bank;
+        return { ...current, data };
+      });
+    } catch (error) {
+      setBankMessage(error.message || 'Unable to upload document.');
+    } finally {
+      setLoading(false);
+    }
+  }
+
   function renderLogin() {
     return (
       <div className="vendor-auth-page">
         <div className="vendor-auth-brand">
-          <span className="vendor-brand-main">solarium</span>
-          <span className="vendor-brand-accent">energy</span>
+          <img className="vendor-logo" src="/Sol_logo.jpg" alt="Solarium" />
         </div>
 
         <div className="vendor-auth-layout">
@@ -880,6 +940,43 @@ function VendorPage() {
     );
   }
 
+  function renderSettings() {
+    const details = portalData.data[3]?.bank_details;
+    return (
+      <section className="vendor-panel vendor-full-panel">
+        <div className="vendor-panel-heading">
+          <div>
+            <span className="vendor-panel-kicker">PAYOUT SETTINGS</span>
+            <h2>Bank details</h2>
+            <p>Add the account information used for commission payouts.</p>
+          </div>
+        </div>
+        <form className="vendor-bank-form" onSubmit={saveBankDetails}>
+          <label><span>UPI number</span><input value={bankDetails.upi_number} onChange={(event) => setBankDetails({ ...bankDetails, upi_number: event.target.value })} /></label>
+          <label><span>UPI ID</span><input value={bankDetails.upi_id} onChange={(event) => setBankDetails({ ...bankDetails, upi_id: event.target.value })} placeholder="name@bank" /></label>
+          <label><span>Account holder name</span><input value={bankDetails.account_holder_name} onChange={(event) => setBankDetails({ ...bankDetails, account_holder_name: event.target.value })} /></label>
+          <label><span>Account number</span><input value={bankDetails.account_number} onChange={(event) => setBankDetails({ ...bankDetails, account_number: event.target.value })} /></label>
+          <label><span>IFSC code</span><input value={bankDetails.ifsc_code} onChange={(event) => setBankDetails({ ...bankDetails, ifsc_code: event.target.value.toUpperCase() })} /></label>
+          <button type="submit" className="vendor-primary-button" disabled={loading}>Save bank details</button>
+        </form>
+        <div className="vendor-document-grid">
+          {['passbook', 'cheque'].map((type) => {
+            const uploaded = type === 'passbook' ? details?.passbookFileName : details?.chequeFileName;
+            return (
+              <label className="vendor-document-upload" key={type}>
+                <strong>{type === 'passbook' ? 'Passbook' : 'Cancelled cheque'}</strong>
+                <span>{uploaded || 'PDF, JPG, or PNG up to 200 KB'}</span>
+                <input type="file" accept="application/pdf,image/jpeg,image/png" onChange={(event) => uploadBankDocument(type, event)} disabled={loading} />
+                <em>{uploaded ? 'Replace document' : 'Choose document'}</em>
+              </label>
+            );
+          })}
+        </div>
+        {bankMessage && <p className="vendor-form-message">{bankMessage}</p>}
+      </section>
+    );
+  }
+
   function renderWorkspace() {
     const [profileResult, leadsResult, payoutsResult] = portalData.data;
 
@@ -901,8 +998,7 @@ function VendorPage() {
         <header className="vendor-header">
           <div className="vendor-header-inner">
             <div className="vendor-brand">
-              <span className="vendor-brand-main">solarium</span>
-              <span className="vendor-brand-accent">energy</span>
+              <img className="vendor-logo" src="/Sol_logo.jpg" alt="Solarium" />
             </div>
 
             <div className="vendor-header-right">
@@ -942,6 +1038,15 @@ function VendorPage() {
             >
               <Icon path={ICONS.chart} />
               Overview
+            </button>
+
+            <button
+              type="button"
+              className={activeSection === 'settings' ? 'active' : ''}
+              onClick={() => setActiveSection('settings')}
+            >
+              <Icon path={ICONS.lock} />
+              Settings
             </button>
 
             <button
@@ -987,6 +1092,8 @@ function VendorPage() {
           {activeSection === 'account' &&
             renderAccount(vendor)}
 
+          {activeSection === 'settings' && renderSettings()}
+
           {message && (
             <div className="vendor-success-message" role="status">
               <Icon path={ICONS.check} />
@@ -997,8 +1104,7 @@ function VendorPage() {
 
         <footer className="vendor-footer">
           <div>
-            <span className="vendor-brand-main">solarium</span>
-            <span className="vendor-brand-accent">energy</span>
+            <img className="vendor-logo" src="/Sol_logo.jpg" alt="Solarium" />
           </div>
 
           <span>
@@ -1019,8 +1125,7 @@ function VendorPage() {
         <header className="vendor-header">
           <div className="vendor-header-inner">
             <div className="vendor-brand">
-              <span className="vendor-brand-main">solarium</span>
-              <span className="vendor-brand-accent">energy</span>
+              <img className="vendor-logo" src="/Sol_logo.jpg" alt="Solarium" />
             </div>
             <SkeletonBlock width="140px" height="36px" radius="10px" />
           </div>

@@ -75,18 +75,15 @@
 
 .admin-logo {
   display: inline-flex;
-  align-items: baseline;
-  font-weight: 800;
-  font-size: 21px;
-  letter-spacing: -.055em;
+  align-items: center;
 }
 
-.admin-logo span {
-  color: var(--admin-navy);
-}
-
-.admin-logo strong {
-  color: var(--admin-orange);
+.admin-logo-image {
+  display: block;
+  height: 42px;
+  object-fit: cover;
+  object-position: center;
+  width: 170px;
 }
 
 .admin-login-heading {
@@ -189,12 +186,10 @@
 }
 
 .admin-sidebar .admin-logo {
-  font-size: 20px;
+  width: 170px;
 }
 
-.admin-sidebar .admin-logo span {
-  color: #fff;
-}
+.admin-sidebar .admin-logo-image { background: #fff; }
 
 .admin-sidebar-label {
   color: rgba(255,255,255,.34);

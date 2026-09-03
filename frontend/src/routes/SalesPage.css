@@ -61,11 +61,16 @@
 
 .sales-brand {
   display: inline-flex;
-  align-items: baseline;
-  font-weight: 800;
-  letter-spacing: -0.055em;
-  font-size: 21px;
+  align-items: center;
   white-space: nowrap;
+}
+
+.sales-logo {
+  display: block;
+  height: 42px;
+  object-fit: cover;
+  object-position: center;
+  width: 170px;
 }
 
 .sales-brand-main {
@@ -695,6 +700,7 @@
 
 .sales-card-wide {
   grid-column: 1 / -1;
+  order: -1;
 }
 
 .sales-create-vendor-grid {

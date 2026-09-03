@@ -49,9 +49,7 @@ function SalesPage() {
   // backend is, e.g. a cold Render instance waking up), before silently swapping to the
   // dashboard. Shows a skeleton instead of that flash.
   const [sessionChecked, setSessionChecked] = useState(false);
-  const [onboardingId, setOnboardingId] = useState(null);
   const [selectedVendorId, setSelectedVendorId] = useState('');
-  const [temporaryPassword, setTemporaryPassword] = useState('');
   const [assignmentCode, setAssignmentCode] = useState('');
   const [qrStatus, setQrStatus] = useState(null);
   const [showScanner, setShowScanner] = useState(false);
@@ -117,13 +115,11 @@ function SalesPage() {
 
       if (!mountedRef.current || session.role !== 'SALES') return;
 
-      const data = await apiRequest('/sales/registrations');
-
       if (!mountedRef.current) return;
 
       setPortalData({
         account: session.account,
-        data,
+        data: null,
       });
 
       loadSalesVendors();
@@ -165,17 +161,6 @@ function SalesPage() {
     }
   }
 
-  async function loadRegistrationsPage(page) {
-    try {
-      const data = await apiRequest(`/sales/registrations?page=${page}&limit=25`);
-      if (!mountedRef.current) return;
-      setPortalData((current) => ({ ...current, data }));
-    } catch (error) {
-      setMessage(error.message);
-      setMessageType('error');
-    }
-  }
-
   async function signIn(event) {
     event.preventDefault();
 
@@ -192,61 +177,16 @@ function SalesPage() {
         }),
       });
 
-      const data = await apiRequest('/sales/registrations');
-
       if (!mountedRef.current) return;
 
       setPortalData({
         account: result.user,
-        data,
+        data: null,
       });
 
       loadSalesVendors();
 
       setMessage('Signed in successfully.');
-      setMessageType('success');
-    } catch (error) {
-      setMessage(error.message);
-      setMessageType('error');
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function onboardVendor(event) {
-    event.preventDefault();
-
-    setLoading(true);
-    setMessage('');
-    setMessageType('');
-
-    try {
-      const result = await apiRequest(
-        `/sales/vendors/${onboardingId}/onboard`,
-        {
-          method: 'POST',
-          body: JSON.stringify({
-            password: temporaryPassword,
-          }),
-        }
-      );
-
-      const registrations = await apiRequest('/sales/registrations');
-
-      if (!mountedRef.current) return;
-
-      setPortalData((current) => ({
-        ...current,
-        data: registrations,
-      }));
-
-      setSelectedVendorId(result.vendor.id);
-      setOnboardingId(null);
-      setTemporaryPassword('');
-
-      await loadSalesVendors();
-
-      setMessage('Vendor onboarded. Assign an unassigned QR next.');
       setMessageType('success');
     } catch (error) {
       setMessage(error.message);
@@ -346,8 +286,6 @@ function SalesPage() {
     }
   }
 
-  const registrations = portalData?.data?.registrations || [];
-
   return (
     <div className="sales-page">
       <div className="sales-background" />
@@ -381,10 +319,7 @@ function SalesPage() {
           </>
         ) : !portalData ? (
           <section className="sales-login-card">
-            <div className="sales-brand">
-              <span className="sales-brand-main">solarium</span>
-              <span className="sales-brand-accent">energy</span>
-            </div>
+            <div className="sales-brand"><img className="sales-logo" src="/Sol_logo.jpg" alt="Solarium" /></div>
 
             <div className="sales-login-heading">
               <div className="sales-eyebrow">SALES PORTAL</div>
@@ -466,10 +401,7 @@ function SalesPage() {
         ) : (
           <>
             <header className="sales-topbar">
-              <div className="sales-brand">
-                <span className="sales-brand-main">solarium</span>
-                <span className="sales-brand-accent">energy</span>
-              </div>
+              <div className="sales-brand"><img className="sales-logo" src="/Sol_logo.jpg" alt="Solarium" /></div>
 
               <div className="sales-user-area">
                 <div className="sales-user-info">
@@ -530,6 +462,7 @@ function SalesPage() {
             </section>
 
             <section className="sales-grid">
+              {/* Self-registration is currently unavailable; Sales creates every Vendor directly.
               <article className="sales-card">
                 <div className="sales-card-header">
                   <div className="sales-card-icon">
@@ -634,7 +567,7 @@ function SalesPage() {
                     </div>
                   );
                 })()}
-              </article>
+              </article> */}
 
               <article className="sales-card">
                 <div className="sales-card-header">
@@ -788,7 +721,7 @@ function SalesPage() {
                   </div>
 
                   <div>
-                    <span className="sales-card-label">ALTERNATE PATH</span>
+                    <span className="sales-card-label">STEP 01</span>
                     <h2>Create vendor directly</h2>
                   </div>
                 </div>
@@ -954,10 +887,7 @@ function SalesPage() {
             )}
 
             <footer className="sales-footer">
-              <span className="sales-brand">
-                <span className="sales-brand-main">solarium</span>
-                <span className="sales-brand-accent">energy</span>
-              </span>
+              <span className="sales-brand"><img className="sales-logo" src="/Sol_logo.jpg" alt="Solarium" /></span>
 
               <span>Sales workspace</span>
             </footer>

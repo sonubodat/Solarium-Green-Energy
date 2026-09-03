@@ -24,9 +24,12 @@ export async function apiRequest(path, options = {}) {
     }
   }
 
+  const headers = fetchOptions.body instanceof FormData
+    ? { ...fetchOptions.headers }
+    : { 'Content-Type': 'application/json', ...fetchOptions.headers };
   const response = await fetch(`${API_BASE_URL}${path}`, {
     credentials: 'include',
-    headers: { 'Content-Type': 'application/json', ...fetchOptions.headers },
+    headers,
     ...fetchOptions,
   });
 

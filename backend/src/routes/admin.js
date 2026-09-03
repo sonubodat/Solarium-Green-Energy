@@ -7,6 +7,7 @@ import { generateQrPng, generateQrSvg } from '../services/qr-image.js';
 import PDFDocument from 'pdfkit';
 import { hashPassword, normalizeLoginIdentifier, publicVendor } from '../services/auth.js';
 import { z } from 'zod';
+import { createVendorDocumentUrl } from '../services/vendor-documents.js';
 
 export const adminRoutes = Router();
 
@@ -22,7 +23,7 @@ const vendorSchema = z.object({
 const vendorUpdateSchema = vendorSchema.partial().extend({
 	status: z.enum(['ACTIVE', 'INACTIVE', 'DELETED']).optional(),
 });
-const leadStatusSchema = z.object({ status: z.enum(['NEW', 'CONTACTED', 'QUALIFIED', 'CONVERTED', 'REJECTED', 'DUPLICATE']) });
+const leadStatusSchema = z.object({ status: z.enum(['NEW', 'CONTACTED', 'QUALIFIED', 'CONVERTED', 'LOST', 'REJECTED', 'DUPLICATE']) });
 const payoutStatusSchema = z.object({
 	status: z.enum(['UNPAID', 'PAID', 'PARTIAL']),
 	paid_reference: z.string().trim().max(160).optional(),
@@ -717,11 +718,14 @@ adminRoutes.get('/leads', requireAuth, requireAdmin, async (request, response, n
 						phone: true,
 						email: true,
 						location: true,
+						pincode: true,
+						averageElectricityBill: true,
+						solarSize: true,
 						status: true,
 						createdAt: true,
 						vendor: { select: { businessName: true } },
 						qr: { select: { code: true } },
-						payout: { select: { id: true, status: true, paidAt: true, paidReference: true } },
+											payout: { select: { id: true, status: true, paidAt: true, paidReference: true, vendorId: true } },
 						geoLocation: { select: { latitude: true, longitude: true, accuracy: true, capturedAt: true } },
 					},
 			}),
@@ -755,6 +759,9 @@ adminRoutes.get('/leads/export', requireAuth, requireAdmin, async (request, resp
 				phone: true,
 				email: true,
 				location: true,
+				pincode: true,
+				averageElectricityBill: true,
+				solarSize: true,
 				status: true,
 				createdAt: true,
 				vendor: { select: { businessName: true, mobileNumber: true } },
@@ -765,12 +772,15 @@ adminRoutes.get('/leads/export', requireAuth, requireAdmin, async (request, resp
 		});
 
 		const csv = toCsv(
-			['Customer Name', 'Customer Phone', 'Customer Email', 'Location', 'GPS Latitude', 'GPS Longitude', 'GPS Accuracy (m)', 'Lead Status', 'Vendor Name', 'Vendor Mobile Number', 'QR Code', 'Payout Status', 'Payout Reference', 'Created At'],
+			['Customer Name', 'Customer Phone', 'Customer Email', 'Location', 'Pincode', 'Average Electricity Bill', 'Solar Size', 'GPS Latitude', 'GPS Longitude', 'GPS Accuracy (m)', 'Lead Status', 'Vendor Name', 'Vendor Mobile Number', 'QR Code', 'Payout Status', 'Payout Reference', 'Created At'],
 			leads.map((lead) => [
 				lead.customerName,
 				lead.phone,
 				lead.email,
 				lead.location,
+				lead.pincode,
+				lead.averageElectricityBill,
+				lead.solarSize,
 				lead.geoLocation?.latitude,
 				lead.geoLocation?.longitude,
 				lead.geoLocation?.accuracy,
@@ -814,7 +824,7 @@ adminRoutes.get('/payouts', requireAuth, requireAdmin, async (request, response,
 	try {
 		const { page, limit, skip } = pagination(request.query);
 		const [payouts, total] = await Promise.all([
-			prisma.payout.findMany({ orderBy: { createdAt: 'desc' }, skip, take: limit, include: { vendor: { select: { businessName: true } } } }),
+			prisma.payout.findMany({ orderBy: { createdAt: 'desc' }, skip, take: limit, include: { vendor: { select: { id: true, businessName: true } }, lead: { select: { customerName: true, status: true } } } }),
 			prisma.payout.count(),
 		]);
 		return response.json({ success: true, payouts, pagination: { page, limit, total } });
@@ -840,6 +850,13 @@ adminRoutes.patch('/leads/:leadId', requireAuth, requireAdmin, async (request, r
 	try {
 		const { status } = leadStatusSchema.parse(request.body);
 		const lead = await prisma.$transaction(async (transaction) => {
+			const current = await transaction.lead.findUnique({ where: { id: request.params.leadId }, select: { id: true, status: true, vendorId: true } });
+			if (!current) {
+				const error = new Error('Lead was not found.');
+				error.statusCode = 404;
+				error.code = 'LEAD_NOT_FOUND';
+				throw error;
+			}
 			const updated = await transaction.lead.update({
 				where: { id: request.params.leadId },
 				data: { status },
@@ -875,6 +892,29 @@ adminRoutes.patch('/leads/:leadId', requireAuth, requireAdmin, async (request, r
 	}
 });
 
+adminRoutes.get('/vendors/:vendorId/bank-details', requireAuth, requireAdmin, async (request, response, next) => {
+	try {
+		const details = await prisma.vendorBankDetails.findUnique({ where: { vendorId: request.params.vendorId }, include: { vendor: { select: { id: true, businessName: true } } } });
+		if (!details) return response.json({ success: true, bank_details: null });
+		const [passbookUrl, chequeUrl] = await Promise.all([
+			createVendorDocumentUrl(details.passbookObjectKey),
+			createVendorDocumentUrl(details.chequeObjectKey),
+		]);
+		return response.json({
+			success: true,
+			bank_details: {
+				...details,
+				passbookObjectKey: undefined,
+				chequeObjectKey: undefined,
+				passbookUrl,
+				chequeUrl,
+			},
+		});
+	} catch (error) {
+		return next(error);
+	}
+});
+
 adminRoutes.post('/payouts/:payoutId/status', requireAuth, requireAdmin, async (request, response, next) => {
 	try {
 		const { status, paid_reference: paidReference } = payoutStatusSchema.parse(request.body);
@@ -884,6 +924,12 @@ adminRoutes.post('/payouts/:payoutId/status', requireAuth, requireAdmin, async (
 				const error = new Error('Payout was not found.');
 				error.statusCode = 404;
 				error.code = 'PAYOUT_NOT_FOUND';
+				throw error;
+			}
+			if (current.status === 'PAID' && status !== 'PAID') {
+				const error = new Error('A paid commission cannot be changed back without a reversal process.');
+				error.statusCode = 409;
+				error.code = 'PAYOUT_ALREADY_PAID';
 				throw error;
 			}
 

@@ -111,12 +111,17 @@ Request example:
 	"phone": "+91 9876543210",
 	"email": "customer@example.com",
 	"location": "Pune",
+	"pincode": "411001",
+	"average_electricity_bill": "5-6k",
+	"solar_size": "3-4 kW",
 	"location_lat": 18.5204,
 	"location_lng": 73.8567,
 	"location_accuracy": 25,
 	"location_captured_at": "2026-08-26T10:15:00.000Z"
 }
 ```
+
+`pincode` is required. Pincode must be a six-digit Indian pincode beginning with 1-9. `average_electricity_bill` and `solar_size` are optional; when provided, accepted bill bands are `1-2k` through `9-10k` and `10k+`, and accepted solar-size bands are `1-2 kW` through `9-10 kW` and `10+ kW`.
 
 **Optional GPS capture (pilot scope).** `location_lat`/`location_lng`/`location_accuracy`/`location_captured_at` are all optional — sent only if the customer tapped "Use my location" and the browser actually returned coordinates; omitted entirely (not sent as `null`) if they declined or skipped it, and the lead is created normally either way. When present, `location_lat` and `location_lng` must both be present (`400 INVALID_LOCATION` otherwise) and are validated server-side regardless of what the browser sent: latitude in [-90, 90], longitude in [-180, 180], accuracy >= 0 (`400 VALIDATION_ERROR` otherwise). A valid pair creates a `LeadLocation` row 1:1 with the new lead, created only inside the same lead-creation transaction — there is no separate endpoint that could attach a location to an arbitrary `lead_id`. See `data-model.md`'s LeadLocation section for what's deliberately out of scope for this pilot (no vendor/login location, no IP geolocation, no maps/analytics).
 

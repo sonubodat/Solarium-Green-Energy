@@ -78,6 +78,7 @@ model Vendor {
   sessions           Session[]
   resetTokens        PasswordResetToken[]
   registrations      VendorRegistration[]
+  bankDetails        VendorBankDetails?
 
   @@index([mobileNumber])
   @@index([status, createdAt])
@@ -179,6 +180,9 @@ model Lead {
   phone              String
   email              String?
   location           String?
+  pincode            String?
+  averageElectricityBill String? @map("average_electricity_bill")
+  solarSize          String?     @map("solar_size")
   status             String
   createdAt          DateTime          @default(now()) @map("created_at")
   updatedAt          DateTime          @updatedAt @map("updated_at")
@@ -232,6 +236,29 @@ model Payout {
   @@index([vendorId, status])
   @@index([paidAt])
   @@map("payouts")
+}
+
+model VendorBankDetails {
+  id                    String   @id @default(cuid())
+  vendorId              String   @unique @map("vendor_id")
+  upiNumber             String?  @map("upi_number")
+  upiId                 String?  @map("upi_id")
+  accountHolderName     String?  @map("account_holder_name")
+  accountNumber         String?  @map("account_number")
+  ifscCode              String?  @map("ifsc_code")
+  passbookObjectKey     String?  @map("passbook_object_key")
+  passbookFileName      String?  @map("passbook_file_name")
+  passbookFileSize      Int?     @map("passbook_file_size")
+  passbookContentType   String?  @map("passbook_content_type")
+  chequeObjectKey       String?  @map("cheque_object_key")
+  chequeFileName        String?  @map("cheque_file_name")
+  chequeFileSize        Int?     @map("cheque_file_size")
+  chequeContentType     String?  @map("cheque_content_type")
+  createdAt             DateTime @default(now()) @map("created_at")
+  updatedAt             DateTime @updatedAt @map("updated_at")
+  vendor                Vendor   @relation(fields: [vendorId], references: [id])
+
+  @@map("vendor_bank_details")
 }
 
 model Session {
