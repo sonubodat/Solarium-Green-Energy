@@ -89,7 +89,7 @@ Check whether a phone number can still submit a lead, before the customer fills 
 - Request: `{ "phone": "9876543210" }`
 - Rules: normalize the mobile number and generate the server-side HMAC identity; the hash itself is never returned to the client
 - Response: `{ "success": true, "available": true }` when no lead exists yet for this identity
-- Errors: `400 INVALID_MOBILE_NUMBER` for an unparseable number; `409 CUSTOMER_ALREADY_EXISTS` when a lead already exists for this identity (global — see below)
+- Errors: `400 VALIDATION_ERROR` for a missing phone value; `409 CUSTOMER_ALREADY_EXISTS` when a lead already exists for this identity (global — see below)
 - This is a UX convenience only (lets the frontend block the form early). It is **not** the enforcement point — `POST /api/public/leads` repeats the same check and the database's unique constraint is what actually prevents a race between two concurrent submissions.
 
 ### `POST /api/public/leads`

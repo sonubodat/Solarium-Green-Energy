@@ -78,8 +78,7 @@ function PublicPage() {
   useEffect(() => () => clearTimeout(slowRequestTimer.current), []);
 
   async function checkPhoneAvailability(rawPhone) {
-    const digits = rawPhone.replace(/\D/g, '');
-    if (digits.length < 10) {
+    if (!rawPhone.trim()) {
       setPhoneCheck('idle');
       return;
     }

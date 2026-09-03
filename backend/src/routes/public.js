@@ -121,7 +121,7 @@ function normalizePhone(rawPhone) {
 	// as the staff-facing normalizeMobile() in admin.js/sales.js/registrations.js.
 	if (digits.startsWith('0091') && digits.length === 14) return digits.slice(4);
 	if (digits.startsWith('91') && digits.length === 12) return digits.slice(2);
-	return digits;
+	return digits || rawPhone.trim();
 }
 
 function customerHashFor(normalizedPhone) {
@@ -157,14 +157,8 @@ async function findExistingLeadByHash(customerHash) {
 
 publicRoutes.post('/leads/check-phone', publicRateLimit, async (request, response, next) => {
 	try {
-		const input = z.object({ phone: z.string().trim().min(10).max(20) }).parse(request.body);
+		const input = z.object({ phone: z.string().trim().min(1) }).parse(request.body);
 		const normalizedPhone = normalizePhone(input.phone);
-		if (!/^[6-9]\d{9}$/.test(normalizedPhone)) {
-			const error = new Error('Enter a valid Indian mobile number.');
-			error.statusCode = 400;
-			error.code = 'INVALID_MOBILE_NUMBER';
-			return next(error);
-		}
 
 		// The customer/frontend never receives the HMAC hash itself — only an availability
 		// result. The hash exists purely as a privacy-preserving server-side lookup key.
@@ -185,7 +179,7 @@ publicRoutes.post('/leads', publicRateLimit, async (request, response, next) => 
 			scan_id: z.string().trim().min(1).optional(),
 			referral_qr: z.string().trim().min(1).optional(),
 			customer_name: z.string().trim().min(2).max(120),
-			phone: z.string().trim().min(10).max(20),
+			phone: z.string().trim().min(1),
 			email: z.string().trim().email().max(160).optional(),
 			location: z.string().trim().max(160).optional(),
 			pincode: z.string().trim().regex(/^[1-9]\d{5}$/, 'Enter a valid six-digit pincode.'),
@@ -200,12 +194,6 @@ publicRoutes.post('/leads', publicRateLimit, async (request, response, next) => 
 			location_captured_at: z.string().datetime().optional(),
 		}).parse(request.body);
 		const normalizedPhone = normalizePhone(input.phone);
-		if (!/^[6-9]\d{9}$/.test(normalizedPhone)) {
-			const error = new Error('Enter a valid Indian mobile number.');
-			error.statusCode = 400;
-			error.code = 'INVALID_MOBILE_NUMBER';
-			return next(error);
-		}
 
 		const hasLat = input.location_lat !== undefined;
 		const hasLng = input.location_lng !== undefined;

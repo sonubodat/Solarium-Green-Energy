@@ -150,13 +150,18 @@ vendorRoutes.post('/bank-details/:documentType', requireAuth, requireVendor, doc
 			throw error;
 		}
 		const uploaded = await uploadVendorDocument(request.auth.vendor.id, type, request.file);
-		const existing = await prisma.vendorBankDetails.findUnique({ where: { vendorId: request.auth.vendor.id } });
-		const data = type === 'passbook'
-			? { passbookObjectKey: uploaded.objectKey, passbookFileName: uploaded.fileName, passbookFileSize: uploaded.fileSize, passbookContentType: uploaded.contentType }
-			: { chequeObjectKey: uploaded.objectKey, chequeFileName: uploaded.fileName, chequeFileSize: uploaded.fileSize, chequeContentType: uploaded.contentType };
-		await prisma.vendorBankDetails.upsert({ where: { vendorId: request.auth.vendor.id }, create: { vendorId: request.auth.vendor.id, ...data }, update: data });
-		const previousKey = type === 'passbook' ? existing?.passbookObjectKey : existing?.chequeObjectKey;
-		await removeVendorDocument(previousKey);
+		try {
+			const existing = await prisma.vendorBankDetails.findUnique({ where: { vendorId: request.auth.vendor.id } });
+			const data = type === 'passbook'
+				? { passbookObjectKey: uploaded.objectKey, passbookFileName: uploaded.fileName, passbookFileSize: uploaded.fileSize, passbookContentType: uploaded.contentType }
+				: { chequeObjectKey: uploaded.objectKey, chequeFileName: uploaded.fileName, chequeFileSize: uploaded.fileSize, chequeContentType: uploaded.contentType };
+			await prisma.vendorBankDetails.upsert({ where: { vendorId: request.auth.vendor.id }, create: { vendorId: request.auth.vendor.id, ...data }, update: data });
+			const previousKey = type === 'passbook' ? existing?.passbookObjectKey : existing?.chequeObjectKey;
+			await removeVendorDocument(previousKey);
+		} catch (error) {
+			await removeVendorDocument(uploaded.objectKey);
+			throw error;
+		}
 		return response.json({ success: true, document: { type, fileName: uploaded.fileName, fileSize: uploaded.fileSize } });
 	} catch (error) {
 		if (error instanceof multer.MulterError && error.code === 'LIMIT_FILE_SIZE') {
