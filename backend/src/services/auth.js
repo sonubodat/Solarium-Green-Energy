@@ -67,18 +67,31 @@ function cookieIsSecure() {
   return env.nodeEnv === 'production' || env.sessionCookieSameSite === 'None';
 }
 
-export function setSessionCookie(response, token) {
-  const secure = cookieIsSecure();
+export function sessionCookieName(role) {
+  return `${env.sessionCookieName}_${role.toLowerCase()}`;
+}
+
+function cookieOptions(name, value, maxAge) {
+  return `${name}=${value}; Max-Age=${maxAge}; Path=/; HttpOnly; SameSite=${env.sessionCookieSameSite}${cookieIsSecure() ? '; Secure' : ''}`;
+}
+
+export function setSessionCookie(response, token, role) {
   response.setHeader(
     'Set-Cookie',
-    `${env.sessionCookieName}=${encodeURIComponent(token)}; Max-Age=${sessionLifetimeMs / 1000}; Path=/; HttpOnly; SameSite=${env.sessionCookieSameSite}${secure ? '; Secure' : ''}`
+    [
+      cookieOptions(sessionCookieName(role), encodeURIComponent(token), sessionLifetimeMs / 1000),
+      cookieOptions(env.sessionCookieName, '', 0),
+    ]
   );
 }
 
-export function clearSessionCookie(response) {
+export function clearSessionCookie(response, role) {
   response.setHeader(
     'Set-Cookie',
-    `${env.sessionCookieName}=; Max-Age=0; Path=/; HttpOnly; SameSite=${env.sessionCookieSameSite}${cookieIsSecure() ? '; Secure' : ''}`
+    [
+      cookieOptions(sessionCookieName(role), '', 0),
+      cookieOptions(env.sessionCookieName, '', 0),
+    ]
   );
 }
 

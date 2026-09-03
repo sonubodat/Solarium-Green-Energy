@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { prisma } from '../lib/prisma.js';
 import { env } from '../config/env.js';
+import { sessionCookieName } from '../services/auth.js';
 
 function unauthorized(message = 'Authentication is required.') {
   const error = new Error(message);
@@ -26,9 +27,26 @@ function hashToken(token) {
   return createHash('sha256').update(token).digest('hex');
 }
 
+function requestedPortal(request) {
+  const headerRole = request.headers['x-portal-role']?.toUpperCase();
+  if (['ADMIN', 'SALES', 'VENDOR'].includes(headerRole)) return headerRole;
+
+  const queryRole = request.query.portal?.toUpperCase();
+  if (['ADMIN', 'SALES', 'VENDOR'].includes(queryRole)) return queryRole;
+
+  if (request.baseUrl.endsWith('/admin')) return 'ADMIN';
+  if (request.baseUrl.endsWith('/sales')) return 'SALES';
+  if (request.baseUrl.endsWith('/vendor')) return 'VENDOR';
+  return null;
+}
+
 export async function requireAuth(request, _response, next) {
   try {
-    const token = readCookie(request, env.sessionCookieName);
+    const role = requestedPortal(request);
+    const token = readCookie(request, role ? sessionCookieName(role) : env.sessionCookieName)
+      || (!role && readCookie(request, sessionCookieName('ADMIN')))
+      || (!role && readCookie(request, sessionCookieName('SALES')))
+      || (!role && readCookie(request, sessionCookieName('VENDOR')));
     if (!token) {
       return next(unauthorized());
     }

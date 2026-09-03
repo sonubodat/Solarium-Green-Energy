@@ -1,36 +1,126 @@
-To address all issues (including breaking changes), run:
-  npm audit fix --force
-Run `npm audit` for details.
-◇ injected env (0) from .env.local // tip: ⌘ multiple files { path: ['.env.local', '.env'] }
-◇ injected env (0) from .env // tip: ⌘ custom filepath { path: '/custom/path/.env' }
-Loaded Prisma config from prisma.config.ts.
-Prisma schema loaded from prisma/schema.prisma.
-✔ Generated Prisma Client (v7.9.1) to ./node_modules/@prisma/client in 160ms
-Start by importing your Prisma Client (See: https://pris.ly/d/importing-client)
-==> Uploading build...
-==> Uploaded in 3.9s. Compression took 1.3s
-==> Build successful 🎉
-==> Deploying...
-==> Setting WEB_CONCURRENCY=1 by default, based on available CPUs in the instance
-==> Running 'npm start'
-> solarium-backend@0.1.0 prestart
-> prisma generate
-◇ injected env (0) from .env.local // tip: ⌘ enable debugging { debug: true }
-◇ injected env (0) from .env // tip: ⌁ auth for agents [www.vestauth.com]
-Loaded Prisma config from prisma.config.ts.
-Prisma schema loaded from prisma/schema.prisma.
-✔ Generated Prisma Client (v7.9.1) to ./node_modules/@prisma/client in 4.50s
-Start by importing your Prisma Client (See: https://pris.ly/d/importing-client)
-> solarium-backend@0.1.0 start
-> node src/server.js
-◇ injected env (0) from .env.local // tip: ⌁ auth for agents [www.vestauth.com]
-◇ injected env (0) from .env // tip: ⌁ auth for agents [www.vestauth.com]
-Solarium API listening on port 10000
-==> Your service is live 🎉
-==> 
-==> ///////////////////////////////////////////////////////////
-==> 
-==> Available at your primary URL https://solarium-green-energy.onrender.com
-==> 
-==> ///////////////////////////////////////////////////////////
-done
+Solarium-Green-Energy/
+├─ .claude/
+│  └─ launch.json
+├─ .dist/
+├─ backend/
+│  ├─ prisma/
+│  │  ├─ migrations/
+│  │  │  ├─ 20260824181415_solarium/
+│  │  │  │  └─ migration.sql
+│  │  │  ├─ 20260824200000_schema_integrity/
+│  │  │  │  └─ migration.sql
+│  │  │  ├─ 20260824201500_registration_relations/
+│  │  │  │  └─ migration.sql
+│  │  │  ├─ 20260825093500_vendor_registration_login_identifier_unique/
+│  │  │  │  └─ migration.sql
+│  │  │  ├─ 20260825162625_payout_partial_status/
+│  │  │  │  └─ migration.sql
+│  │  │  ├─ 20260826090000_lead_customer_identity_unique/
+│  │  │  │  └─ migration.sql
+│  │  │  ├─ 20260826110000_lead_location/
+│  │  │  │  └─ migration.sql
+│  │  │  ├─ migration_lock.toml
+│  │  │  └─ README.md
+│  │  ├─ schema.prisma
+│  │  └─ seed.js
+│  ├─ src/
+│  │  ├─ config/
+│  │  │  └─ env.js
+│  │  ├─ lib/
+│  │  │  └─ prisma.js
+│  │  ├─ middleware/
+│  │  │  ├─ auth.js
+│  │  │  ├─ errors.js
+│  │  │  ├─ rate-limit.js
+│  │  │  └─ validation.js
+│  │  ├─ routes/
+│  │  │  ├─ admin.js
+│  │  │  ├─ auth.js
+│  │  │  ├─ public.js
+│  │  │  ├─ registrations.js
+│  │  │  ├─ sales.js
+│  │  │  └─ vendor.js
+│  │  ├─ services/
+│  │  │  ├─ auth.js
+│  │  │  ├─ password-reset.js
+│  │  │  ├─ qr-image.js
+│  │  │  ├─ qr.js
+│  │  │  └─ README.md
+│  │  ├─ validators/
+│  │  │  └─ README.md
+│  │  ├─ app.js
+│  │  └─ server.js
+│  ├─ .env.example
+│  ├─ .env.local
+│  ├─ .gitignore
+│  ├─ package-lock.json
+│  ├─ package.json
+│  ├─ prisma.config.ts
+│  └─ README.md
+├─ docs/
+│  ├─ api.md
+│  ├─ architecture.md
+│  ├─ data-model.md
+│  ├─ plan.md
+│  ├─ progress.md
+│  ├─ requirements.md
+│  ├─ RFI.md
+│  ├─ tasks.md
+│  └─ testing.md
+├─ frontend/
+│  ├─ build/
+│  │  ├─ static/
+│  │  │  ├─ css/
+│  │  │  │  ├─ main.76a69749.css
+│  │  │  │  └─ main.76a69749.css.map
+│  │  │  └─ js/
+│  │  │     ├─ main.0370bd90.js
+│  │  │     ├─ main.0370bd90.js.LICENSE.txt
+│  │  │     └─ main.0370bd90.js.map
+│  │  ├─ asset-manifest.json
+│  │  └─ index.html
+│  ├─ public/
+│  │  └─ index.html
+│  ├─ src/
+│  │  ├─ api/
+│  │  │  └─ client.js
+│  │  ├─ components/
+│  │  │  ├─ PageShell.js
+│  │  │  ├─ QrScanner.js
+│  │  │  ├─ README.md
+│  │  │  ├─ Skeleton.css
+│  │  │  └─ Skeleton.js
+│  │  ├─ routes/
+│  │  │  ├─ AdminPage.css
+│  │  │  ├─ AdminPage.js
+│  │  │  ├─ PublicPage.css
+│  │  │  ├─ PublicPage.jsx
+│  │  │  ├─ README.md
+│  │  │  ├─ SalesPage.css
+│  │  │  ├─ SalesPage.js
+│  │  │  ├─ VendorPage.css
+│  │  │  └─ VendorPage.jsx
+│  │  ├─ App.css
+│  │  ├─ App.js
+│  │  ├─ index.css
+│  │  ├─ index.js
+│  │  └─ setupProxy.js
+│  ├─ .env.example
+│  ├─ .env.local
+│  ├─ .gitignore
+│  ├─ package-lock.json
+│  ├─ package.json
+│  ├─ README.md
+│  └─ vercel.json
+│  ├─ GRAPH_REPORT.md
+│  ├─ graph.html
+│  └─ graph.json
+├─ public/
+│  ├─ favicon.ico
+│  ├─ logo192.png
+│  └─ logo512.png
+├─ .gitignore
+├─ 12.txt
+├─ check_sales_vendors_tmp.mjs
+├─ ok.txt
+└─ README.md

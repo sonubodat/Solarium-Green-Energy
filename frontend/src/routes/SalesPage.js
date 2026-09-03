@@ -113,7 +113,7 @@ function SalesPage() {
 
   async function restoreSession() {
     try {
-      const session = await apiRequest('/auth/session');
+      const session = await apiRequest('/auth/session?portal=sales');
 
       if (!mountedRef.current || session.role !== 'SALES') return;
 
@@ -140,7 +140,7 @@ function SalesPage() {
     setMessageType('');
 
     try {
-      await apiRequest('/auth/logout', {
+      await apiRequest('/auth/logout?portal=sales', {
         method: 'POST',
       });
     } catch (error) {
@@ -184,7 +184,7 @@ function SalesPage() {
     setMessageType('');
 
     try {
-      const result = await apiRequest('/auth/login', {
+      const result = await apiRequest('/auth/login?portal=sales', {
         method: 'POST',
         body: JSON.stringify({
           username_or_mobile: login.identifier.trim(),

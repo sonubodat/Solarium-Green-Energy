@@ -57,7 +57,7 @@ authRoutes.post('/login', authRateLimit, async (request, response, next) => {
 		}
 
 		const token = await createStaffSession(user.id);
-		setSessionCookie(response, token);
+		setSessionCookie(response, token, user.role);
 		return response.json({ success: true, user: publicStaff(user) });
 	} catch (error) {
 		return next(error);
@@ -78,7 +78,7 @@ authRoutes.get('/session', requireAuth, async (request, response, next) => {
 authRoutes.post('/logout', requireAuth, async (request, response, next) => {
 	try {
 		await prisma.session.update({ where: { id: request.auth.sessionId }, data: { revokedAt: new Date() } });
-		clearSessionCookie(response);
+		clearSessionCookie(response, request.auth.role);
 		return response.json({ success: true });
 	} catch (error) {
 		return next(error);

@@ -167,7 +167,7 @@ function VendorPage() {
 
   async function restoreSession() {
     try {
-      const session = await apiRequest('/auth/session');
+      const session = await apiRequest('/auth/session?portal=vendor');
 
       if (!mountedRef.current || session.role !== 'VENDOR') return;
 
@@ -218,7 +218,7 @@ function VendorPage() {
     setMessage('');
 
     try {
-      await apiRequest('/auth/logout', {
+      await apiRequest('/auth/logout?portal=vendor', {
         method: 'POST',
       });
     } catch (error) {

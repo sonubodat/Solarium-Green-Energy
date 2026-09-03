@@ -159,7 +159,7 @@ function AdminPage() {
 
   async function restoreSession() {
     try {
-      const session = await apiRequest('/auth/session');
+      const session = await apiRequest('/auth/session?portal=admin');
 
       if (!mountedRef.current || session.role !== 'ADMIN') return;
 
@@ -184,7 +184,7 @@ function AdminPage() {
     setMessageType('');
 
     try {
-      const result = await apiRequest('/auth/login', {
+      const result = await apiRequest('/auth/login?portal=admin', {
         method: 'POST',
         body: JSON.stringify({
           username_or_mobile: login.identifier.trim(),
@@ -220,7 +220,7 @@ function AdminPage() {
     setLoading(true);
 
     try {
-      await apiRequest('/auth/logout', {
+      await apiRequest('/auth/logout?portal=admin', {
         method: 'POST',
       });
     } catch (error) {

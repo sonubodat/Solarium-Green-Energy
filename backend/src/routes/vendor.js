@@ -51,7 +51,7 @@ vendorRoutes.post('/login', authRateLimit, async (request, response, next) => {
 		}
 
 		const token = await createVendorSession(vendor.id);
-		setSessionCookie(response, token);
+		setSessionCookie(response, token, 'VENDOR');
 		return response.json({ success: true, vendor: publicVendor(vendor) });
 	} catch (error) {
 		return next(error);
@@ -61,7 +61,7 @@ vendorRoutes.post('/login', authRateLimit, async (request, response, next) => {
 vendorRoutes.post('/logout', requireAuth, requireVendor, async (request, response, next) => {
 	try {
 		await prisma.session.update({ where: { id: request.auth.sessionId }, data: { revokedAt: new Date() } });
-		clearSessionCookie(response);
+		clearSessionCookie(response, 'VENDOR');
 		return response.json({ success: true });
 	} catch (error) {
 		return next(error);
