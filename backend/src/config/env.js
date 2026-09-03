@@ -26,4 +26,5 @@ export const env = {
   supabaseUrl: process.env.SUPABASE_URL || '',
   supabaseServiceRoleKey: process.env.SUPABASE_SERVICE_ROLE_KEY || '',
   supabaseStorageBucket: process.env.SUPABASE_STORAGE_BUCKET || 'vendor-documents',
+  supabaseQrStorageBucket: process.env.SUPABASE_QR_STORAGE_BUCKET || 'qr-artifacts',
 };

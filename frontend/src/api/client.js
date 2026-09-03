@@ -35,6 +35,13 @@ export async function apiRequest(path, options = {}) {
 
   const payload = await response.json().catch(() => null);
   if (!response.ok) {
+    console.error('[Solarium API error]', JSON.stringify({
+      method,
+      path,
+      status: response.status,
+      statusText: response.statusText,
+      response: payload,
+    }, null, 2));
     const baseMessage = payload?.error?.message || 'Request failed.';
     const details = payload?.error?.details;
     // A VALIDATION_ERROR's top-level message is always the same generic sentence — the
@@ -46,6 +53,7 @@ export async function apiRequest(path, options = {}) {
       : baseMessage;
     const error = new Error(message);
     error.code = payload?.error?.code;
+    error.status = response.status;
     error.details = details;
     throw error;
   }

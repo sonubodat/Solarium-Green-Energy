@@ -1,13 +1,18 @@
 import { Router } from 'express';
+import multer from 'multer';
 import { requireAuth, requireAdmin } from '../middleware/auth.js';
 import { prisma } from '../lib/prisma.js';
 import { createPasswordResetToken, resetTokenResponse } from '../services/password-reset.js';
 import { assignUnassignedQr, generateQrCodes, reassignQr } from '../services/qr.js';
 import { generateQrPng, generateQrSvg } from '../services/qr-image.js';
 import PDFDocument from 'pdfkit';
+import { randomUUID } from 'node:crypto';
 import { hashPassword, normalizeLoginIdentifier, publicVendor } from '../services/auth.js';
 import { z } from 'zod';
-import { createVendorDocumentUrl } from '../services/vendor-documents.js';
+import { createQrArtworkUrl, createVendorDocumentUrl, removeQrArtwork, uploadQrArtwork, uploadQrProof } from '../services/vendor-documents.js';
+import { generateQrProof, generateQrTemplatePdf } from '../services/qr-proof.js';
+import { buildQrCodeSequence, normalizeQrCode, parseQrRange } from '../services/qr-print.js';
+import { env } from '../config/env.js';
 
 export const adminRoutes = Router();
 
@@ -349,6 +354,39 @@ const qrListFilterSchema = z.object({
 	assignment: z.enum(['ASSIGNED', 'UNASSIGNED']).optional(),
 });
 
+const qrTemplateSchema = z.object({
+	name: z.string().trim().min(2).max(120),
+	page_width_mm: z.coerce.number().min(50).max(500),
+	page_height_mm: z.coerce.number().min(50).max(500),
+	dpi: z.coerce.number().int().min(72).max(1200).default(300),
+	qr_x: z.coerce.number().min(0).max(4000),
+	qr_y: z.coerce.number().min(0).max(4000),
+	qr_width: z.coerce.number().min(10).max(2000),
+	qr_height: z.coerce.number().min(10).max(2000),
+	label_enabled: z.coerce.boolean().default(false),
+	label_text_x: z.coerce.number().min(0).max(4000).optional(),
+	label_text_y: z.coerce.number().min(0).max(4000).optional(),
+	label_font_size: z.coerce.number().min(8).max(80).optional(),
+}).superRefine((value, context) => {
+	if (value.qr_width !== value.qr_height) {
+		context.addIssue({ code: z.ZodIssueCode.custom, path: ['qr_width'], message: 'QR width and height must be equal.' });
+	}
+	if (value.qr_x + value.qr_width > value.page_width_mm) {
+		context.addIssue({ code: z.ZodIssueCode.custom, path: ['qr_x'], message: 'QR must fit inside the page width.' });
+	}
+	if (value.qr_y + value.qr_height > value.page_height_mm) {
+		context.addIssue({ code: z.ZodIssueCode.custom, path: ['qr_y'], message: 'QR must fit inside the page height.' });
+	}
+});
+
+const qrBatchSchema = z.object({
+	template_id: z.string().trim().min(1),
+	range_start: z.string().trim().min(1),
+	range_end: z.string().trim().min(1),
+	idempotency_key: z.string().trim().min(1).optional(),
+});
+const qrArtworkUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 2 * 1024 * 1024 } });
+
 adminRoutes.get('/qr', requireAuth, requireAdmin, async (request, response, next) => {
 	try {
 		const { status, assignment } = qrListFilterSchema.parse({
@@ -392,6 +430,312 @@ adminRoutes.post('/qr/generate', requireAuth, requireAdmin, async (request, resp
 	}
 });
 
+adminRoutes.get('/qr/templates', requireAuth, requireAdmin, async (request, response, next) => {
+	try {
+		const templates = await prisma.qrPrintTemplate.findMany({
+			orderBy: { createdAt: 'desc' },
+			include: { createdBy: { select: { id: true, name: true, role: true } } },
+		});
+		const templatesWithArtwork = await Promise.all(templates.map(async (template) => ({
+			...template,
+			artworkUrl: await createQrArtworkUrl(template.artworkPath),
+		})));
+		return response.json({ success: true, templates: templatesWithArtwork });
+	} catch (error) {
+		return next(error);
+	}
+});
+
+adminRoutes.post('/qr/templates', requireAuth, requireAdmin, qrArtworkUpload.single('artwork'), async (request, response, next) => {
+	let uploadedArtwork = null;
+	try {
+		const input = qrTemplateSchema.parse(request.body);
+		uploadedArtwork = request.file ? await uploadQrArtwork(request.auth.user.id, request.file) : null;
+		const template = await prisma.qrPrintTemplate.create({
+			data: {
+				createdById: request.auth.user.id,
+				name: input.name,
+				artworkFileName: uploadedArtwork?.fileName ?? null,
+				artworkPath: uploadedArtwork?.objectKey ?? null,
+				artworkMimeType: uploadedArtwork?.contentType ?? null,
+				pageWidthMm: input.page_width_mm,
+				pageHeightMm: input.page_height_mm,
+				dpi: input.dpi,
+				qrX: input.qr_x,
+				qrY: input.qr_y,
+				qrWidth: input.qr_width,
+				qrHeight: input.qr_height,
+				labelEnabled: Boolean(input.label_enabled),
+				labelTextX: input.label_text_x ?? null,
+				labelTextY: input.label_text_y ?? null,
+				labelFontSize: input.label_font_size ?? null,
+				status: 'DRAFT',
+			},
+		});
+		return response.status(201).json({ success: true, template });
+	} catch (error) {
+		if (uploadedArtwork?.objectKey) {
+			try {
+				await removeQrArtwork(uploadedArtwork.objectKey);
+			} catch (cleanupError) {
+				console.error('QR artwork cleanup failed after template creation error.', cleanupError);
+			}
+		}
+		if (error instanceof multer.MulterError && error.code === 'LIMIT_FILE_SIZE') {
+			error.statusCode = 413;
+			error.code = 'QR_ARTWORK_TOO_LARGE';
+			error.message = 'QR artwork must be 2 MB or smaller.';
+		}
+		return next(error);
+	}
+});
+
+adminRoutes.post('/qr/templates/:templateId/publish', requireAuth, requireAdmin, async (request, response, next) => {
+	try {
+		const template = await prisma.qrPrintTemplate.update({
+			where: { id: request.params.templateId },
+			data: { status: 'PUBLISHED' },
+		});
+		return response.json({ success: true, template });
+	} catch (error) {
+		if (error.code === 'P2025') {
+			error.statusCode = 404;
+			error.code = 'QR_TEMPLATE_NOT_FOUND';
+			error.message = 'QR print template was not found.';
+		}
+		return next(error);
+	}
+});
+
+adminRoutes.post('/qr/print-batch', requireAuth, requireAdmin, async (request, response, next) => {
+	try {
+		const input = qrBatchSchema.parse(request.body);
+		const template = await prisma.qrPrintTemplate.findUnique({ where: { id: input.template_id } });
+		if (!template) {
+			return response.status(404).json({ success: false, error: { code: 'QR_TEMPLATE_NOT_FOUND', message: 'QR template was not found.' } });
+		}
+		if (template.status !== 'PUBLISHED') {
+			return response.status(409).json({ success: false, error: { code: 'QR_TEMPLATE_NOT_PUBLISHED', message: 'Only published templates can be used to batch print QR codes.' } });
+		}
+
+		const range = parseQrRange(input.range_start, input.range_end);
+		const codes = buildQrCodeSequence(range.start, range.end);
+		const foundQrCodes = await prisma.qrCode.findMany({
+			where: { code: { in: codes } },
+			select: { id: true, code: true },
+			orderBy: { code: 'asc' },
+		});
+		const foundByCode = new Map(foundQrCodes.map((qr) => [qr.code, qr]));
+		const missing = codes.filter((code) => !foundByCode.has(code));
+		if (missing.length) {
+			if (env.nodeEnv !== 'development') {
+				return response.status(409).json({ success: false, error: { code: 'QR_RANGE_MISSING_CODES', message: `The selected QR range is missing valid codes: ${missing.slice(0, 10).join(', ')}` } });
+			}
+			await prisma.qrCode.createMany({ data: missing.map((code) => ({ code })), skipDuplicates: true });
+			const provisionedQrCodes = await prisma.qrCode.findMany({
+				where: { code: { in: missing } },
+				select: { id: true, code: true },
+			});
+			provisionedQrCodes.forEach((qr) => foundByCode.set(qr.code, qr));
+		}
+
+		const idempotencyKey = (input.idempotency_key || `qr-print-${randomUUID()}`).trim();
+		const existing = await prisma.qrPrintJob.findUnique({ where: { idempotencyKey } });
+		if (existing) {
+			return response.status(200).json({ success: true, job: existing, duplicate: true });
+		}
+
+		const job = await prisma.$transaction(async (transaction) => {
+			const created = await transaction.qrPrintJob.create({
+				data: {
+					templateId: template.id,
+					createdById: request.auth.user.id,
+					idempotencyKey,
+					status: 'PENDING_APPROVAL',
+					rangeStart: range.start,
+					rangeEnd: range.end,
+					itemCount: codes.length,
+					templateSnapshot: {
+						id: template.id,
+						version: template.version,
+						name: template.name,
+						artworkPath: template.artworkPath,
+						artworkMimeType: template.artworkMimeType,
+						pageWidthMm: template.pageWidthMm,
+						pageHeightMm: template.pageHeightMm,
+						dpi: template.dpi,
+						qrX: template.qrX,
+						qrY: template.qrY,
+						qrWidth: template.qrWidth,
+						qrHeight: template.qrHeight,
+						labelEnabled: template.labelEnabled,
+						labelTextX: template.labelTextX,
+						labelTextY: template.labelTextY,
+						labelFontSize: template.labelFontSize,
+					},
+					proofSummary: { previewCodes: [codes[0], codes[Math.floor(codes.length / 2)], codes[codes.length - 1]], decoded: false },
+				},
+			});
+
+			await Promise.all(codes.map((code, index) => transaction.qrPrintJobItem.create({
+				data: {
+					printJobId: created.id,
+					qrCodeId: foundByCode.get(code).id,
+					sequence: index + 1,
+					expectedCode: code,
+					expectedUrl: `${process.env.APP_BASE_URL || 'https://solariumenergy.in'}/v/${encodeURIComponent(code)}`,
+					status: 'PROOF_READY',
+				},
+			}))); 
+
+			return created;
+		});
+
+		return response.status(201).json({ success: true, job, proofCodes: [codes[0], codes[Math.floor(codes.length / 2)], codes[codes.length - 1]] });
+	} catch (error) {
+		if (error.code === 'P2002' && error.meta?.target?.includes('idempotency_key')) {
+			error.statusCode = 409;
+			error.code = 'QR_PRINT_DUPLICATE';
+			error.message = 'A print batch with this idempotency key already exists.';
+		}
+		return next(error);
+	}
+});
+
+adminRoutes.post('/qr/print-batch/:jobId/approve', requireAuth, requireAdmin, async (request, response, next) => {
+	try {
+		const existing = await prisma.qrPrintJob.findUnique({ where: { id: request.params.jobId }, select: { status: true, proofCheckedAt: true } });
+		if (!existing) {
+			return response.status(404).json({ success: false, error: { code: 'QR_PRINT_JOB_NOT_FOUND', message: 'QR print job was not found.' } });
+		}
+		if (existing.status !== 'PENDING_APPROVAL' || !existing.proofCheckedAt) {
+			return response.status(409).json({ success: false, error: { code: 'QR_PROOF_APPROVAL_REQUIRED', message: 'A verified proof is required before approving this print job.' } });
+		}
+		const job = await prisma.qrPrintJob.update({
+			where: { id: request.params.jobId },
+			data: { status: 'APPROVED', approvedAt: new Date() },
+		});
+		return response.json({ success: true, job });
+	} catch (error) {
+		if (error.code === 'P2025') {
+			error.statusCode = 404;
+			error.code = 'QR_PRINT_JOB_NOT_FOUND';
+			error.message = 'QR print job was not found.';
+		}
+		return next(error);
+	}
+});
+
+adminRoutes.get('/qr/print-batch/:jobId/pdf', requireAuth, requireAdmin, async (request, response, next) => {
+	try {
+		const job = await prisma.qrPrintJob.findUnique({ where: { id: request.params.jobId }, include: { items: { orderBy: { sequence: 'asc' } } } });
+		if (!job) return response.status(404).json({ success: false, error: { code: 'QR_PRINT_JOB_NOT_FOUND', message: 'Print batch was not found.' } });
+		if (job.status !== 'APPROVED' && env.nodeEnv !== 'development') {
+			return response.status(409).json({ success: false, error: { code: 'QR_PRINT_APPROVAL_REQUIRED', message: 'Approve the verified proof before downloading the production PDF.' } });
+		}
+		const pdf = await generateQrTemplatePdf(job);
+		response.setHeader('Content-Type', 'application/pdf');
+		response.setHeader('Content-Disposition', `${request.query.inline === 'true' ? 'inline' : 'attachment'}; filename="${safeFilenameSegment(job.rangeStart || job.id)}-template.pdf"`);
+		return response.send(pdf);
+	} catch (error) {
+		return next(error);
+	}
+});
+
+adminRoutes.get('/qr/template-pdf', requireAuth, requireAdmin, async (request, response, next) => {
+	try {
+		const templateId = String(request.query.template_id || '').trim();
+		const code = normalizeQrCode(request.query.code);
+		if (!templateId || !code) {
+			return response.status(400).json({ success: false, error: { code: 'QR_TEMPLATE_INPUT_REQUIRED', message: 'Select a template and enter a QR code.' } });
+		}
+		const [template, qr] = await Promise.all([
+			prisma.qrPrintTemplate.findUnique({ where: { id: templateId } }),
+			prisma.qrCode.findUnique({ where: { code }, select: { id: true, code: true } }),
+		]);
+		if (!template) return response.status(404).json({ success: false, error: { code: 'QR_TEMPLATE_NOT_FOUND', message: 'QR print template was not found.' } });
+		if (template.status !== 'PUBLISHED' && env.nodeEnv !== 'development') {
+			return response.status(409).json({ success: false, error: { code: 'QR_TEMPLATE_NOT_PUBLISHED', message: 'Only published templates can generate designed PDFs.' } });
+		}
+		if (!qr) return response.status(404).json({ success: false, error: { code: 'QR_NOT_FOUND', message: `No QR code matching "${code}" was found.` } });
+
+		const job = {
+			templateSnapshot: {
+				version: template.version,
+				name: template.name,
+				artworkPath: template.artworkPath,
+				artworkMimeType: template.artworkMimeType,
+				pageWidthMm: template.pageWidthMm,
+				pageHeightMm: template.pageHeightMm,
+				dpi: template.dpi,
+				qrX: template.qrX,
+				qrY: template.qrY,
+				qrWidth: template.qrWidth,
+				qrHeight: template.qrHeight,
+				labelEnabled: template.labelEnabled,
+				labelTextX: template.labelTextX,
+				labelTextY: template.labelTextY,
+				labelFontSize: template.labelFontSize,
+			},
+			items: [{ sequence: 1, qrCodeId: qr.id, expectedCode: qr.code, expectedUrl: `${env.appBaseUrl}/v/${encodeURIComponent(qr.code)}` }],
+		};
+		const pdf = await generateQrTemplatePdf(job);
+		response.setHeader('Content-Type', 'application/pdf');
+		response.setHeader('Content-Disposition', `${request.query.inline === 'true' ? 'inline' : 'attachment'}; filename="${safeFilenameSegment(code)}-template.pdf"`);
+		return response.send(pdf);
+	} catch (error) {
+		return next(error);
+	}
+});
+
+adminRoutes.post('/qr/print-batch/:jobId/proof', requireAuth, requireAdmin, async (request, response, next) => {
+	try {
+		const job = await prisma.qrPrintJob.findUnique({ where: { id: request.params.jobId }, include: { items: { orderBy: { sequence: 'asc' } } } });
+		if (!job) return response.status(404).json({ success: false, error: { code: 'QR_PRINT_JOB_NOT_FOUND', message: 'QR print job was not found.' } });
+		if (job.status !== 'PENDING_APPROVAL' && job.status !== 'PROOF_READY') {
+			return response.status(409).json({ success: false, error: { code: 'QR_PROOF_INVALID_STATE', message: 'This print job is not waiting for proof generation.' } });
+		}
+		const proof = await generateQrProof(job);
+		const uploaded = await uploadQrProof(job.id, proof.buffer);
+		let updated;
+		try {
+			updated = await prisma.qrPrintJob.update({
+				where: { id: job.id },
+				data: {
+					status: 'PENDING_APPROVAL',
+					proofPath: uploaded.objectKey,
+					proofFileName: uploaded.fileName,
+					proofCheckedAt: new Date(),
+					proofError: null,
+					proofSummary: { representativeSequences: proof.verification.map((item) => item.sequence), verification: proof.verification },
+				},
+			});
+		} catch (error) {
+			try {
+				await removeQrArtwork(uploaded.objectKey);
+			} catch (cleanupError) {
+				console.error('QR proof cleanup failed after job update error.', cleanupError);
+			}
+			throw error;
+		}
+		return response.status(201).json({ success: true, job: updated, verification: proof.verification });
+	} catch (error) {
+		return next(error);
+	}
+});
+
+adminRoutes.get('/qr/print-batch/:jobId/proof', requireAuth, requireAdmin, async (request, response, next) => {
+	try {
+		const job = await prisma.qrPrintJob.findUnique({ where: { id: request.params.jobId }, select: { proofPath: true } });
+		if (!job) return response.status(404).json({ success: false, error: { code: 'QR_PRINT_JOB_NOT_FOUND', message: 'Print batch was not found.' } });
+		if (!job.proofPath) return response.status(404).json({ success: false, error: { code: 'QR_PROOF_NOT_READY', message: 'Proof has not been generated yet.' } });
+		const proofUrl = await createQrArtworkUrl(job.proofPath);
+		return response.json({ success: true, proof_url: proofUrl });
+	} catch (error) {
+		return next(error);
+	}
+});
+
 adminRoutes.post('/qr/:qrId/delete', requireAuth, requireAdmin, async (request, response, next) => {
 	try {
 		const qrId = request.params.qrId;
@@ -428,8 +772,9 @@ adminRoutes.post('/qr/:qrId/delete', requireAuth, requireAdmin, async (request, 
 
 adminRoutes.get('/qr/lookup/:code', requireAuth, requireAdmin, async (request, response, next) => {
 	try {
+		const normalizedCode = normalizeQrCode(request.params.code);
 		const qr = await prisma.qrCode.findUnique({
-			where: { code: request.params.code },
+			where: { code: normalizedCode },
 			include: { assignments: { where: { unassignedAt: null }, include: { vendor: { select: { id: true, businessName: true } } }, take: 1 } },
 		});
 		if (!qr) {
@@ -533,6 +878,7 @@ adminRoutes.get('/qr/:qrId/image', requireAuth, requireAdmin, async (request, re
 adminRoutes.get('/qr/print', requireAuth, requireAdmin, async (request, response, next) => {
 	try {
 		const filters = qrPrintFilterSchema.parse({ status: request.query.status, vendor_id: request.query.vendor_id, assignment: request.query.assignment, code: request.query.code });
+		filters.code = filters.code ? normalizeQrCode(filters.code) : filters.code;
 		const { page, limit, skip } = pagination(request.query);
 
 		const where = {
@@ -598,6 +944,7 @@ adminRoutes.get('/qr/print', requireAuth, requireAdmin, async (request, response
 adminRoutes.get('/qr/pdf', requireAuth, requireAdmin, async (request, response, next) => {
 	try {
 		const filters = qrPrintFilterSchema.parse({ status: request.query.status, vendor_id: request.query.vendor_id, assignment: request.query.assignment, code: request.query.code });
+		filters.code = filters.code ? normalizeQrCode(filters.code) : filters.code;
 
 		const where = {
 			...(filters.code ? { code: filters.code } : {}),

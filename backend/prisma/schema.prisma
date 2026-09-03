@@ -36,6 +36,31 @@ enum VendorRegistrationStatus {
   REJECTED
 }
 
+enum QrPrintTemplateStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+
+enum QrPrintJobStatus {
+  QUEUED
+  PROCESSING
+  PROOF_READY
+  APPROVED
+  GENERATING
+  PENDING_APPROVAL
+  REJECTED
+  COMPLETED
+  FAILED
+}
+
+enum QrPrintItemStatus {
+  PENDING
+  PROOF_READY
+  GENERATED
+  FAILED
+}
+
 model User {
   id             String      @id @default(cuid())
   name           String
@@ -52,6 +77,8 @@ model User {
   sessions       Session[]
   resetTokens    PasswordResetToken[]
   registrations  VendorRegistration[]
+  printTemplates QrPrintTemplate[]
+  printJobs      QrPrintJob[]
 
   @@index([role, status])
   @@index([createdAt])
@@ -113,6 +140,7 @@ model QrCode {
   assignments  QrAssignment[]
   scans        Scan[]
   leads        Lead[]
+  printJobItems QrPrintJobItem[]
 
   @@index([status])
   @@map("qr_codes")
@@ -289,6 +317,86 @@ model PasswordResetToken {
 
   @@index([expiresAt])
   @@map("password_reset_tokens")
+}
+
+model QrPrintTemplate {
+  id                String                  @id @default(cuid())
+  createdById       String                  @map("created_by_id")
+  name              String
+  artworkFileName   String?                 @map("artwork_file_name")
+  artworkPath       String?                 @map("artwork_path")
+  artworkMimeType   String?                 @map("artwork_mime_type")
+  pageWidthMm       Float                   @map("page_width_mm")
+  pageHeightMm      Float                   @map("page_height_mm")
+  dpi               Int                     @default(300)
+  qrX               Float                   @map("qr_x")
+  qrY               Float                   @map("qr_y")
+  qrWidth           Float                   @map("qr_width")
+  qrHeight          Float                   @map("qr_height")
+  labelEnabled      Boolean                 @default(false) @map("label_enabled")
+  labelTextX        Float?                  @map("label_text_x")
+  labelTextY        Float?                  @map("label_text_y")
+  labelFontSize     Float?                  @map("label_font_size")
+  version           Int                     @default(1)
+  status            QrPrintTemplateStatus   @default(DRAFT)
+  createdAt         DateTime                @default(now()) @map("created_at")
+  updatedAt         DateTime                @updatedAt @map("updated_at")
+  createdBy         User                    @relation(fields: [createdById], references: [id])
+  printJobs         QrPrintJob[]
+
+  @@index([status, createdAt])
+  @@index([createdById])
+  @@map("qr_print_templates")
+}
+
+model QrPrintJob {
+  id               String          @id @default(cuid())
+  templateId       String          @map("template_id")
+  createdById      String          @map("created_by_id")
+  idempotencyKey   String          @unique @map("idempotency_key")
+  status           QrPrintJobStatus @default(QUEUED)
+  rangeStart       String?         @map("range_start")
+  rangeEnd         String?         @map("range_end")
+  itemCount        Int             @default(0) @map("item_count")
+  proofSummary     Json?           @map("proof_summary")
+  templateSnapshot Json?          @map("template_snapshot")
+  proofPath        String?         @map("proof_path")
+  proofFileName    String?         @map("proof_file_name")
+  proofCheckedAt   DateTime?       @map("proof_checked_at")
+  proofError       String?         @map("proof_error")
+  pdfPath          String?         @map("pdf_path")
+  pdfFileName      String?         @map("pdf_file_name")
+  generatedAt      DateTime?       @map("generated_at")
+  approvedAt       DateTime?       @map("approved_at")
+  createdAt        DateTime        @default(now()) @map("created_at")
+  updatedAt        DateTime        @updatedAt @map("updated_at")
+  template         QrPrintTemplate @relation(fields: [templateId], references: [id])
+  createdBy        User            @relation(fields: [createdById], references: [id])
+  items            QrPrintJobItem[]
+
+  @@index([status, createdAt])
+  @@index([templateId, createdAt])
+  @@map("qr_print_jobs")
+}
+
+model QrPrintJobItem {
+  id             String           @id @default(cuid())
+  printJobId     String           @map("print_job_id")
+  qrCodeId       String           @map("qr_code_id")
+  sequence       Int
+  expectedCode   String           @map("expected_code")
+  expectedUrl    String           @map("expected_url")
+  previewPath    String?          @map("preview_path")
+  status         QrPrintItemStatus @default(PENDING)
+  createdAt      DateTime         @default(now()) @map("created_at")
+  updatedAt      DateTime         @updatedAt @map("updated_at")
+  printJob       QrPrintJob       @relation(fields: [printJobId], references: [id])
+  qrCode         QrCode           @relation(fields: [qrCodeId], references: [id])
+
+  @@unique([printJobId, sequence])
+  @@index([printJobId, status])
+  @@index([qrCodeId])
+  @@map("qr_print_job_items")
 }
 
 model AuditLog {

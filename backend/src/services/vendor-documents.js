@@ -64,3 +64,58 @@ export async function createVendorDocumentUrl(objectKey) {
   }
   return data.signedUrl;
 }
+
+export async function uploadQrArtwork(adminId, file) {
+  if (!file || !allowedTypes.has(file.mimetype)) {
+    const error = new Error('Upload a PDF, JPG, or PNG artwork file.');
+    error.statusCode = 400;
+    error.code = 'INVALID_QR_ARTWORK_TYPE';
+    throw error;
+  }
+  if (file.size > 2 * 1024 * 1024) {
+    const error = new Error('QR artwork must be 2 MB or smaller.');
+    error.statusCode = 413;
+    error.code = 'QR_ARTWORK_TOO_LARGE';
+    throw error;
+  }
+  const objectKey = `templates/${adminId}/${Date.now()}-${file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_')}`;
+  const { error } = await storageClient().storage.from(env.supabaseQrStorageBucket).upload(objectKey, file.buffer, { contentType: file.mimetype, upsert: false });
+  if (error) {
+    error.statusCode = 502;
+    error.code = 'QR_ARTWORK_UPLOAD_FAILED';
+    throw error;
+  }
+  return { objectKey, fileName: file.originalname, fileSize: file.size, contentType: file.mimetype };
+}
+
+export async function removeQrArtwork(objectKey) {
+  if (!objectKey) return;
+  const { error } = await storageClient().storage.from(env.supabaseQrStorageBucket).remove([objectKey]);
+  if (error) {
+    error.statusCode = 502;
+    error.code = 'QR_ARTWORK_DELETE_FAILED';
+    throw error;
+  }
+}
+
+export async function createQrArtworkUrl(objectKey) {
+  if (!objectKey) return null;
+  const { data, error } = await storageClient().storage.from(env.supabaseQrStorageBucket).createSignedUrl(objectKey, 300);
+  if (error) {
+    error.statusCode = 502;
+    error.code = 'QR_ARTWORK_URL_FAILED';
+    throw error;
+  }
+  return data.signedUrl;
+}
+
+export async function uploadQrProof(jobId, buffer) {
+  const objectKey = `proofs/${jobId}-${Date.now()}.pdf`;
+  const { error } = await storageClient().storage.from(env.supabaseQrStorageBucket).upload(objectKey, buffer, { contentType: 'application/pdf', upsert: false });
+  if (error) {
+    error.statusCode = 502;
+    error.code = 'QR_PROOF_UPLOAD_FAILED';
+    throw error;
+  }
+  return { objectKey, fileName: `${jobId}-proof.pdf` };
+}

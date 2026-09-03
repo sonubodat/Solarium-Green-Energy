@@ -88,6 +88,8 @@ function AdminPage() {
 
   const [showCreateVendor, setShowCreateVendor] = useState(false);
   const [showGenerateQr, setShowGenerateQr] = useState(false);
+  const [showQrProductionTools, setShowQrProductionTools] = useState(false);
+  const [showTemplateForm, setShowTemplateForm] = useState(false);
   const [showCreateStaff, setShowCreateStaff] = useState(false);
 
   const [newVendor, setNewVendor] = useState({
@@ -106,6 +108,27 @@ function AdminPage() {
   });
 
   const [qrQuantity, setQrQuantity] = useState('20');
+  const [qrTemplates, setQrTemplates] = useState([]);
+  const [templateDraft, setTemplateDraft] = useState({
+    name: 'Vendor Sticker A4',
+    page_width_mm: '210',
+    page_height_mm: '297',
+    dpi: '300',
+    qr_x: '40',
+    qr_y: '60',
+    qr_width: '42',
+    qr_height: '42',
+    label_enabled: false,
+    label_text_x: '0',
+    label_text_y: '0',
+    label_font_size: '12',
+  });
+  const [templateArtwork, setTemplateArtwork] = useState(null);
+  const [templateArtworkPreview, setTemplateArtworkPreview] = useState('');
+  const [templateInteraction, setTemplateInteraction] = useState(null);
+  const [printBatchDraft, setPrintBatchDraft] = useState({ template_id: '', range_start: '', range_end: '' });
+  const [lastPrintJob, setLastPrintJob] = useState(null);
+  const [templateSingleDraft, setTemplateSingleDraft] = useState({ template_id: '', code: '' });
   const [reassignVendorInputs, setReassignVendorInputs] = useState({});
 
   const [showScanAssign, setShowScanAssign] = useState(false);
@@ -152,6 +175,61 @@ function AdminPage() {
       hasScrolledToDashboardRef.current = true;
     }
   }, [portalData]);
+
+  useEffect(() => {
+    if (!templateArtwork) {
+      setTemplateArtworkPreview('');
+      return undefined;
+    }
+    const previewUrl = URL.createObjectURL(templateArtwork);
+    setTemplateArtworkPreview(previewUrl);
+    return () => URL.revokeObjectURL(previewUrl);
+  }, [templateArtwork]);
+
+  useEffect(() => {
+    if (!templateInteraction) return undefined;
+
+    function handlePointerMove(event) {
+      const editor = document.querySelector('[data-qr-template-editor]');
+      if (!editor) return;
+      const bounds = editor.getBoundingClientRect();
+      const pageWidth = Number(templateDraft.page_width_mm) || 210;
+      const pageHeight = Number(templateDraft.page_height_mm) || 297;
+      const scaleX = pageWidth / bounds.width;
+      const scaleY = pageHeight / bounds.height;
+      const deltaX = (event.clientX - templateInteraction.startX) * scaleX;
+      const deltaY = (event.clientY - templateInteraction.startY) * scaleY;
+      const startSize = templateInteraction.startSize;
+      const nextSize = templateInteraction.mode === 'resize'
+        ? Math.max(10, Math.min(pageWidth, pageHeight, startSize + Math.max(deltaX, deltaY)))
+        : startSize;
+      const nextX = templateInteraction.mode === 'resize'
+        ? templateInteraction.startXmm
+        : templateInteraction.startXmm + deltaX;
+      const nextY = templateInteraction.mode === 'resize'
+        ? templateInteraction.startYmm
+        : templateInteraction.startYmm + deltaY;
+      const clampedSize = Math.min(nextSize, pageWidth, pageHeight);
+      setTemplateDraft((current) => ({
+        ...current,
+        qr_x: String(Math.max(0, Math.min(pageWidth - clampedSize, nextX)).toFixed(1)),
+        qr_y: String(Math.max(0, Math.min(pageHeight - clampedSize, nextY)).toFixed(1)),
+        qr_width: String(clampedSize.toFixed(1)),
+        qr_height: String(clampedSize.toFixed(1)),
+      }));
+    }
+
+    function handlePointerUp() {
+      setTemplateInteraction(null);
+    }
+
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('pointerup', handlePointerUp);
+    return () => {
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', handlePointerUp);
+    };
+  }, [templateDraft.page_height_mm, templateDraft.page_width_mm, templateInteraction]);
 
   useEffect(() => {
     restoreSession();
@@ -295,10 +373,14 @@ function AdminPage() {
       }));
 
       if (nextResource === 'qr') {
-        const lookup = await apiRequest('/admin/vendors/lookup', { forceRefresh });
+        const [lookup, templates] = await Promise.all([
+          apiRequest('/admin/vendors/lookup', { forceRefresh }),
+          apiRequest('/admin/qr/templates', { forceRefresh }),
+        ]);
 
         if (mountedRef.current) {
           setVendorLookup(lookup.vendors || []);
+          setQrTemplates(templates.templates || []);
         }
       }
     } catch (error) {
@@ -525,6 +607,193 @@ function AdminPage() {
     } finally {
       setLoading(false);
     }
+  }
+
+  async function createQrTemplate(event) {
+    event.preventDefault();
+    setLoading(true);
+    setMessage('');
+    setMessageType('');
+
+    try {
+      const fields = {
+        name: templateDraft.name.trim(),
+        page_width_mm: Number(templateDraft.page_width_mm),
+        page_height_mm: Number(templateDraft.page_height_mm),
+        dpi: Number(templateDraft.dpi),
+        qr_x: Number(templateDraft.qr_x),
+        qr_y: Number(templateDraft.qr_y),
+        qr_width: Number(templateDraft.qr_width),
+        qr_height: Number(templateDraft.qr_height),
+        label_enabled: Boolean(templateDraft.label_enabled),
+      };
+      if (templateDraft.label_enabled) {
+        fields.label_text_x = Number(templateDraft.label_text_x || 0);
+        fields.label_text_y = Number(templateDraft.label_text_y || 0);
+        fields.label_font_size = Number(templateDraft.label_font_size || 12);
+      }
+      const body = templateArtwork ? new FormData() : JSON.stringify(fields);
+      if (templateArtwork) {
+        Object.entries(fields).forEach(([key, value]) => body.append(key, String(value)));
+        body.append('artwork', templateArtwork);
+      }
+
+      const result = await apiRequest('/admin/qr/templates', {
+        method: 'POST',
+        body,
+      });
+
+      setShowTemplateForm(false);
+      setTemplateArtwork(null);
+      setTemplateDraft({
+        name: 'Vendor Sticker A4',
+        page_width_mm: '210',
+        page_height_mm: '297',
+        dpi: '300',
+        qr_x: '40',
+        qr_y: '60',
+        qr_width: '42',
+        qr_height: '42',
+        label_enabled: false,
+        label_text_x: '0',
+        label_text_y: '0',
+        label_font_size: '12',
+      });
+
+      setMessage(`Template created: ${result.template.name}`);
+      setMessageType('success');
+      await loadAdminResource('qr', adminPage);
+    } catch (error) {
+      setMessage(error.message);
+      setMessageType('error');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function beginTemplateInteraction(event, mode) {
+    event.preventDefault();
+    event.stopPropagation();
+    setTemplateInteraction({
+      mode,
+      startX: event.clientX,
+      startY: event.clientY,
+      startXmm: Number(templateDraft.qr_x) || 0,
+      startYmm: Number(templateDraft.qr_y) || 0,
+      startSize: Number(templateDraft.qr_width) || 35,
+    });
+  }
+
+  async function publishQrTemplate(templateId) {
+    setLoading(true);
+    try {
+      await apiRequest(`/admin/qr/templates/${templateId}/publish`, { method: 'POST' });
+      setMessage('Template published.');
+      setMessageType('success');
+      await loadAdminResource('qr', adminPage);
+    } catch (error) {
+      setMessage(error.message);
+      setMessageType('error');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function createPrintBatch(event) {
+    event.preventDefault();
+    const { template_id, range_start, range_end } = printBatchDraft;
+    if (!template_id || !range_start || !range_end) {
+      setMessage('Select a template and add a QR range before creating a batch.');
+      setMessageType('error');
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const result = await apiRequest('/admin/qr/print-batch', {
+        method: 'POST',
+        body: JSON.stringify({
+          template_id: template_id,
+          range_start: range_start.trim(),
+          range_end: range_end.trim(),
+          idempotency_key: `qr-print-${Date.now()}`,
+        }),
+      });
+
+      setPrintBatchDraft({ template_id: '', range_start: '', range_end: '' });
+      setLastPrintJob(result.job);
+      setMessage(`Print batch created: ${result.job.rangeStart} → ${result.job.rangeEnd}.`);
+      setMessageType('success');
+      await loadAdminResource('qr', adminPage);
+    } catch (error) {
+      setMessage(error.message);
+      setMessageType('error');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function generatePrintProof(job) {
+    if (!job?.id) return;
+    setLoading(true);
+    try {
+      const result = await apiRequest(`/admin/qr/print-batch/${encodeURIComponent(job.id)}/proof`, { method: 'POST' });
+      setLastPrintJob(result.job);
+      setMessage('Proof generated and every representative QR was verified.');
+      setMessageType('success');
+    } catch (error) {
+      setMessage(error.message);
+      setMessageType('error');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function approvePrintProof(job) {
+    if (!job?.id || !window.confirm('Approve this verified proof and allow the designed PDF to be downloaded?')) return;
+    setLoading(true);
+    try {
+      const result = await apiRequest(`/admin/qr/print-batch/${encodeURIComponent(job.id)}/approve`, { method: 'POST' });
+      setLastPrintJob(result.job);
+      setMessage('Proof approved. The designed template PDF is ready to download.');
+      setMessageType('success');
+    } catch (error) {
+      setMessage(error.message);
+      setMessageType('error');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function viewPrintProof(job) {
+    try {
+      const result = await apiRequest(`/admin/qr/print-batch/${encodeURIComponent(job.id)}/proof`, { forceRefresh: true });
+      window.open(result.proof_url, '_blank', 'noopener,noreferrer');
+    } catch (error) {
+      setMessage(error.message);
+      setMessageType('error');
+    }
+  }
+
+  function downloadTemplatePdf(job) {
+    if (!job?.id) return;
+    window.location.href = `${API_BASE_URL}/admin/qr/print-batch/${encodeURIComponent(job.id)}/pdf`;
+  }
+
+  function printTemplatePdf(job) {
+    if (!job?.id) return;
+    window.open(`${API_BASE_URL}/admin/qr/print-batch/${encodeURIComponent(job.id)}/pdf?inline=true`, '_blank', 'noopener,noreferrer');
+  }
+
+  function downloadSingleTemplatePdf(inline = false) {
+    const { template_id: templateId, code } = templateSingleDraft;
+    if (!templateId || !code.trim()) {
+      setMessage('Select a published template and enter a QR code first.');
+      setMessageType('error');
+      return;
+    }
+    const params = new URLSearchParams({ template_id: templateId, code: code.trim(), ...(inline ? { inline: 'true' } : {}) });
+    window.open(`${API_BASE_URL}/admin/qr/template-pdf?${params.toString()}`, '_blank', 'noopener,noreferrer');
   }
 
   async function assignQr(qr, reassign = false) {
@@ -1487,6 +1756,9 @@ function AdminPage() {
   function renderQr() {
     // The backend returns the QR list under `data` (see GET /api/admin/qr), not `qr`.
     const qrs = portalData?.data?.data || [];
+    const qrTotal = portalData?.data?.pagination?.total || 0;
+    const unassignedCount = qrs.filter((qr) => qr.status === 'UNASSIGNED').length;
+    const activeCount = qrs.filter((qr) => qr.status === 'ACTIVE').length;
 
     return (
       <div className="admin-resource">
@@ -1502,19 +1774,19 @@ function AdminPage() {
             </p>
           </div>
 
-          <div className="admin-heading-actions">
+          <div className="admin-heading-actions admin-qr-heading-actions">
             <button
               className="admin-outline-button"
               onClick={openQrPrintSheet}
             >
-              Print sheet
+              QR-only print sheet
             </button>
 
             <button
               className="admin-outline-button"
               onClick={downloadQrPdf}
             >
-              Download all as PDF
+              QR-only PDF
             </button>
 
             <button
@@ -1527,16 +1799,27 @@ function AdminPage() {
 
             <button
               className="admin-primary-button"
-              onClick={() =>
-                setShowGenerateQr(
-                  (current) => !current
-                )
-              }
+              onClick={() => {
+                setShowQrProductionTools(true);
+                setShowGenerateQr((current) => !current);
+              }}
             >
               <Icon path={ICONS.plus} />
-              Generate QR
+              Generate codes
             </button>
           </div>
+        </div>
+
+        <div className="admin-qr-overview" aria-label="QR inventory summary">
+          <div className="admin-qr-overview-intro">
+            <span className="admin-eyebrow">INVENTORY CONTROL</span>
+            <strong>QR code operations</strong>
+            <small>Assign physical codes, prepare artwork, and print verified batches.</small>
+          </div>
+          <div className="admin-qr-overview-stat"><span>Total inventory</span><strong>{qrTotal.toLocaleString()}</strong></div>
+          <div className="admin-qr-overview-stat"><span>Loaded page</span><strong>{qrs.length.toLocaleString()}</strong></div>
+          <div className="admin-qr-overview-stat warning"><span>Unassigned here</span><strong>{unassignedCount.toLocaleString()}</strong></div>
+          <div className="admin-qr-overview-stat success"><span>Active here</span><strong>{activeCount.toLocaleString()}</strong></div>
         </div>
 
         <form
@@ -1628,49 +1911,286 @@ function AdminPage() {
           </div>
         )}
 
-        {showGenerateQr && (
-          <form
-            onSubmit={generateQrBatch}
-            className="admin-form-card admin-qr-generate"
-          >
+        <button
+          type="button"
+          className={`admin-qr-tools-bar ${showQrProductionTools ? 'open' : ''}`}
+          onClick={() => setShowQrProductionTools((current) => !current)}
+          aria-expanded={showQrProductionTools}
+        >
+          <span className="admin-qr-tools-bar-icon"><Icon path={ICONS.qr} /></span>
+          <span>
+            <strong>Generation and print tools</strong>
+            <small>Open only when you need to create codes or prepare a print batch.</small>
+          </span>
+          <Icon path={ICONS.arrow} className="admin-qr-tools-bar-arrow" />
+        </button>
+
+        {showQrProductionTools && (
+          <>
+            {showGenerateQr && (
+              <form
+                onSubmit={generateQrBatch}
+                className="admin-form-card admin-qr-generate"
+              >
+                <div>
+                  <div className="admin-form-title">Batch generation</div>
+                  <p>Generate a new batch of unassigned QR codes.</p>
+                </div>
+
+                <input
+                  type="number"
+                  min="1"
+                  max="5000"
+                  value={qrQuantity}
+                  onChange={(event) => setQrQuantity(event.target.value)}
+                />
+
+                <button className="admin-primary-button" disabled={loading}>
+                  {loading ? 'Generating...' : 'Generate'}
+                </button>
+
+                <button
+                  type="button"
+                  className="admin-outline-button"
+                  disabled={loading}
+                  onClick={() => setShowGenerateQr(false)}
+                >
+                  Cancel
+                </button>
+              </form>
+            )}
+
+        <div className="admin-form-card admin-qr-workspace">
+          <div className="admin-workspace-heading">
             <div>
-              <div className="admin-form-title">
-                Batch generation
-              </div>
-              <p>
-                Generate a new batch of unassigned QR
-                codes.
-              </p>
+              <span className="admin-eyebrow">PRINT WORKSPACE</span>
+              <div className="admin-form-title">Templates and print batches</div>
+              <p>Lock the physical layout once, then prepare a deterministic range for proof and approval.</p>
             </div>
+            <span className="admin-workspace-status"><i /> Proof-first workflow</span>
+          </div>
 
-            <input
-              type="number"
-              min="1"
-              max="5000"
-              value={qrQuantity}
-              onChange={(event) =>
-                setQrQuantity(event.target.value)
-              }
-            />
-
-            <button
-              className="admin-primary-button"
-              disabled={loading}
-            >
-              {loading
-                ? 'Generating...'
-                : 'Generate'}
+          <div className="admin-qr-template-actions">
+            <button type="button" className="admin-outline-button" onClick={() => setShowTemplateForm((current) => !current)}>
+              {showTemplateForm ? 'Hide template form' : 'Create template'}
             </button>
+          </div>
 
-            <button
-              type="button"
-              className="admin-outline-button"
-              disabled={loading}
-              onClick={() => setShowGenerateQr(false)}
-            >
-              Cancel
-            </button>
+          {showTemplateForm && (
+            <form onSubmit={createQrTemplate} className="admin-template-form">
+              <div className="admin-template-editor-layout">
+                <div>
+                  <div className="admin-template-preview-heading">
+                    <div>
+                      <strong>Placement preview</strong>
+                      <small>Drag the square QR marker. Pull its corner to resize.</small>
+                    </div>
+                    <span>{Number(templateDraft.qr_width || 0).toFixed(1)} mm x {Number(templateDraft.qr_height || 0).toFixed(1)} mm</span>
+                  </div>
+                  <div
+                    className="admin-template-preview"
+                    data-qr-template-editor
+                    style={{ aspectRatio: `${Number(templateDraft.page_width_mm) || 210} / ${Number(templateDraft.page_height_mm) || 297}` }}
+                  >
+                    {templateArtworkPreview && templateArtwork?.type !== 'application/pdf' && (
+                      <img src={templateArtworkPreview} alt="Uploaded template artwork" />
+                    )}
+                    {templateArtworkPreview && templateArtwork?.type === 'application/pdf' && (
+                      <iframe src={templateArtworkPreview} title="Uploaded template artwork preview" />
+                    )}
+                    {!templateArtworkPreview && <div className="admin-template-preview-empty">Upload artwork to preview the physical page.</div>}
+                    <div
+                      className="admin-qr-placeholder"
+                      style={{
+                        left: `${(Number(templateDraft.qr_x) / (Number(templateDraft.page_width_mm) || 210)) * 100}%`,
+                        top: `${(Number(templateDraft.qr_y) / (Number(templateDraft.page_height_mm) || 297)) * 100}%`,
+                        width: `${(Number(templateDraft.qr_width) / (Number(templateDraft.page_width_mm) || 210)) * 100}%`,
+                        height: `${(Number(templateDraft.qr_height) / (Number(templateDraft.page_height_mm) || 297)) * 100}%`,
+                      }}
+                      onPointerDown={(event) => beginTemplateInteraction(event, 'drag')}
+                    >
+                      <span>QR</span>
+                      <button type="button" aria-label="Resize QR placeholder" onPointerDown={(event) => beginTemplateInteraction(event, 'resize')} />
+                    </div>
+                  </div>
+                </div>
+                <div className="admin-template-editor-note">
+                  <span className="admin-eyebrow">PHYSICAL PLACEMENT</span>
+                  <strong>Keep the marker over the intended print area.</strong>
+                  <p>The saved coordinates are calculated in millimetres from the page edges. The QR stays square for reliable scanning.</p>
+                </div>
+              </div>
+              <div className="admin-grid-two">
+                <label>
+                  Template name
+                  <input value={templateDraft.name} onChange={(event) => setTemplateDraft({ ...templateDraft, name: event.target.value })} />
+                </label>
+                <label className="admin-upload-field">
+                  Artwork file
+                  <input type="file" accept="image/png,image/jpeg,application/pdf" onChange={(event) => setTemplateArtwork(event.target.files?.[0] || null)} />
+                  <small>{templateArtwork ? templateArtwork.name : 'PNG, JPG, or PDF up to 2 MB'}</small>
+                </label>
+                <label>
+                  Page width (mm)
+                  <input type="number" value={templateDraft.page_width_mm} onChange={(event) => setTemplateDraft({ ...templateDraft, page_width_mm: event.target.value })} />
+                </label>
+                <label>
+                  Page height (mm)
+                  <input type="number" value={templateDraft.page_height_mm} onChange={(event) => setTemplateDraft({ ...templateDraft, page_height_mm: event.target.value })} />
+                </label>
+                <label>
+                  DPI
+                  <input type="number" value={templateDraft.dpi} onChange={(event) => setTemplateDraft({ ...templateDraft, dpi: event.target.value })} />
+                </label>
+              </div>
+
+              <details className="admin-advanced-placement">
+                <summary>Advanced placement</summary>
+                <div className="admin-grid-two">
+                  <label>
+                    QR X (mm)
+                    <input type="number" value={templateDraft.qr_x} onChange={(event) => setTemplateDraft({ ...templateDraft, qr_x: event.target.value })} />
+                  </label>
+                  <label>
+                    QR Y (mm)
+                    <input type="number" value={templateDraft.qr_y} onChange={(event) => setTemplateDraft({ ...templateDraft, qr_y: event.target.value })} />
+                  </label>
+                  <label>
+                    QR size (mm)
+                    <input type="number" value={templateDraft.qr_width} onChange={(event) => setTemplateDraft({ ...templateDraft, qr_width: event.target.value, qr_height: event.target.value })} />
+                  </label>
+                </div>
+              </details>
+
+              <label className="admin-toggle-row">
+                <input type="checkbox" checked={templateDraft.label_enabled} onChange={(event) => setTemplateDraft({ ...templateDraft, label_enabled: event.target.checked })} />
+                Add QR text label
+              </label>
+
+              {templateDraft.label_enabled && (
+                <div className="admin-grid-two">
+                  <label>
+                    Label X
+                    <input type="number" value={templateDraft.label_text_x} onChange={(event) => setTemplateDraft({ ...templateDraft, label_text_x: event.target.value })} />
+                  </label>
+                  <label>
+                    Label Y
+                    <input type="number" value={templateDraft.label_text_y} onChange={(event) => setTemplateDraft({ ...templateDraft, label_text_y: event.target.value })} />
+                  </label>
+                  <label>
+                    Font size
+                    <input type="number" value={templateDraft.label_font_size} onChange={(event) => setTemplateDraft({ ...templateDraft, label_font_size: event.target.value })} />
+                  </label>
+                </div>
+              )}
+
+              <div className="admin-qr-template-actions">
+                <button type="submit" className="admin-primary-button" disabled={loading}>Save template</button>
+                <button type="button" className="admin-outline-button" onClick={() => setShowTemplateForm(false)}>Cancel</button>
+              </div>
+            </form>
+          )}
+
+          <form onSubmit={createPrintBatch} className="admin-template-form admin-batch-form">
+            <div className="admin-grid-two">
+              <label>
+                Published template
+                <select value={printBatchDraft.template_id} onChange={(event) => setPrintBatchDraft({ ...printBatchDraft, template_id: event.target.value })}>
+                  <option value="">Select template</option>
+                  {qrTemplates.filter((template) => template.status === 'PUBLISHED').map((template) => (
+                    <option key={template.id} value={template.id}>{template.name} (v{template.version})</option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                Range start
+                <input value={printBatchDraft.range_start} onChange={(event) => setPrintBatchDraft({ ...printBatchDraft, range_start: event.target.value })} placeholder="V-0001" />
+              </label>
+              <label>
+                Range end
+                <input value={printBatchDraft.range_end} onChange={(event) => setPrintBatchDraft({ ...printBatchDraft, range_end: event.target.value })} placeholder="V-0100" />
+              </label>
+            </div>
+            <div className="admin-qr-template-actions admin-batch-actions">
+              <small>Only published templates and existing QR codes can enter a batch.</small>
+              <button type="submit" className="admin-primary-button" disabled={loading}>Create proof batch</button>
+            </div>
+            {lastPrintJob && (
+              <div className="admin-print-success">
+                <div>
+                  <strong>Batch ready: {lastPrintJob.rangeStart} to {lastPrintJob.rangeEnd}</strong>
+                  <small>{lastPrintJob.itemCount?.toLocaleString() || 0} pages use the saved template geometry. Status: {lastPrintJob.status}.</small>
+                </div>
+                <div className="admin-print-success-actions">
+                  <button type="button" className="admin-outline-button" disabled={loading} onClick={() => generatePrintProof(lastPrintJob)}>
+                    {lastPrintJob.proofCheckedAt ? 'Regenerate proof' : 'Generate proof'}
+                  </button>
+                  {lastPrintJob.proofCheckedAt && (
+                    <button type="button" className="admin-outline-button" disabled={loading} onClick={() => viewPrintProof(lastPrintJob)}>
+                      View proof
+                    </button>
+                  )}
+                  {lastPrintJob.status === 'PENDING_APPROVAL' && lastPrintJob.proofCheckedAt && (
+                    <button type="button" className="admin-primary-button" disabled={loading} onClick={() => approvePrintProof(lastPrintJob)}>
+                      Approve proof
+                    </button>
+                  )}
+                  {(lastPrintJob.status === 'APPROVED' || process.env.NODE_ENV === 'development') && (
+                    <>
+                      <button type="button" className="admin-primary-button" disabled={loading} onClick={() => downloadTemplatePdf(lastPrintJob)}>
+                        Download template PDF
+                      </button>
+                      <button type="button" className="admin-outline-button" disabled={loading} onClick={() => printTemplatePdf(lastPrintJob)}>
+                        Print designed PDF
+                      </button>
+                    </>
+                  )}
+                </div>
+              </div>
+            )}
           </form>
+
+          <div className="admin-template-form admin-single-template-form">
+            <div className="admin-template-subheading">
+              <div>
+                <strong>Single QR with template</strong>
+                <small>Use the saved artwork and placement for one code.</small>
+              </div>
+              <span>1 page</span>
+            </div>
+            <div className="admin-single-template-fields">
+              <select value={templateSingleDraft.template_id} onChange={(event) => setTemplateSingleDraft({ ...templateSingleDraft, template_id: event.target.value })}>
+                <option value="">Select published template</option>
+                {qrTemplates.filter((template) => template.status === 'PUBLISHED').map((template) => (
+                  <option key={template.id} value={template.id}>{template.name} (v{template.version})</option>
+                ))}
+              </select>
+              <input value={templateSingleDraft.code} onChange={(event) => setTemplateSingleDraft({ ...templateSingleDraft, code: event.target.value })} placeholder="V-0001" />
+              <button type="button" className="admin-outline-button" onClick={() => downloadSingleTemplatePdf(false)}>Download designed PDF</button>
+              <button type="button" className="admin-outline-button" onClick={() => downloadSingleTemplatePdf(true)}>Print designed PDF</button>
+            </div>
+          </div>
+
+          {qrTemplates.length > 0 && (
+            <div className="admin-template-list">
+              <h3>Saved templates</h3>
+              {qrTemplates.map((template) => (
+                <div key={template.id} className="admin-template-item">
+                  <div>
+                    <strong>{template.name}</strong>
+                    <div className="muted">{template.status} · {template.pageWidthMm} × {template.pageHeightMm} mm · {template.dpi} DPI</div>
+                  </div>
+                  {template.status !== 'PUBLISHED' && (
+                    <button type="button" className="admin-mini-button" onClick={() => publishQrTemplate(template.id)}>
+                      Publish
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+          </>
         )}
 
         <div className="admin-filter-bar">

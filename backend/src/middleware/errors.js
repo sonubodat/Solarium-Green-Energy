@@ -7,7 +7,14 @@ export function notFoundHandler(_request, response) {
 
 export function errorHandler(error, _request, response, _next) {
   if (error.name === 'MulterError' && error.code === 'LIMIT_FILE_SIZE') {
-    return response.status(413).json({ success: false, error: { code: 'DOCUMENT_TOO_LARGE', message: 'Documents must be 200 KB or smaller.' } });
+    const isQrArtwork = error.field === 'artwork';
+    return response.status(413).json({
+      success: false,
+      error: {
+        code: isQrArtwork ? 'QR_ARTWORK_TOO_LARGE' : 'DOCUMENT_TOO_LARGE',
+        message: isQrArtwork ? 'QR artwork must be 2 MB or smaller.' : 'Documents must be 200 KB or smaller.',
+      },
+    });
   }
   if (error.name === 'ZodError') {
     return response.status(400).json({
@@ -19,9 +26,15 @@ export function errorHandler(error, _request, response, _next) {
       },
     });
   }
-  if ((error.statusCode || 500) >= 500) {
-    console.error(error);
-  }
+  const statusCode = error.statusCode || 500;
+  console.error('[Solarium API error]', JSON.stringify({
+    status: statusCode,
+    name: error.name,
+    code: error.code || 'INTERNAL_ERROR',
+    message: error.message,
+    details: error.details || error.issues || undefined,
+    stack: statusCode >= 500 ? error.stack : undefined,
+  }, null, 2));
   response.status(error.statusCode || 500).json({
     success: false,
     error: {

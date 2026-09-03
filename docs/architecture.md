@@ -127,6 +127,14 @@ Payouts are manual `UNPAID` or `PAID` records. There is no commission engine, ap
 
 ## Scalability Constraints
 
+### QR artwork and placement
+
+Admin QR templates accept an optional `artwork` multipart file. The backend stores it in the private `SUPABASE_QR_STORAGE_BUCKET` bucket (default `qr-artifacts`) and stores only the object key and file metadata in `qr_print_templates`. Artwork upload does not decide QR placement.
+
+Placement remains explicit template data: `qr_x`, `qr_y`, `qr_width`, and `qr_height` are measured in millimetres relative to the physical page. The optional label coordinates and font size use the same coordinate system. A future proof renderer must convert millimetres to PDF points using `points = millimetres * 72 / 25.4`, preserve the template page dimensions, and place the generated QR at those exact coordinates.
+
+The admin UI should show the artwork filename, page dimensions, and a preview with a clearly marked QR placeholder. Before a template is published, verify that the placeholder is inside the page bounds and does not overlap required artwork content. After publishing, treat the template geometry as immutable; corrections create a new version. A print batch snapshots the published template ID and QR range, and proof approval must happen before final PDF generation.
+
 The design targets approximately 50,000 vendors and potentially millions of scans, leads, and audit logs while keeping the application monolithic and maintainable.
 
 - Use explicit indexes for QR lookup, vendor ownership, historical attribution, status, and timestamps.
