@@ -355,6 +355,14 @@ adminRoutes.post('/vendors/:vendorId/purge', requireAuth, requireAdmin, async (r
 		if (payoutCount) {
 			return response.status(409).json({ success: false, error: { code: 'VENDOR_PURGE_FINANCIAL_HISTORY', message: 'This Vendor has payout history. Financial records are preserved, so deactivate the Vendor instead.' } });
 		}
+		const [leadCount, scanCount, assignmentCount, registrationCount, sessionCount, resetTokenCount] = await Promise.all([
+			prisma.lead.count({ where: { vendorId: vendor.id } }),
+			prisma.scan.count({ where: { vendorId: vendor.id } }),
+			prisma.qrAssignment.count({ where: { vendorId: vendor.id } }),
+			prisma.vendorRegistration.count({ where: { vendorId: vendor.id } }),
+			prisma.session.count({ where: { vendorId: vendor.id } }),
+			prisma.passwordResetToken.count({ where: { vendorId: vendor.id } }),
+		]);
 		bankDocumentKeys = [vendor.bankDetails?.passbookObjectKey, vendor.bankDetails?.chequeObjectKey].filter(Boolean);
 
 		await prisma.$transaction(async (transaction) => {
@@ -379,8 +387,18 @@ adminRoutes.post('/vendors/:vendorId/purge', requireAuth, requireAdmin, async (r
 				console.error('Vendor purge document cleanup failed.', cleanupError);
 			}
 		}
-		return response.json({ success: true, vendor_id: vendor.id, preserved_lead_vendor_name: vendor.businessName });
+		return response.json({ success: true, vendor_id: vendor.id, preserved_lead_vendor_name: vendor.businessName, removed: { leadsPreserved: leadCount, scans: scanCount, assignments: assignmentCount, registrations: registrationCount, sessions: sessionCount, resetTokens: resetTokenCount } });
 	} catch (error) {
+		if (error.code === 'P2003') {
+			error.statusCode = 409;
+			error.code = 'VENDOR_PURGE_RELATIONSHIP_BLOCKED';
+			error.message = 'Vendor cleanup was blocked by a related record. No changes were committed; deactivate the Vendor instead.';
+		}
+		if (error.code === 'P2025') {
+			error.statusCode = 404;
+			error.code = 'VENDOR_NOT_FOUND';
+			error.message = 'Vendor was not found or was already purged.';
+		}
 		return next(error);
 	}
 });
