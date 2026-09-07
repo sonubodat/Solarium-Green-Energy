@@ -40,6 +40,9 @@ const userSchema = z.object({
 	role: z.enum(['ADMIN', 'SALES']),
 });
 const userUpdateSchema = userSchema.partial().extend({ status: z.enum(['ACTIVE', 'INACTIVE', 'DELETED']).optional() });
+const bulkDeleteSchema = z.object({
+	ids: z.array(z.string().trim().min(1)).min(1).max(100),
+});
 
 function pagination(query) {
 	const page = Math.max(Number.parseInt(query.page, 10) || 1, 1);
@@ -331,6 +334,57 @@ adminRoutes.post('/vendors/:vendorId/delete', requireAuth, requireAdmin, async (
 			error.code = 'VENDOR_NOT_FOUND';
 			error.message = 'Vendor was not found.';
 		}
+		return next(error);
+	}
+});
+
+adminRoutes.post('/vendors/bulk-delete', requireAuth, requireAdmin, async (request, response, next) => {
+	try {
+		const { ids } = bulkDeleteSchema.parse(request.body);
+		const vendorIds = [...new Set(ids)];
+		const vendors = await prisma.vendor.findMany({
+			where: { id: { in: vendorIds } },
+			select: {
+				id: true,
+				businessName: true,
+				_count: { select: { leads: true, scans: true, payouts: true, assignments: true } },
+				assignments: { where: { unassignedAt: null }, select: { id: true }, take: 1 },
+			},
+		});
+		const byId = new Map(vendors.map((vendor) => [vendor.id, vendor]));
+		const blocked = vendorIds.filter((id) => {
+			const vendor = byId.get(id);
+			return !vendor || vendor._count.leads > 0 || vendor._count.scans > 0 || vendor._count.payouts > 0 || vendor._count.assignments > 0;
+		}).map((id) => {
+			const vendor = byId.get(id);
+			if (!vendor) return { id, name: id, reasons: ['VENDOR_NOT_FOUND'], message: 'Vendor was not found.' };
+			const reasons = [];
+			if (vendor.assignments.length) reasons.push('ACTIVE_QR_ASSIGNMENT');
+			if (vendor._count.assignments) reasons.push('ASSIGNMENT_HISTORY');
+			if (vendor._count.leads) reasons.push('LEAD_HISTORY');
+			if (vendor._count.scans) reasons.push('SCAN_HISTORY');
+			if (vendor._count.payouts) reasons.push('PAYOUT_HISTORY');
+			return { id: vendor.id, name: vendor.businessName, reasons, message: 'This Vendor cannot be deleted. Deactivate it, and unlink or reassign its QR first if assigned.' };
+		});
+		if (blocked.length) {
+			return response.status(409).json({ success: false, error: { code: 'BULK_DELETE_BLOCKED', message: 'No Vendors were deleted because one or more selected Vendors have protected history.', details: blocked } });
+		}
+		await prisma.$transaction(async (transaction) => {
+			const current = await transaction.vendor.findMany({
+				where: { id: { in: vendorIds } },
+				select: { id: true, _count: { select: { leads: true, scans: true, payouts: true, assignments: true } } },
+			});
+			if (current.length !== vendorIds.length || current.some((vendor) => vendor._count.leads || vendor._count.scans || vendor._count.payouts || vendor._count.assignments)) {
+				const error = new Error('A selected Vendor changed while the delete was being prepared. Refresh and try again.');
+				error.statusCode = 409;
+				error.code = 'BULK_DELETE_CONFLICT';
+				throw error;
+			}
+			await transaction.vendor.updateMany({ where: { id: { in: vendorIds } }, data: { status: 'DELETED' } });
+			await Promise.all(vendorIds.map((id) => writeAudit(transaction, request, 'VENDOR_DELETED', 'Vendor', id, { bulk: true, selectedCount: vendorIds.length })));
+		});
+		return response.json({ success: true, deleted: vendorIds, count: vendorIds.length });
+	} catch (error) {
 		return next(error);
 	}
 });

@@ -698,6 +698,55 @@
   letter-spacing: .06em;
 }
 
+.admin-check-cell {
+  width: 42px;
+  min-width: 42px;
+  padding-left: 12px !important;
+  padding-right: 4px !important;
+  text-align: center !important;
+}
+
+.admin-check-cell input,
+.admin-select-all input {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--admin-orange);
+  cursor: pointer;
+}
+
+.admin-table tbody tr:has(.admin-check-cell input:checked) {
+  background: #fff8f3;
+}
+
+.admin-selection-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 43px;
+  box-sizing: border-box;
+  margin: -4px 0 10px;
+  padding: 7px 10px;
+  border: 1px solid var(--admin-border);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.admin-selection-toolbar > span {
+  flex: 1;
+  color: var(--admin-muted);
+  font-size: 10px;
+}
+
+.admin-select-all {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--admin-text);
+  font-size: 10px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
 .admin-table td {
   padding: 12px 15px;
   border-bottom: 1px solid #edf1f3;
@@ -857,6 +906,51 @@
   height: 120px;
   text-align: center !important;
   color: #9aa7ae !important;
+}
+
+.admin-deletion-modal {
+  width: min(580px, calc(100vw - 32px));
+}
+
+.admin-deletion-lead {
+  margin: 0 0 15px;
+  color: var(--admin-muted);
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+.admin-deletion-blocked-list {
+  display: grid;
+  gap: 8px;
+  max-height: 330px;
+  overflow-y: auto;
+}
+
+.admin-deletion-blocked-item {
+  display: grid;
+  gap: 4px;
+  padding: 11px 12px;
+  border: 1px solid #f0d6c8;
+  border-radius: 8px;
+  background: #fff8f4;
+}
+
+.admin-deletion-blocked-item strong {
+  color: #8f4d35;
+  font-size: 11px;
+}
+
+.admin-deletion-blocked-item small {
+  color: var(--admin-text);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.admin-deletion-blocked-item span {
+  color: #a56b55;
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: .04em;
 }
 
 /* --------------------------------------------------

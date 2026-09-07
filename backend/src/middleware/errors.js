@@ -5,7 +5,7 @@ export function notFoundHandler(_request, response) {
   });
 }
 
-export function errorHandler(error, _request, response, _next) {
+export function errorHandler(error, request, response, _next) {
   if (error.name === 'MulterError' && error.code === 'LIMIT_FILE_SIZE') {
     const isQrArtwork = error.field === 'artwork';
     return response.status(413).json({
@@ -28,6 +28,8 @@ export function errorHandler(error, _request, response, _next) {
   }
   const statusCode = error.statusCode || 500;
   console.error('[Solarium API error]', JSON.stringify({
+    method: request.method,
+    path: request.originalUrl,
     status: statusCode,
     name: error.name,
     code: error.code || 'INTERNAL_ERROR',

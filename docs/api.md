@@ -246,6 +246,16 @@ Soft-delete a Vendor with no historical records.
 - Rules: only permitted when the Vendor has zero leads, scans, payouts, and QR assignments; sets `status = DELETED` and writes an audit log (`VENDOR_DELETED`); a `DELETED` Vendor is excluded from the default `GET /api/admin/vendors` list
 - Errors: any historical record present returns `409 VENDOR_HAS_HISTORY` — deactivate instead
 
+### `POST /api/admin/vendors/bulk-delete`
+
+Soft-delete multiple Vendors from the current Admin selection.
+
+- Authentication: Admin
+- Request: `{ "ids": ["vendor-id-1", "vendor-id-2"] }` — 1 to 100 unique IDs
+- Rules: the complete selection is preflighted and the operation is all-or-nothing; every Vendor must have zero leads, scans, payouts, and QR assignment history
+- Success: `{ success: true, deleted: [...], count }`, with one `VENDOR_DELETED` audit entry per Vendor
+- Errors: `409 BULK_DELETE_BLOCKED` includes `error.details` for each blocked Vendor; deactivate the Vendor and explicitly unlink/reassign its QR before trying again
+
 ### `POST /api/admin/vendors/:vendorId/reset-password`
 
 Issue a secure temporary password/reset flow for a Vendor.

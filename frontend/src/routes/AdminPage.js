@@ -136,6 +136,8 @@ function AdminPage() {
   const [scannedQr, setScannedQr] = useState(null);
   const [scanVendorId, setScanVendorId] = useState('');
   const [paidReferenceInputs, setPaidReferenceInputs] = useState({});
+  const [selectedVendorIds, setSelectedVendorIds] = useState([]);
+  const [deletionResult, setDeletionResult] = useState(null);
 
   const [editingVendorId, setEditingVendorId] = useState(null);
   const [editVendorDraft, setEditVendorDraft] = useState({});
@@ -325,6 +327,7 @@ function AdminPage() {
     }
 
     setLoading(true);
+    if (nextResource === 'vendors') setSelectedVendorIds([]);
     setMessage('');
     setMessageType('');
 
@@ -395,6 +398,7 @@ function AdminPage() {
     setResource(nextResource);
     setAdminPage(1);
     setSearch('');
+    setSelectedVendorIds([]);
     setMobileNavOpen(false);
     setResourceLoading(true);
 
@@ -880,6 +884,23 @@ function AdminPage() {
     }
   }
 
+  async function bulkDeleteVendors() {
+    if (!selectedVendorIds.length) return;
+    if (!window.confirm(`Delete ${selectedVendorIds.length} selected Vendor${selectedVendorIds.length === 1 ? '' : 's'}? Vendors with history will block the entire operation.`)) return;
+    setLoading(true);
+    try {
+      const result = await apiRequest('/admin/vendors/bulk-delete', { method: 'POST', body: JSON.stringify({ ids: selectedVendorIds }) });
+      setDeletionResult({ entity: 'Vendors', deleted: result.count, blocked: [] });
+      setSelectedVendorIds([]);
+      await loadAdminResource('vendors', adminPage, undefined, undefined, true);
+    } catch (error) {
+      if (error.code === 'BULK_DELETE_BLOCKED') setDeletionResult({ entity: 'Vendors', deleted: 0, blocked: error.details || [] });
+      else { setMessage(error.message); setMessageType('error'); }
+    } finally {
+      setLoading(false);
+    }
+  }
+
   async function lookupScannedQr(code) {
     setLoading(true);
     setMessage('');
@@ -1350,6 +1371,7 @@ function AdminPage() {
             .includes(query)
         );
     });
+    const allVisibleVendorsSelected = filtered.length > 0 && filtered.every((vendor) => selectedVendorIds.includes(vendor.id));
 
     return (
       <div className="admin-resource">
@@ -1543,10 +1565,20 @@ function AdminPage() {
           </button>
         </div>
 
+        <div className="admin-selection-toolbar">
+          <label className="admin-select-all">
+            <input type="checkbox" checked={allVisibleVendorsSelected} onChange={(event) => setSelectedVendorIds(event.target.checked ? filtered.map((vendor) => vendor.id) : [])} />
+            Select current page
+          </label>
+          <span>{selectedVendorIds.length} selected</span>
+          <button type="button" className="admin-mini-button danger" disabled={!selectedVendorIds.length || loading} onClick={bulkDeleteVendors}>Delete selected</button>
+        </div>
+
         <div className="admin-table-wrap">
           <table className="admin-table">
             <thead>
               <tr>
+                <th className="admin-check-cell">Select</th>
                 <th>Vendor</th>
                 <th>Owner</th>
                 <th>QR</th>
@@ -1560,6 +1592,9 @@ function AdminPage() {
               {filtered.length ? (
                 filtered.map((vendor) => (
                   <tr key={vendor.id}>
+                    <td className="admin-check-cell">
+                      <input type="checkbox" checked={selectedVendorIds.includes(vendor.id)} onChange={(event) => setSelectedVendorIds((current) => event.target.checked ? [...new Set([...current, vendor.id])] : current.filter((id) => id !== vendor.id))} aria-label={`Select ${vendor.businessName}`} />
+                    </td>
                     <td>
                       {editingVendorId === vendor.id ? (
                         <input
@@ -1737,7 +1772,7 @@ function AdminPage() {
               ) : (
                 <tr>
                   <td
-                    colSpan="6"
+                    colSpan="7"
                     className="admin-empty"
                   >
                     No vendors found.
@@ -3452,6 +3487,45 @@ function AdminPage() {
     );
   }
 
+  function renderDeletionResultModal() {
+    if (!deletionResult) return null;
+    const blocked = deletionResult.blocked || [];
+    return (
+      <div className="admin-modal-overlay" onClick={() => setDeletionResult(null)}>
+        <div className="admin-modal admin-deletion-modal" role="dialog" aria-modal="true" aria-label="Bulk deletion result" onClick={(event) => event.stopPropagation()}>
+          <div className="admin-modal-header">
+            <div>
+              <span className="admin-eyebrow">BULK DELETE</span>
+              <h2>{blocked.length ? 'Deletion blocked' : 'Deletion complete'}</h2>
+            </div>
+            <button className="admin-mini-button" onClick={() => setDeletionResult(null)} aria-label="Close"><Icon path={ICONS.close} /></button>
+          </div>
+          <div className="admin-modal-body">
+            {blocked.length ? (
+              <>
+                <p className="admin-deletion-lead">No {deletionResult.entity} were deleted. Resolve these items first, then try again.</p>
+                <div className="admin-deletion-blocked-list">
+                  {blocked.map((item) => (
+                    <div className="admin-deletion-blocked-item" key={item.id}>
+                      <strong>{item.name || item.code || item.id}</strong>
+                      <small>{item.message}</small>
+                      <span>{item.reasons?.join(' · ')}</span>
+                    </div>
+                  ))}
+                </div>
+              </>
+            ) : (
+              <p className="admin-deletion-lead">{deletionResult.deleted} {deletionResult.entity} deleted successfully.</p>
+            )}
+            <div className="admin-form-actions">
+              <button className="admin-primary-button" onClick={() => setDeletionResult(null)}>Done</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   function renderPagination() {
     const meta =
       portalData?.data?.pagination;
@@ -3889,6 +3963,7 @@ function AdminPage() {
         {detailLead && renderLeadDetailModal()}
         {detailBank && renderBankDetailsModal()}
         {detailAuditLog && renderAuditLogDetailModal()}
+        {deletionResult && renderDeletionResultModal()}
       </main>
     </div>
   );
