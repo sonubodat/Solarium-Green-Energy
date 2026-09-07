@@ -504,6 +504,40 @@ function AdminPage() {
     }
   }
 
+  async function purgeVendor(vendorId, businessName) {
+    const confirmation = window.prompt(
+      `Permanent cleanup will remove ${businessName}, assignments, scans, sessions, registration, and bank documents. Leads will remain as Deleted Vendor records. Type the exact business name to continue:`,
+      ''
+    );
+    if (confirmation === null) return;
+    if (confirmation.trim() !== businessName) {
+      setMessage('Vendor purge cancelled: the business name did not match exactly.');
+      setMessageType('error');
+      return;
+    }
+    if (!window.confirm(`Permanently clean up ${businessName}? This cannot be undone. Paid/unpaid payout history blocks the operation.`)) return;
+
+    setLoading(true);
+    try {
+      await apiRequest(`/admin/vendors/${vendorId}/purge`, {
+        method: 'POST',
+        body: JSON.stringify({ confirm_vendor_name: confirmation.trim() }),
+      });
+      await loadAdminResource('vendors', adminPage, undefined, undefined, true);
+      setMessage(`${businessName} was permanently cleaned up. Its Leads remain labeled as a deleted Vendor.`);
+      setMessageType('success');
+    } catch (error) {
+      setMessage(error.message);
+      setMessageType('error');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function leadVendorLabel(lead) {
+    return lead.vendor?.businessName || lead.vendorNameSnapshot || 'Deleted Vendor';
+  }
+
   function startEditVendor(vendor) {
     setEditingVendorId(vendor.id);
 
@@ -1539,6 +1573,8 @@ function AdminPage() {
           <div className="admin-search">
             <Icon path={ICONS.search} />
             <input
+              id="vendor-search"
+              name="vendor_search"
               placeholder="Search vendors..."
               value={search}
               onChange={(event) =>
@@ -1763,6 +1799,12 @@ function AdminPage() {
                             >
                               Delete
                             </button>
+                            <button
+                              className="admin-mini-button danger"
+                              onClick={() => purgeVendor(vendor.id, vendor.businessName)}
+                            >
+                              Purge history
+                            </button>
                           </>
                         )}
                       </div>
@@ -1862,6 +1904,8 @@ function AdminPage() {
           onSubmit={downloadSingleQrPdf}
         >
           <input
+            id="qr-single-code"
+            name="qr_single_code"
             type="text"
             placeholder="e.g. V-0023"
             value={singleQrCode}
@@ -2053,24 +2097,24 @@ function AdminPage() {
               <div className="admin-grid-two">
                 <label>
                   Template name
-                  <input value={templateDraft.name} onChange={(event) => setTemplateDraft({ ...templateDraft, name: event.target.value })} />
+                  <input id="template-name" name="template_name" value={templateDraft.name} onChange={(event) => setTemplateDraft({ ...templateDraft, name: event.target.value })} />
                 </label>
                 <label className="admin-upload-field">
                   Artwork file
-                  <input type="file" accept="image/png,image/jpeg,application/pdf" onChange={(event) => setTemplateArtwork(event.target.files?.[0] || null)} />
+                  <input id="template-artwork" name="artwork" type="file" accept="image/png,image/jpeg,application/pdf" onChange={(event) => setTemplateArtwork(event.target.files?.[0] || null)} />
                   <small>{templateArtwork ? templateArtwork.name : 'PNG, JPG, or PDF up to 2 MB'}</small>
                 </label>
                 <label>
                   Page width (mm)
-                  <input type="number" value={templateDraft.page_width_mm} onChange={(event) => setTemplateDraft({ ...templateDraft, page_width_mm: event.target.value })} />
+                  <input id="template-page-width" name="page_width_mm" type="number" value={templateDraft.page_width_mm} onChange={(event) => setTemplateDraft({ ...templateDraft, page_width_mm: event.target.value })} />
                 </label>
                 <label>
                   Page height (mm)
-                  <input type="number" value={templateDraft.page_height_mm} onChange={(event) => setTemplateDraft({ ...templateDraft, page_height_mm: event.target.value })} />
+                  <input id="template-page-height" name="page_height_mm" type="number" value={templateDraft.page_height_mm} onChange={(event) => setTemplateDraft({ ...templateDraft, page_height_mm: event.target.value })} />
                 </label>
                 <label>
                   DPI
-                  <input type="number" value={templateDraft.dpi} onChange={(event) => setTemplateDraft({ ...templateDraft, dpi: event.target.value })} />
+                  <input id="template-dpi" name="dpi" type="number" value={templateDraft.dpi} onChange={(event) => setTemplateDraft({ ...templateDraft, dpi: event.target.value })} />
                 </label>
               </div>
 
@@ -2079,21 +2123,21 @@ function AdminPage() {
                 <div className="admin-grid-two">
                   <label>
                     QR X (mm)
-                    <input type="number" value={templateDraft.qr_x} onChange={(event) => setTemplateDraft({ ...templateDraft, qr_x: event.target.value })} />
+                    <input id="template-qr-x" name="qr_x" type="number" value={templateDraft.qr_x} onChange={(event) => setTemplateDraft({ ...templateDraft, qr_x: event.target.value })} />
                   </label>
                   <label>
                     QR Y (mm)
-                    <input type="number" value={templateDraft.qr_y} onChange={(event) => setTemplateDraft({ ...templateDraft, qr_y: event.target.value })} />
+                    <input id="template-qr-y" name="qr_y" type="number" value={templateDraft.qr_y} onChange={(event) => setTemplateDraft({ ...templateDraft, qr_y: event.target.value })} />
                   </label>
                   <label>
                     QR size (mm)
-                    <input type="number" value={templateDraft.qr_width} onChange={(event) => setTemplateDraft({ ...templateDraft, qr_width: event.target.value, qr_height: event.target.value })} />
+                    <input id="template-qr-size" name="qr_size" type="number" value={templateDraft.qr_width} onChange={(event) => setTemplateDraft({ ...templateDraft, qr_width: event.target.value, qr_height: event.target.value })} />
                   </label>
                 </div>
               </details>
 
               <label className="admin-toggle-row">
-                <input type="checkbox" checked={templateDraft.label_enabled} onChange={(event) => setTemplateDraft({ ...templateDraft, label_enabled: event.target.checked })} />
+                <input id="template-label-enabled" name="label_enabled" type="checkbox" checked={templateDraft.label_enabled} onChange={(event) => setTemplateDraft({ ...templateDraft, label_enabled: event.target.checked })} />
                 Add QR text label
               </label>
 
@@ -2101,15 +2145,15 @@ function AdminPage() {
                 <div className="admin-grid-two">
                   <label>
                     Label X
-                    <input type="number" value={templateDraft.label_text_x} onChange={(event) => setTemplateDraft({ ...templateDraft, label_text_x: event.target.value })} />
+                    <input id="template-label-x" name="label_text_x" type="number" value={templateDraft.label_text_x} onChange={(event) => setTemplateDraft({ ...templateDraft, label_text_x: event.target.value })} />
                   </label>
                   <label>
                     Label Y
-                    <input type="number" value={templateDraft.label_text_y} onChange={(event) => setTemplateDraft({ ...templateDraft, label_text_y: event.target.value })} />
+                    <input id="template-label-y" name="label_text_y" type="number" value={templateDraft.label_text_y} onChange={(event) => setTemplateDraft({ ...templateDraft, label_text_y: event.target.value })} />
                   </label>
                   <label>
                     Font size
-                    <input type="number" value={templateDraft.label_font_size} onChange={(event) => setTemplateDraft({ ...templateDraft, label_font_size: event.target.value })} />
+                    <input id="template-label-font-size" name="label_font_size" type="number" value={templateDraft.label_font_size} onChange={(event) => setTemplateDraft({ ...templateDraft, label_font_size: event.target.value })} />
                   </label>
                 </div>
               )}
@@ -2125,7 +2169,7 @@ function AdminPage() {
             <div className="admin-grid-two">
               <label>
                 Published template
-                <select value={printBatchDraft.template_id} onChange={(event) => setPrintBatchDraft({ ...printBatchDraft, template_id: event.target.value })}>
+                <select id="print-template-id" name="template_id" value={printBatchDraft.template_id} onChange={(event) => setPrintBatchDraft({ ...printBatchDraft, template_id: event.target.value })}>
                   <option value="">Select template</option>
                   {qrTemplates.filter((template) => template.status === 'PUBLISHED').map((template) => (
                     <option key={template.id} value={template.id}>{template.name} (v{template.version})</option>
@@ -2134,11 +2178,11 @@ function AdminPage() {
               </label>
               <label>
                 Range start
-                <input value={printBatchDraft.range_start} onChange={(event) => setPrintBatchDraft({ ...printBatchDraft, range_start: event.target.value })} placeholder="V-0001" />
+                <input id="print-range-start" name="range_start" value={printBatchDraft.range_start} onChange={(event) => setPrintBatchDraft({ ...printBatchDraft, range_start: event.target.value })} placeholder="V-0001" />
               </label>
               <label>
                 Range end
-                <input value={printBatchDraft.range_end} onChange={(event) => setPrintBatchDraft({ ...printBatchDraft, range_end: event.target.value })} placeholder="V-0100" />
+                <input id="print-range-end" name="range_end" value={printBatchDraft.range_end} onChange={(event) => setPrintBatchDraft({ ...printBatchDraft, range_end: event.target.value })} placeholder="V-0100" />
               </label>
             </div>
             <div className="admin-qr-template-actions admin-batch-actions">
@@ -2525,7 +2569,7 @@ function AdminPage() {
         lead.averageElectricityBill,
         lead.solarSize,
         lead.id,
-        lead.vendor?.businessName,
+        leadVendorLabel(lead),
       ]
         .filter(Boolean)
         .some((value) => String(value).toLowerCase().includes(query));
@@ -2542,7 +2586,7 @@ function AdminPage() {
     for (const lead of filtered) {
       const key = lead.vendorId || 'unknown';
       if (!groups.has(key)) {
-        groups.set(key, { vendorName: lead.vendor?.businessName || lead.vendorName || 'Unknown vendor', leads: [] });
+        groups.set(key, { vendorName: leadVendorLabel(lead), leads: [] });
       }
       groups.get(key).leads.push(lead);
     }
@@ -2741,7 +2785,7 @@ function AdminPage() {
               <h3>Attribution</h3>
               <dl className="admin-modal-fields">
                 <dt>Vendor</dt>
-                <dd>{lead.vendor?.businessName || '—'}</dd>
+                <dd>{lead.vendor ? lead.vendor.businessName : `Deleted Vendor: ${lead.vendorNameSnapshot || 'Unknown'}`}</dd>
                 <dt>QR code</dt>
                 <dd>{lead.qr?.code || '—'}</dd>
                 <dt>Lead status</dt>
@@ -3729,6 +3773,8 @@ function AdminPage() {
 
             <input
               required
+              id="admin-login-identifier"
+              name="username_or_mobile"
               autoComplete="username"
               placeholder="Enter your login"
               value={login.identifier}
@@ -3747,6 +3793,8 @@ function AdminPage() {
 
             <input
               required
+              id="admin-login-password"
+              name="password"
               type="password"
               autoComplete="current-password"
               placeholder="Enter your password"

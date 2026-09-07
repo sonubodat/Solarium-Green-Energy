@@ -9,7 +9,7 @@ import PDFDocument from 'pdfkit';
 import { randomUUID } from 'node:crypto';
 import { hashPassword, normalizeLoginIdentifier, publicVendor } from '../services/auth.js';
 import { z } from 'zod';
-import { createQrArtworkUrl, createVendorDocumentUrl, removeQrArtwork, uploadQrArtwork, uploadQrProof } from '../services/vendor-documents.js';
+import { createQrArtworkUrl, createVendorDocumentUrl, removeQrArtwork, removeVendorDocument, uploadQrArtwork, uploadQrProof } from '../services/vendor-documents.js';
 import { generateQrProof, generateQrTemplatePdf } from '../services/qr-proof.js';
 import { buildQrCodeSequence, normalizeQrCode, parseQrRange } from '../services/qr-print.js';
 import { env } from '../config/env.js';
@@ -43,6 +43,7 @@ const userUpdateSchema = userSchema.partial().extend({ status: z.enum(['ACTIVE',
 const bulkDeleteSchema = z.object({
 	ids: z.array(z.string().trim().min(1)).min(1).max(100),
 });
+const vendorPurgeSchema = z.object({ confirm_vendor_name: z.string().trim().min(1).max(160) });
 
 function pagination(query) {
 	const page = Math.max(Number.parseInt(query.page, 10) || 1, 1);
@@ -334,6 +335,52 @@ adminRoutes.post('/vendors/:vendorId/delete', requireAuth, requireAdmin, async (
 			error.code = 'VENDOR_NOT_FOUND';
 			error.message = 'Vendor was not found.';
 		}
+		return next(error);
+	}
+});
+
+adminRoutes.post('/vendors/:vendorId/purge', requireAuth, requireAdmin, async (request, response, next) => {
+	let bankDocumentKeys = [];
+	try {
+		const { confirm_vendor_name: confirmation } = vendorPurgeSchema.parse(request.body);
+		const vendor = await prisma.vendor.findUnique({
+			where: { id: request.params.vendorId },
+			include: { bankDetails: true },
+		});
+		if (!vendor) return response.status(404).json({ success: false, error: { code: 'VENDOR_NOT_FOUND', message: 'Vendor was not found.' } });
+		if (confirmation !== vendor.businessName) {
+			return response.status(409).json({ success: false, error: { code: 'VENDOR_PURGE_CONFIRMATION_MISMATCH', message: 'Type the exact Vendor business name to confirm permanent cleanup.' } });
+		}
+		const payoutCount = await prisma.payout.count({ where: { vendorId: vendor.id } });
+		if (payoutCount) {
+			return response.status(409).json({ success: false, error: { code: 'VENDOR_PURGE_FINANCIAL_HISTORY', message: 'This Vendor has payout history. Financial records are preserved, so deactivate the Vendor instead.' } });
+		}
+		bankDocumentKeys = [vendor.bankDetails?.passbookObjectKey, vendor.bankDetails?.chequeObjectKey].filter(Boolean);
+
+		await prisma.$transaction(async (transaction) => {
+			await transaction.lead.updateMany({
+				where: { vendorId: vendor.id },
+				data: { vendorNameSnapshot: vendor.businessName, vendorId: null, qrAssignmentId: null, scanId: null },
+			});
+			await transaction.scan.deleteMany({ where: { vendorId: vendor.id } });
+			await transaction.qrAssignment.deleteMany({ where: { vendorId: vendor.id } });
+			await transaction.vendorRegistration.deleteMany({ where: { vendorId: vendor.id } });
+			await transaction.session.deleteMany({ where: { vendorId: vendor.id } });
+			await transaction.passwordResetToken.deleteMany({ where: { vendorId: vendor.id } });
+			await transaction.vendorBankDetails.deleteMany({ where: { vendorId: vendor.id } });
+			await transaction.vendor.delete({ where: { id: vendor.id } });
+			await writeAudit(transaction, request, 'VENDOR_PURGED', 'Vendor', vendor.id, { businessName: vendor.businessName, preservedLeadName: vendor.businessName });
+		});
+
+		for (const objectKey of bankDocumentKeys) {
+			try {
+				await removeVendorDocument(objectKey);
+			} catch (cleanupError) {
+				console.error('Vendor purge document cleanup failed.', cleanupError);
+			}
+		}
+		return response.json({ success: true, vendor_id: vendor.id, preserved_lead_vendor_name: vendor.businessName });
+	} catch (error) {
 		return next(error);
 	}
 });
@@ -1112,6 +1159,7 @@ adminRoutes.get('/leads', requireAuth, requireAdmin, async (request, response, n
 					select: {
 						id: true,
 						vendorId: true,
+						vendorNameSnapshot: true,
 						qrId: true,
 						qrAssignmentId: true,
 						scanId: true,
@@ -1186,7 +1234,7 @@ adminRoutes.get('/leads/export', requireAuth, requireAdmin, async (request, resp
 				lead.geoLocation?.longitude,
 				lead.geoLocation?.accuracy,
 				lead.status,
-				lead.vendor?.businessName,
+				lead.vendor?.businessName || `Deleted Vendor: ${lead.vendorNameSnapshot}`,
 				lead.vendor?.mobileNumber,
 				lead.qr?.code,
 				lead.payout?.status,

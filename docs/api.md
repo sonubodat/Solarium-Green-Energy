@@ -246,6 +246,16 @@ Soft-delete a Vendor with no historical records.
 - Rules: only permitted when the Vendor has zero leads, scans, payouts, and QR assignments; sets `status = DELETED` and writes an audit log (`VENDOR_DELETED`); a `DELETED` Vendor is excluded from the default `GET /api/admin/vendors` list
 - Errors: any historical record present returns `409 VENDOR_HAS_HISTORY` — deactivate instead
 
+### `POST /api/admin/vendors/:vendorId/purge`
+
+Destructively remove a Vendor while preserving its Leads as deleted-Vendor history.
+
+- Authentication: Admin
+- Request: `{ "confirm_vendor_name": "Exact Business Name" }`
+- Rules: requires exact business-name confirmation; blocks when any payout history exists; preserves Lead rows and stores the former business name in `vendor_name_snapshot`; removes permitted assignments, scans, sessions, reset tokens, registrations, bank metadata, and the Vendor row; QR inventory is not deleted
+- Response: `{ success: true, vendor_id, preserved_lead_vendor_name }`
+- Errors: `409 VENDOR_PURGE_CONFIRMATION_MISMATCH` for wrong confirmation; `409 VENDOR_PURGE_FINANCIAL_HISTORY` when payout history exists
+
 ### `POST /api/admin/vendors/bulk-delete`
 
 Soft-delete multiple Vendors from the current Admin selection.

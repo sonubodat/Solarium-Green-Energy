@@ -251,6 +251,13 @@ publicRoutes.post('/leads', publicRateLimit, async (request, response, next) => 
 					select: { id: true, vendorId: true, qrId: true, qrAssignmentId: true },
 				});
 			}
+			const leadVendor = await transaction.vendor.findUnique({ where: { id: scan.vendorId }, select: { businessName: true } });
+			if (!leadVendor) {
+				const error = new Error('The referral Vendor no longer exists.');
+				error.statusCode = 409;
+				error.code = 'VENDOR_NOT_FOUND';
+				throw error;
+			}
 			const customerIdentity = await transaction.customerIdentity.upsert({
 				where: { hash: customerHash },
 				create: { hash: customerHash },
@@ -265,6 +272,7 @@ publicRoutes.post('/leads', publicRateLimit, async (request, response, next) => 
 			const createdLead = await transaction.lead.create({
 				data: {
 					vendorId: scan.vendorId,
+					vendorNameSnapshot: leadVendor.businessName,
 					qrId: scan.qrId,
 					qrAssignmentId: scan.qrAssignmentId,
 					scanId: scan.id,

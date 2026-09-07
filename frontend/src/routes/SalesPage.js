@@ -341,6 +341,8 @@ function SalesPage() {
 
                 <input
                   required
+                  id="sales-login-identifier"
+                  name="username_or_mobile"
                   autoComplete="username"
                   placeholder="Username or mobile"
                   value={login.identifier}
@@ -361,6 +363,8 @@ function SalesPage() {
 
                 <input
                   required
+                  id="sales-login-password"
+                  name="password"
                   type="password"
                   autoComplete="current-password"
                   placeholder="Password"
