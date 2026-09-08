@@ -47,6 +47,20 @@ function Icon({ path, className = '' }) {
   );
 }
 
+function parseBulkVendorNames(text) {
+  const seen = new Set();
+  const names = [];
+  for (const raw of text.split(/\r\n|\r|\n/)) {
+    const trimmed = raw.trim();
+    if (!trimmed) continue;
+    const key = trimmed.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    names.push(trimmed);
+  }
+  return names;
+}
+
 const NAV_ITEMS = [
   ['dashboard', 'Dashboard'],
   ['vendors', 'Vendors'],
@@ -87,6 +101,10 @@ function AdminPage() {
   const [qrAssignment, setQrAssignment] = useState('');
 
   const [showCreateVendor, setShowCreateVendor] = useState(false);
+  const [showBulkCreateVendors, setShowBulkCreateVendors] = useState(false);
+  const [bulkVendorNamesText, setBulkVendorNamesText] = useState('');
+  const [bulkVendorAutoPassword, setBulkVendorAutoPassword] = useState(false);
+  const [bulkVendorResult, setBulkVendorResult] = useState(null);
   const [showGenerateQr, setShowGenerateQr] = useState(false);
   const [showImportLeads, setShowImportLeads] = useState(false);
   const [importFile, setImportFile] = useState(null);
@@ -443,6 +461,35 @@ function AdminPage() {
 
       setMessage('Vendor created.');
       setMessageType('success');
+    } catch (error) {
+      setMessage(error.message);
+      setMessageType('error');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function bulkCreateVendors(event) {
+    event.preventDefault();
+    const names = parseBulkVendorNames(bulkVendorNamesText);
+    if (!names.length || names.length > 500) return;
+
+    setLoading(true);
+    setMessage('');
+    setMessageType('');
+
+    try {
+      const result = await apiRequest('/admin/vendors/bulk-create', {
+        method: 'POST',
+        body: JSON.stringify({ names, auto_password: bulkVendorAutoPassword }),
+      });
+
+      setBulkVendorResult(result.summary);
+      setShowBulkCreateVendors(false);
+      setBulkVendorNamesText('');
+      setBulkVendorAutoPassword(false);
+
+      await loadAdminResource('vendors', adminPage, undefined, undefined, true);
     } catch (error) {
       setMessage(error.message);
       setMessageType('error');
@@ -1481,17 +1528,27 @@ function AdminPage() {
             </p>
           </div>
 
-          <button
-            className="admin-primary-button"
-            onClick={() =>
-              setShowCreateVendor(
-                (current) => !current
-              )
-            }
-          >
-            <Icon path={ICONS.plus} />
-            Add vendor
-          </button>
+          <div className="admin-heading-actions">
+            <button
+              className="admin-primary-button"
+              onClick={() =>
+                setShowCreateVendor(
+                  (current) => !current
+                )
+              }
+            >
+              <Icon path={ICONS.plus} />
+              Add vendor
+            </button>
+
+            <button
+              className="admin-outline-button"
+              onClick={() => setShowBulkCreateVendors(true)}
+            >
+              <Icon path={ICONS.plus} />
+              Bulk create
+            </button>
+          </div>
         </div>
 
         {showCreateVendor && (
@@ -3744,6 +3801,143 @@ function AdminPage() {
     );
   }
 
+  function renderBulkCreateVendorsModal() {
+    const detectedNames = parseBulkVendorNames(bulkVendorNamesText);
+    const overLimit = detectedNames.length > 500;
+
+    async function handleBulkFileRead(event) {
+      const file = event.target.files?.[0];
+      if (!file) return;
+      const text = await file.text();
+      setBulkVendorNamesText((current) => (current ? `${current}\n${text}` : text));
+      event.target.value = '';
+    }
+
+    return (
+      <div
+        className="admin-modal-overlay"
+        onClick={() => setShowBulkCreateVendors(false)}
+      >
+        <div
+          className="admin-modal"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Bulk create vendors"
+          onClick={(event) => event.stopPropagation()}
+        >
+          <div className="admin-modal-header">
+            <div>
+              <span className="admin-eyebrow">VENDOR MANAGEMENT</span>
+              <h2>Bulk create vendors</h2>
+            </div>
+            <button
+              className="admin-mini-button"
+              onClick={() => setShowBulkCreateVendors(false)}
+              aria-label="Close"
+            >
+              <Icon path={ICONS.close} />
+            </button>
+          </div>
+
+          <form onSubmit={bulkCreateVendors} className="admin-modal-body">
+            <p>
+              Paste vendor business names, one per line (from a
+              spreadsheet column), or upload a .csv/.txt file. Up
+              to 500 at a time.
+            </p>
+
+            <textarea
+              rows={10}
+              placeholder={'Ram Store\nA1 Solar Co.\nSunrise Energy'}
+              value={bulkVendorNamesText}
+              onChange={(event) => setBulkVendorNamesText(event.target.value)}
+            />
+
+            <input
+              type="file"
+              accept=".csv,.txt,text/csv,text/plain"
+              onChange={handleBulkFileRead}
+            />
+
+            <small>
+              {detectedNames.length} name{detectedNames.length === 1 ? '' : 's'} detected
+              {overLimit ? ' — over the 500 limit, trim the list' : ''}
+            </small>
+
+            <label className="admin-toggle-row">
+              <input
+                type="checkbox"
+                checked={bulkVendorAutoPassword}
+                onChange={(event) => setBulkVendorAutoPassword(event.target.checked)}
+              />
+              Set an initial password automatically (businessname@123)
+            </label>
+
+            {bulkVendorAutoPassword && loading && (
+              <small>Creating vendors and passwords — this may take up to a minute for large batches.</small>
+            )}
+
+            <div className="admin-form-actions">
+              <button
+                type="button"
+                className="admin-outline-button"
+                disabled={loading}
+                onClick={() => setShowBulkCreateVendors(false)}
+              >
+                Cancel
+              </button>
+              <button
+                className="admin-primary-button"
+                disabled={loading || detectedNames.length === 0 || overLimit}
+              >
+                {loading ? 'Creating...' : `Create ${detectedNames.length} vendor${detectedNames.length === 1 ? '' : 's'}`}
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+    );
+  }
+
+  function renderBulkVendorResultModal() {
+    if (!bulkVendorResult) return null;
+    const failures = bulkVendorResult.failures || [];
+    return (
+      <div className="admin-modal-overlay" onClick={() => setBulkVendorResult(null)}>
+        <div className="admin-modal admin-deletion-modal" role="dialog" aria-modal="true" aria-label="Bulk vendor creation result" onClick={(event) => event.stopPropagation()}>
+          <div className="admin-modal-header">
+            <div>
+              <span className="admin-eyebrow">BULK CREATE</span>
+              <h2>Vendors created</h2>
+            </div>
+            <button className="admin-mini-button" onClick={() => setBulkVendorResult(null)} aria-label="Close"><Icon path={ICONS.close} /></button>
+          </div>
+          <div className="admin-modal-body">
+            <p className="admin-deletion-lead">
+              {bulkVendorResult.created} of {bulkVendorResult.totalRows} vendor(s) created successfully.
+            </p>
+            {failures.length > 0 && (
+              <>
+                <p>{failures.length} row(s) could not be created:</p>
+                <div className="admin-deletion-blocked-list">
+                  {failures.map((item) => (
+                    <div className="admin-deletion-blocked-item" key={`bulk-vendor-fail-${item.row}`}>
+                      <strong>Row {item.row}: {item.businessName}</strong>
+                      <small>{item.reason}</small>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
+            <div className="admin-form-actions">
+              <button className="admin-primary-button" onClick={() => setBulkVendorResult(null)}>Done</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   function renderPagination() {
     const meta =
       portalData?.data?.pagination;
@@ -4187,6 +4381,8 @@ function AdminPage() {
         {detailAuditLog && renderAuditLogDetailModal()}
         {deletionResult && renderDeletionResultModal()}
         {importResult && renderImportResultModal()}
+        {showBulkCreateVendors && renderBulkCreateVendorsModal()}
+        {bulkVendorResult && renderBulkVendorResultModal()}
       </main>
     </div>
   );

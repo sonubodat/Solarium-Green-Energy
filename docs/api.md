@@ -266,6 +266,15 @@ Soft-delete multiple Vendors from the current Admin selection.
 - Success: `{ success: true, deleted: [...], count }`, with one `VENDOR_DELETED` audit entry per Vendor
 - Errors: `409 BULK_DELETE_BLOCKED` includes `error.details` for each blocked Vendor; deactivate the Vendor and explicitly unlink/reassign its QR before trying again
 
+### `POST /api/admin/vendors/bulk-create`
+
+Create up to 500 Vendors at once from a plain list of business names (pasted or read from an uploaded file client-side — this endpoint only ever receives plain names, never a file).
+
+- Authentication: Admin
+- Request: `{ "names": ["Ram Store", "A1 Solar Co."], "auto_password": false }` — 1 to 500 names (2-160 chars each, same bound as `business_name` on the single-vendor form)
+- Rules: for each name, `owner_name` defaults to the business name; `login_identifier` is a slugified version of the name (lowercase, non-alphanumeric collapsed to `-`) with a `-2`/`-3` suffix appended on collision (checked both within the request and against existing Vendors); `mobile_number` gets a clearly-fake sequential placeholder from a reserved band (`9000010001` upward) the Admin edits later per Vendor — this field has no uniqueness constraint at the database level. When `auto_password` is `true`, every created Vendor's password is `<slug-without-hyphens>@123` (e.g. "Ram Store" → `ramstore@123`, padded to stay above the 8-character minimum for very short names); when `false` (default), `password_hash` is left `null`, identical to omitting `password` on the single-vendor form. Rows are processed one at a time, not as a single all-or-nothing batch — a `login_identifier` collision on one row is reported and skipped rather than failing the whole request. One `VENDOR_BULK_CREATED` audit entry is written per created Vendor.
+- Success: `{ success: true, summary: { totalRows, created, failed, failures: [{ row, businessName, reason }] } }`
+
 ### `POST /api/admin/vendors/:vendorId/reset-password`
 
 Issue a secure temporary password/reset flow for a Vendor.

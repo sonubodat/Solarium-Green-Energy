@@ -28,6 +28,29 @@ export function normalizeLoginIdentifier(value) {
   return value.trim().toLowerCase();
 }
 
+// Bulk vendor creation derives a login_identifier from just a business name (no username is
+// typed by hand for 500 rows at once) — collapse anything that isn't a letter/digit into a
+// single hyphen. A name that's only punctuation/emoji still needs a usable base, hence the
+// 'vendor' fallback (the caller is responsible for de-duping/suffixing this against existing
+// identifiers, since that requires DB state this pure function doesn't have).
+export function slugifyVendorName(name) {
+  const slug = name
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  return slug || 'vendor';
+}
+
+// Confirmed pattern for bulk-created vendors' optional auto-password: "<name>@123", e.g.
+// "Ram Store" -> "ramstore@123". padEnd guarantees the >=8 character minimum this app requires
+// of every password even for very short names (e.g. "A1" -> "a1000@123", 9 chars).
+export function autoPasswordFor(businessName) {
+  const cleaned = businessName.toLowerCase().replace(/[^a-z0-9]/g, '');
+  const base = (cleaned || 'vendor').padEnd(5, '0');
+  return `${base}@123`;
+}
+
 export function createSessionToken() {
   return randomBytes(32).toString('base64url');
 }

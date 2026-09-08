@@ -8,7 +8,7 @@ import { assignUnassignedQr, generateQrCodes, reassignQr } from '../services/qr.
 import { generateQrPng, generateQrSvg } from '../services/qr-image.js';
 import PDFDocument from 'pdfkit';
 import { randomUUID } from 'node:crypto';
-import { hashPassword, normalizeLoginIdentifier, publicVendor } from '../services/auth.js';
+import { hashPassword, normalizeLoginIdentifier, publicVendor, slugifyVendorName, autoPasswordFor } from '../services/auth.js';
 import { z } from 'zod';
 import { createQrArtworkUrl, createVendorDocumentUrl, removeQrArtwork, removeVendorDocument, uploadQrArtwork, uploadQrProof } from '../services/vendor-documents.js';
 import { generateQrProof, generateQrTemplatePdf } from '../services/qr-proof.js';
@@ -46,6 +46,12 @@ const userUpdateSchema = userSchema.partial().extend({ status: z.enum(['ACTIVE',
 const bulkDeleteSchema = z.object({
 	ids: z.array(z.string().trim().min(1)).min(1).max(100),
 });
+const bulkCreateVendorsSchema = z.object({
+	names: z.array(z.string().trim().min(2).max(160)).min(1).max(500),
+	auto_password: z.boolean().optional().default(false),
+});
+const BULK_VENDOR_MOBILE_RANGE_START = '9000010000';
+const BULK_VENDOR_MOBILE_RANGE_END = '9000020000';
 const vendorPurgeSchema = z.object({ confirm_vendor_name: z.string().trim().min(1).max(160) });
 const importRowSchema = z.object({
 	customer_name: z.string().trim().min(2).max(120),
@@ -519,6 +525,98 @@ adminRoutes.post('/vendors/bulk-delete', requireAuth, requireAdmin, async (reque
 			await Promise.all(vendorIds.map((id) => writeAudit(transaction, request, 'VENDOR_DELETED', 'Vendor', id, { bulk: true, selectedCount: vendorIds.length })));
 		});
 		return response.json({ success: true, deleted: vendorIds, count: vendorIds.length });
+	} catch (error) {
+		return next(error);
+	}
+});
+
+adminRoutes.post('/vendors/bulk-create', requireAuth, requireAdmin, async (request, response, next) => {
+	try {
+		const { names, auto_password: autoPassword } = bulkCreateVendorsSchema.parse(request.body);
+
+		// Measured against the real dev database: one prisma.$transaction() per row (each an
+		// interactive BEGIN/INSERT/INSERT/COMMIT round trip) cost ~0.8s/row here — a 500-row
+		// batch would take several minutes. Every field below is fully resolvable in memory
+		// before touching the database, so the whole batch is built up-front and written with a
+		// small, fixed number of bulk statements instead — regardless of how many names there are.
+		const baseSlugs = names.map((name) => slugifyVendorName(name));
+		const existingRows = await prisma.vendor.findMany({
+			where: { loginIdentifier: { in: [...new Set(baseSlugs)] } },
+			select: { loginIdentifier: true },
+		});
+		const usedIdentifiers = new Set(existingRows.map((row) => row.loginIdentifier));
+
+		function resolveLoginIdentifier(baseSlug) {
+			let candidate = baseSlug;
+			let suffix = 2;
+			while (usedIdentifiers.has(candidate)) {
+				candidate = `${baseSlug}-${suffix}`;
+				suffix += 1;
+			}
+			usedIdentifiers.add(candidate);
+			return candidate;
+		}
+
+		// Placeholder mobile numbers live in a reserved band, distinct from the fixed numbers
+		// used by the PUBLIC-GENERAL/COMPANY-IMPORT sentinel vendors, so they're recognizable as
+		// "needs a real number" rather than colliding with either sentinel's identity. Not a
+		// uniqueness requirement (mobile_number has no unique constraint) — just admin clarity.
+		const lastPlaceholder = await prisma.vendor.findFirst({
+			where: { mobileNumber: { gte: BULK_VENDOR_MOBILE_RANGE_START, lt: BULK_VENDOR_MOBILE_RANGE_END } },
+			orderBy: { mobileNumber: 'desc' },
+			select: { mobileNumber: true },
+		});
+		let nextMobile = lastPlaceholder ? Number(lastPlaceholder.mobileNumber) + 1 : Number(BULK_VENDOR_MOBILE_RANGE_START) + 1;
+
+		// Password hashing (scrypt) is CPU-bound, not a DB round trip, so it's safe to run
+		// concurrently across the whole batch without touching the connection pool at all.
+		const rows = await Promise.all(names.map(async (businessName, index) => {
+			const loginIdentifier = resolveLoginIdentifier(baseSlugs[index]);
+			const mobileNumber = String(nextMobile + index);
+			const passwordHash = autoPassword ? await hashPassword(autoPasswordFor(businessName)) : null;
+			return { businessName, ownerName: businessName, loginIdentifier, mobileNumber, passwordHash };
+		}));
+
+		// Every loginIdentifier was just resolved to be unique both against the DB and within
+		// this batch, so skipDuplicates only ever matters for a genuine race (another request
+		// claiming the same identifier between the read above and this write) — rare, and
+		// detected below by diffing the requested identifiers against what actually landed.
+		await prisma.vendor.createMany({ data: rows, skipDuplicates: true });
+
+		const insertedRows = await prisma.vendor.findMany({
+			where: { loginIdentifier: { in: rows.map((row) => row.loginIdentifier) } },
+			select: { id: true, loginIdentifier: true },
+		});
+		const insertedIdByIdentifier = new Map(insertedRows.map((row) => [row.loginIdentifier, row.id]));
+
+		if (insertedRows.length) {
+			await prisma.auditLog.createMany({
+				data: insertedRows.map((row) => ({
+					actorUserId: request.auth.user.id,
+					actorRole: request.auth.user.role,
+					action: 'VENDOR_BULK_CREATED',
+					entity: 'Vendor',
+					entityId: row.id,
+					metadata: { batchSize: names.length },
+				})),
+			});
+		}
+
+		const created = [];
+		const failures = [];
+		rows.forEach((row, index) => {
+			const id = insertedIdByIdentifier.get(row.loginIdentifier);
+			if (id) {
+				created.push({ row: index + 1, id, businessName: row.businessName, loginIdentifier: row.loginIdentifier });
+			} else {
+				failures.push({ row: index + 1, businessName: row.businessName, reason: 'LOGIN_IDENTIFIER_TAKEN' });
+			}
+		});
+
+		return response.status(201).json({
+			success: true,
+			summary: { totalRows: names.length, created: created.length, failed: failures.length, failures },
+		});
 	} catch (error) {
 		return next(error);
 	}
