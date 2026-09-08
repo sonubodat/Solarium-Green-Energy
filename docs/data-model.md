@@ -181,6 +181,8 @@ updated_at
 
 Index `vendor_id`, `qr_id`, `qr_assignment_id`, `customer_identity_id`, `created_at`, and `status`. The lead keeps `vendor_id`, `qr_id`, `qr_assignment_id`, and `scan_id` permanently so QR reassignment cannot change historical ownership.
 
+`qr_id` and `customer_identity_id` are the only required-and-unique attribution fields at the database level; `vendor_id`, `qr_assignment_id`, and `scan_id` are nullable. Two features rely on this to represent a lead that never involved a real QR scan, without any schema change: the public form's scanless-submission fallback (a lazily-created "Solarium Direct" vendor + `PUBLIC-GENERAL` QR, both `vendor_id` and `qr_assignment_id`/`scan_id` populated because `Scan`'s own foreign keys are required) and Admin's CSV lead import (a lazily-created "Company Uploaded Leads" vendor + `COMPANY-IMPORT` QR, with `qr_assignment_id`/`scan_id` left `null` since no scan ever happened). Both patterns exist so every lead still has a real, non-null `vendor_id` — required to keep the `CONVERTED` → payout invariant (`Payout.vendor_id` copies `Lead.vendor_id` directly) working without a null-check.
+
 Duplicate prevention must be implemented with a transaction and the configured database constraint. Duplicate scans may be recorded, but they must not create duplicate commissionable or payable attribution.
 
 ### LeadLocation

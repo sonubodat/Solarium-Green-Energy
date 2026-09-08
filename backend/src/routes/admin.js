@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import multer from 'multer';
+import { parse as parseCsv } from 'csv-parse/sync';
 import { requireAuth, requireAdmin } from '../middleware/auth.js';
 import { prisma } from '../lib/prisma.js';
 import { createPasswordResetToken, resetTokenResponse } from '../services/password-reset.js';
@@ -13,6 +14,8 @@ import { createQrArtworkUrl, createVendorDocumentUrl, removeQrArtwork, removeVen
 import { generateQrProof, generateQrTemplatePdf } from '../services/qr-proof.js';
 import { buildQrCodeSequence, normalizeQrCode, parseQrRange } from '../services/qr-print.js';
 import { env } from '../config/env.js';
+import { normalizePhone, customerHashFor, findExistingLeadByHash } from '../lib/customer-identity.js';
+import { billBands, solarSizeBands } from './public.js';
 
 export const adminRoutes = Router();
 
@@ -44,6 +47,14 @@ const bulkDeleteSchema = z.object({
 	ids: z.array(z.string().trim().min(1)).min(1).max(100),
 });
 const vendorPurgeSchema = z.object({ confirm_vendor_name: z.string().trim().min(1).max(160) });
+const importRowSchema = z.object({
+	customer_name: z.string().trim().min(2).max(120),
+	phone: z.string().trim().min(1),
+});
+const LEAD_STATUS_VALUES = ['NEW', 'CONTACTED', 'QUALIFIED', 'CONVERTED', 'LOST', 'REJECTED', 'DUPLICATE'];
+const MAX_IMPORT_ROWS = 2000;
+const COMPANY_IMPORT_QR_CODE = 'COMPANY-IMPORT';
+const COMPANY_IMPORT_VENDOR_LOGIN = 'company-import';
 
 function pagination(query) {
 	const page = Math.max(Number.parseInt(query.page, 10) || 1, 1);
@@ -55,6 +66,65 @@ async function writeAudit(transaction, request, action, entity, entityId, metada
 	await transaction.auditLog.create({
 		data: { actorUserId: request.auth.user.id, actorRole: request.auth.user.role, action, entity, entityId, metadata },
 	});
+}
+
+// Every CONVERTED lead must have exactly one UNPAID payout row. Shared by the manual status
+// change below and by CSV import, so the invariant can't drift between the two entry points.
+async function ensurePayoutForConvertedLead(transaction, request, lead) {
+	const existingPayout = await transaction.payout.findUnique({ where: { leadId: lead.id }, select: { id: true } });
+	if (existingPayout) return;
+	const payout = await transaction.payout.create({
+		data: { leadId: lead.id, vendorId: lead.vendorId, status: 'UNPAID' },
+		select: { id: true },
+	});
+	await writeAudit(transaction, request, 'PAYOUT_CREATED_FOR_CONVERTED_LEAD', 'Payout', payout.id, { leadId: lead.id });
+}
+
+// A CSV-imported lead didn't come from any real QR scan or vendor referral, but Lead.qrId and
+// Lead.vendorId (needed so the CONVERTED->Payout invariant above works unmodified) are still
+// required. This mirrors ensureGeneralAssignment() in public.js (the existing "Solarium Direct"
+// fallback for scanless public submissions) with one dedicated, lazily-upserted sentinel vendor
+// + QR code — but skips creating a Scan/QrAssignment, since no scan ever happened and those FKs
+// are nullable on Lead.
+async function ensureCompanyImportVendor(transaction) {
+	const vendor = await transaction.vendor.upsert({
+		where: { loginIdentifier: COMPANY_IMPORT_VENDOR_LOGIN },
+		create: {
+			businessName: 'Company Uploaded Leads',
+			ownerName: 'Solarium Team',
+			loginIdentifier: COMPANY_IMPORT_VENDOR_LOGIN,
+			mobileNumber: '9000000001',
+			mustChangePassword: false,
+			status: 'ACTIVE',
+		},
+		update: {},
+		select: { id: true, businessName: true },
+	});
+	const qr = await transaction.qrCode.upsert({
+		where: { code: COMPANY_IMPORT_QR_CODE },
+		create: { code: COMPANY_IMPORT_QR_CODE, status: 'ACTIVE' },
+		update: {},
+		select: { id: true },
+	});
+	return { vendorId: vendor.id, businessName: vendor.businessName, qrId: qr.id };
+}
+
+function normalizeImportStatus(rawStatus) {
+	if (!rawStatus) return 'NEW';
+	const trimmed = String(rawStatus).trim().toLowerCase();
+	return LEAD_STATUS_VALUES.find((value) => value.toLowerCase() === trimmed) || 'NEW';
+}
+
+function normalizeImportBand(rawValue, allowedValues) {
+	if (!rawValue) return null;
+	const trimmed = String(rawValue).trim().toLowerCase();
+	return allowedValues.find((value) => value.toLowerCase() === trimmed) || null;
+}
+
+function parseImportDate(rawValue) {
+	if (!rawValue) return new Date();
+	const parsed = new Date(rawValue);
+	return Number.isNaN(parsed.getTime()) ? new Date() : parsed;
 }
 
 function normalizeMobile(value) {
@@ -1269,6 +1339,156 @@ adminRoutes.get('/leads/export', requireAuth, requireAdmin, async (request, resp
 	}
 });
 
+adminRoutes.get('/leads/import-template', requireAuth, requireAdmin, (request, response) => {
+	const csv = toCsv(
+		['customer_name', 'phone', 'email', 'location', 'pincode', 'average_electricity_bill', 'solar_size', 'status', 'created_at'],
+		[['Jane Doe', '9876543210', 'jane@example.com', 'Pune, Maharashtra', '411001', '3-4k', '3-4 kW', 'NEW', '2026-01-15']]
+	);
+	response.setHeader('Content-Type', 'text/csv; charset=utf-8');
+	response.setHeader('Content-Disposition', 'attachment; filename="leads-import-template.csv"');
+	return response.send(csv);
+});
+
+const csvUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
+
+adminRoutes.post('/leads/import', requireAuth, requireAdmin, csvUpload.single('file'), async (request, response, next) => {
+	try {
+		if (!request.file) {
+			const error = new Error('Upload a CSV file.');
+			error.statusCode = 400;
+			error.code = 'CSV_FILE_REQUIRED';
+			throw error;
+		}
+		if (!/\.csv$/i.test(request.file.originalname || '')) {
+			const error = new Error('Upload a .csv file.');
+			error.statusCode = 400;
+			error.code = 'INVALID_CSV_FILE';
+			throw error;
+		}
+
+		let records;
+		try {
+			records = parseCsv(request.file.buffer.toString('utf-8'), {
+				columns: (headerRow) => headerRow.map((header) => header.trim().toLowerCase().replace(/\s+/g, '_')),
+				trim: true,
+				skip_empty_lines: true,
+			});
+		} catch (parseError) {
+			const error = new Error('Could not read the CSV file. Check the format and try again.');
+			error.statusCode = 400;
+			error.code = 'CSV_PARSE_FAILED';
+			throw error;
+		}
+
+		if (records.length === 0) {
+			const error = new Error('The CSV file has no data rows.');
+			error.statusCode = 400;
+			error.code = 'CSV_EMPTY';
+			throw error;
+		}
+		if (records.length > MAX_IMPORT_ROWS) {
+			const error = new Error(`Import is limited to ${MAX_IMPORT_ROWS} rows per file. Split the file and try again.`);
+			error.statusCode = 400;
+			error.code = 'CSV_TOO_MANY_ROWS';
+			throw error;
+		}
+
+		const companyVendor = await prisma.$transaction((transaction) => ensureCompanyImportVendor(transaction));
+
+		const duplicates = [];
+		const invalid = [];
+		let imported = 0;
+
+		for (let index = 0; index < records.length; index += 1) {
+			const rowNumber = index + 2; // header is row 1
+			const record = records[index];
+			const nameInput = record.customer_name || record.name || '';
+			const phoneInput = record.phone || record.mobile || record.mobile_number || '';
+
+			const rowResult = importRowSchema.safeParse({ customer_name: nameInput, phone: phoneInput });
+			if (!rowResult.success) {
+				invalid.push({ row: rowNumber, reason: 'Missing or invalid customer name / phone number.' });
+				continue;
+			}
+
+			const normalizedPhone = normalizePhone(rowResult.data.phone);
+			if (!/^[6-9]\d{9}$/.test(normalizedPhone)) {
+				invalid.push({ row: rowNumber, reason: 'Phone number is not a valid Indian mobile number.' });
+				continue;
+			}
+
+			const customerHash = customerHashFor(normalizedPhone);
+			const existingLead = await findExistingLeadByHash(customerHash);
+			if (existingLead) {
+				duplicates.push({ row: rowNumber, phone: normalizedPhone });
+				continue;
+			}
+
+			const status = normalizeImportStatus(record.status);
+			const email = record.email ? String(record.email).trim() || null : null;
+			const location = record.location ? String(record.location).trim() || null : null;
+			const pincode = record.pincode ? String(record.pincode).trim() || null : null;
+			const averageElectricityBill = normalizeImportBand(record.average_electricity_bill, billBands);
+			const solarSize = normalizeImportBand(record.solar_size, solarSizeBands);
+			const createdAt = parseImportDate(record.created_at || record.date || record.lead_date);
+
+			try {
+				await prisma.$transaction(async (transaction) => {
+					const customerIdentity = await transaction.customerIdentity.upsert({
+						where: { hash: customerHash },
+						create: { hash: customerHash },
+						update: {},
+						select: { id: true },
+					});
+					const createdLead = await transaction.lead.create({
+						data: {
+							vendorId: companyVendor.vendorId,
+							vendorNameSnapshot: companyVendor.businessName,
+							qrId: companyVendor.qrId,
+							qrAssignmentId: null,
+							scanId: null,
+							customerIdentityId: customerIdentity.id,
+							customerName: rowResult.data.customer_name,
+							phone: normalizedPhone,
+							email,
+							location,
+							pincode,
+							averageElectricityBill,
+							solarSize,
+							status,
+							createdAt,
+						},
+						select: { id: true, vendorId: true, status: true },
+					});
+					await writeAudit(transaction, request, 'LEAD_CSV_IMPORTED', 'Lead', createdLead.id, { phone: normalizedPhone, status });
+					if (status === 'CONVERTED') {
+						await ensurePayoutForConvertedLead(transaction, request, createdLead);
+					}
+				});
+				imported += 1;
+			} catch (rowError) {
+				if (rowError.code === 'P2002') {
+					duplicates.push({ row: rowNumber, phone: normalizedPhone });
+				} else {
+					invalid.push({ row: rowNumber, reason: 'Could not save this row.' });
+				}
+			}
+		}
+
+		return response.status(201).json({
+			success: true,
+			summary: { totalRows: records.length, imported, duplicates, invalid },
+		});
+	} catch (error) {
+		if (error instanceof multer.MulterError && error.code === 'LIMIT_FILE_SIZE') {
+			error.statusCode = 413;
+			error.code = 'CSV_FILE_TOO_LARGE';
+			error.message = 'CSV file must be 5 MB or smaller.';
+		}
+		return next(error);
+	}
+});
+
 adminRoutes.get('/scans', requireAuth, requireAdmin, async (request, response, next) => {
 	try {
 		const { page, limit, skip } = pagination(request.query);
@@ -1331,24 +1551,50 @@ adminRoutes.patch('/leads/:leadId', requireAuth, requireAdmin, async (request, r
 			});
 
 			if (status === 'CONVERTED') {
-				const existingPayout = await transaction.payout.findUnique({ where: { leadId: updated.id }, select: { id: true } });
-				if (!existingPayout) {
-					const payout = await transaction.payout.create({
-						data: {
-							leadId: updated.id,
-							vendorId: updated.vendorId,
-							status: 'UNPAID',
-						},
-						select: { id: true },
-					});
-					await writeAudit(transaction, request, 'PAYOUT_CREATED_FOR_CONVERTED_LEAD', 'Payout', payout.id, { leadId: updated.id });
-				}
+				await ensurePayoutForConvertedLead(transaction, request, updated);
 			}
 
 			await writeAudit(transaction, request, 'LEAD_STATUS_CHANGED', 'Lead', updated.id, { status });
 			return updated;
 		});
 		return response.json({ success: true, lead: { id: lead.id, status: lead.status } });
+	} catch (error) {
+		if (error.code === 'P2025') {
+			error.statusCode = 404;
+			error.code = 'LEAD_NOT_FOUND';
+			error.message = 'Lead was not found.';
+		}
+		return next(error);
+	}
+});
+
+adminRoutes.post('/leads/:leadId/delete', requireAuth, requireAdmin, async (request, response, next) => {
+	try {
+		const lead = await prisma.lead.findUnique({
+			where: { id: request.params.leadId },
+			select: { id: true, customerName: true, payout: { select: { status: true } } },
+		});
+		if (!lead) {
+			return response.status(404).json({ success: false, error: { code: 'LEAD_NOT_FOUND', message: 'Lead was not found.' } });
+		}
+		// A payout that already recorded a real payment is financial history — protect it the
+		// same way vendor/QR deletion protects their own history. An UNPAID payout carries no
+		// such record yet, so it's safe to remove along with the lead.
+		if (lead.payout && lead.payout.status !== 'UNPAID') {
+			return response.status(409).json({
+				success: false,
+				error: { code: 'LEAD_PAYOUT_NOT_UNPAID', message: 'This lead has a paid or partially-paid payout and cannot be deleted.' },
+			});
+		}
+		await prisma.$transaction(async (transaction) => {
+			if (lead.payout) {
+				await transaction.payout.delete({ where: { leadId: lead.id } });
+			}
+			await transaction.leadLocation.deleteMany({ where: { leadId: lead.id } });
+			await transaction.lead.delete({ where: { id: lead.id } });
+			await writeAudit(transaction, request, 'LEAD_DELETED', 'Lead', lead.id, { customerName: lead.customerName });
+		});
+		return response.json({ success: true });
 	} catch (error) {
 		if (error.code === 'P2025') {
 			error.statusCode = 404;

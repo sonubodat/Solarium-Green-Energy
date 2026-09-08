@@ -353,6 +353,32 @@ Change a lead status.
 - Request: `status` (`NEW`, `CONTACTED`, `QUALIFIED`, `CONVERTED`, `REJECTED`, or `DUPLICATE`)
 - Rules: preserve immutable attribution and write an audit log; when status becomes `CONVERTED`, ensure a payout record exists for that lead (`UNPAID` by default)
 
+### `POST /api/admin/leads/:leadId/delete`
+
+Permanently delete a lead (and its `LeadLocation`/`UNPAID` payout, if any).
+
+- Authentication: Admin
+- Rules: blocked with `409 LEAD_PAYOUT_NOT_UNPAID` if the lead's payout has already recorded a real payment (`PAID` or `PARTIAL`) — matching the existing rule that a `PAID` payout cannot even be reverted to `UNPAID`; writes an audit log (`LEAD_DELETED`)
+
+### `GET /api/admin/leads/import-template`
+
+Download a blank CSV template for `POST /api/admin/leads/import`, with the exact expected header row and one example row.
+
+- Authentication: Admin
+
+### `POST /api/admin/leads/import`
+
+Bulk-import pre-existing leads a company already has, without any QR scan or vendor referral. Imported leads are attributed to a single dedicated system vendor, "Company Uploaded Leads" (lazily created on first import, mirroring the existing `PUBLIC-GENERAL`/"Solarium Direct" fallback pattern used for scanless public submissions), so they group and filter cleanly alongside organic leads without any schema change.
+
+- Authentication: Admin
+- Request: `multipart/form-data` with the CSV under the `file` field (max 5 MB, max 2,000 data rows)
+- CSV columns: `customer_name`, `phone` (required); `email`, `location`, `pincode`, `average_electricity_bill`, `solar_size`, `status`, `created_at` (all optional)
+- Validation is lenient by design: only `customer_name` and a valid Indian mobile number are required per row. `pincode`/`email`/band fields are stored as given (or left blank) and never reject a row. An unrecognized `status` defaults to `NEW`. A present and parseable `created_at` is preserved as the lead's creation date; otherwise the import time is used.
+- Duplicate handling: a row whose phone number already belongs to any existing lead (organic or previously imported) is skipped and reported — never overwritten, and never exposing the other lead's vendor (same privacy rule as the public duplicate-customer flow)
+- A row with `status = CONVERTED` gets an `UNPAID` payout created automatically, via the same shared invariant `PATCH /api/admin/leads/:leadId` uses
+- Response: `{ success, summary: { totalRows, imported, duplicates: [{row, phone}], invalid: [{row, reason}] } }`
+- Rules: each row is created in its own short transaction (not one whole-file transaction), so one bad row never blocks the rest; each successfully imported lead writes an audit log entry (`LEAD_CSV_IMPORTED`)
+
 ### `GET /api/admin/payouts`
 
 List manual payout-status records.

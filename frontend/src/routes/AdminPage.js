@@ -88,6 +88,9 @@ function AdminPage() {
 
   const [showCreateVendor, setShowCreateVendor] = useState(false);
   const [showGenerateQr, setShowGenerateQr] = useState(false);
+  const [showImportLeads, setShowImportLeads] = useState(false);
+  const [importFile, setImportFile] = useState(null);
+  const [importResult, setImportResult] = useState(null);
   const [outputMode, setOutputMode] = useState(null);
   const [showTemplateForm, setShowTemplateForm] = useState(false);
   const [showCreateStaff, setShowCreateStaff] = useState(false);
@@ -1102,6 +1105,31 @@ function AdminPage() {
     }
   }
 
+  async function deleteLead(lead) {
+    if (
+      !window.confirm(
+        `Delete the lead for ${lead.customerName || lead.phone || 'this customer'}? This cannot be undone.`
+      )
+    ) {
+      return;
+    }
+
+    setLoading(true);
+
+    try {
+      await apiRequest(`/admin/leads/${lead.id}/delete`, { method: 'POST' });
+      await loadAdminResource('leads', adminPage, undefined, undefined, true);
+      setDetailLead(null);
+      setMessage('Lead deleted.');
+      setMessageType('success');
+    } catch (error) {
+      setMessage(error.message);
+      setMessageType('error');
+    } finally {
+      setLoading(false);
+    }
+  }
+
   async function createStaffUser(event) {
     event.preventDefault();
 
@@ -1262,6 +1290,38 @@ function AdminPage() {
 
   function downloadLeadsCsv() {
     window.location.href = `${API_BASE_URL}/admin/leads/export`;
+  }
+
+  function downloadLeadsImportTemplate() {
+    window.location.href = `${API_BASE_URL}/admin/leads/import-template`;
+  }
+
+  async function importLeadsCsv(event) {
+    event.preventDefault();
+    if (!importFile) return;
+    setLoading(true);
+    setMessage('');
+    setMessageType('');
+
+    try {
+      const body = new FormData();
+      body.append('file', importFile);
+
+      const result = await apiRequest('/admin/leads/import', {
+        method: 'POST',
+        body,
+      });
+
+      setImportResult(result.summary);
+      setImportFile(null);
+      setShowImportLeads(false);
+      await loadAdminResource('leads', adminPage, undefined, undefined, true);
+    } catch (error) {
+      setMessage(error.message);
+      setMessageType('error');
+    } finally {
+      setLoading(false);
+    }
   }
 
   function renderStats() {
@@ -2507,6 +2567,14 @@ function AdminPage() {
             </button>
 
             <button
+              className="admin-primary-button"
+              onClick={() => setShowImportLeads((current) => !current)}
+            >
+              <Icon path={ICONS.plus} />
+              Import CSV
+            </button>
+
+            <button
               className="admin-outline-button"
               onClick={() =>
                 loadAdminResource(
@@ -2523,6 +2591,50 @@ function AdminPage() {
             </button>
           </div>
         </div>
+
+        {showImportLeads && (
+          <form onSubmit={importLeadsCsv} className="admin-form-card admin-leads-import">
+            <div>
+              <div className="admin-form-title">Import company leads</div>
+              <p>
+                Upload a CSV of leads the company already has. Imported
+                leads are stored as "Company Uploaded Leads" — no QR scan
+                or vendor referral is involved.
+              </p>
+            </div>
+            <button
+              type="button"
+              className="admin-outline-button"
+              onClick={downloadLeadsImportTemplate}
+            >
+              Download template
+            </button>
+            <input
+              type="file"
+              accept=".csv,text/csv"
+              onChange={(event) =>
+                setImportFile(event.target.files?.[0] || null)
+              }
+            />
+            <small>
+              {importFile ? importFile.name : 'Select a .csv file (max 5 MB, 2000 rows)'}
+            </small>
+            <button className="admin-primary-button" disabled={loading || !importFile}>
+              {loading ? 'Importing...' : 'Import'}
+            </button>
+            <button
+              type="button"
+              className="admin-outline-button"
+              disabled={loading}
+              onClick={() => {
+                setShowImportLeads(false);
+                setImportFile(null);
+              }}
+            >
+              Cancel
+            </button>
+          </form>
+        )}
 
         <div className="admin-toolbar">
           <div className="admin-search">
@@ -2696,13 +2808,22 @@ function AdminPage() {
                           <td>{lead.commission?.status || '—'}</td>
 
                           <td>
-                            <button
-                              className="admin-mini-button"
-                              onClick={() => setDetailLead(lead)}
-                            >
-                              <Icon path={ICONS.eye} />
-                              View
-                            </button>
+                            <div className="admin-row-actions">
+                              <button
+                                className="admin-mini-button"
+                                onClick={() => setDetailLead(lead)}
+                              >
+                                <Icon path={ICONS.eye} />
+                                View
+                              </button>
+                              <button
+                                className="admin-mini-button danger"
+                                disabled={loading}
+                                onClick={() => deleteLead(lead)}
+                              >
+                                Delete
+                              </button>
+                            </div>
                           </td>
                         </tr>
                       ))}
@@ -3570,6 +3691,59 @@ function AdminPage() {
     );
   }
 
+  function renderImportResultModal() {
+    if (!importResult) return null;
+    const duplicates = importResult.duplicates || [];
+    const invalid = importResult.invalid || [];
+    return (
+      <div className="admin-modal-overlay" onClick={() => setImportResult(null)}>
+        <div className="admin-modal admin-deletion-modal" role="dialog" aria-modal="true" aria-label="Lead import result" onClick={(event) => event.stopPropagation()}>
+          <div className="admin-modal-header">
+            <div>
+              <span className="admin-eyebrow">CSV IMPORT</span>
+              <h2>Import complete</h2>
+            </div>
+            <button className="admin-mini-button" onClick={() => setImportResult(null)} aria-label="Close"><Icon path={ICONS.close} /></button>
+          </div>
+          <div className="admin-modal-body">
+            <p className="admin-deletion-lead">
+              {importResult.imported} of {importResult.totalRows} rows imported successfully.
+            </p>
+            {duplicates.length > 0 && (
+              <>
+                <p>{duplicates.length} row(s) skipped as duplicates (phone already has a lead):</p>
+                <div className="admin-deletion-blocked-list">
+                  {duplicates.map((item) => (
+                    <div className="admin-deletion-blocked-item" key={`dup-${item.row}`}>
+                      <strong>Row {item.row}</strong>
+                      <small>{item.phone}</small>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
+            {invalid.length > 0 && (
+              <>
+                <p>{invalid.length} row(s) could not be imported:</p>
+                <div className="admin-deletion-blocked-list">
+                  {invalid.map((item) => (
+                    <div className="admin-deletion-blocked-item" key={`invalid-${item.row}`}>
+                      <strong>Row {item.row}</strong>
+                      <small>{item.reason}</small>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
+            <div className="admin-form-actions">
+              <button className="admin-primary-button" onClick={() => setImportResult(null)}>Done</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   function renderPagination() {
     const meta =
       portalData?.data?.pagination;
@@ -4012,6 +4186,7 @@ function AdminPage() {
         {detailBank && renderBankDetailsModal()}
         {detailAuditLog && renderAuditLogDetailModal()}
         {deletionResult && renderDeletionResultModal()}
+        {importResult && renderImportResultModal()}
       </main>
     </div>
   );

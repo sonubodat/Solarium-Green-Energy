@@ -1,16 +1,15 @@
 import { Router } from 'express';
-import { createHmac } from 'node:crypto';
 import { z } from 'zod';
 import { prisma } from '../lib/prisma.js';
-import { env } from '../config/env.js';
 import { publicRateLimit } from '../middleware/rate-limit.js';
+import { normalizePhone, customerHashFor, customerAlreadyExistsError, findExistingLeadByHash } from '../lib/customer-identity.js';
 
 export const publicRoutes = Router();
 
 const GENERAL_QR_CODE = 'PUBLIC-GENERAL';
 const GENERAL_VENDOR_LOGIN = 'public-general';
-const billBands = ['1-2k', '2-3k', '3-4k', '4-5k', '5-6k', '6-7k', '7-8k', '8-9k', '9-10k', '10k+'];
-const solarSizeBands = ['1-2 kW', '2-3 kW', '3-4 kW', '4-5 kW', '5-6 kW', '6-7 kW', '7-8 kW', '8-9 kW', '9-10 kW', '10+ kW'];
+export const billBands = ['1-2k', '2-3k', '3-4k', '4-5k', '5-6k', '6-7k', '7-8k', '8-9k', '9-10k', '10k+'];
+export const solarSizeBands = ['1-2 kW', '2-3 kW', '3-4 kW', '4-5 kW', '5-6 kW', '6-7 kW', '7-8 kW', '8-9 kW', '9-10 kW', '10+ kW'];
 
 async function resolveActiveAssignmentByQrCode(transaction, qrCode) {
 	return transaction.qrAssignment.findFirst({
@@ -112,48 +111,6 @@ publicRoutes.get('/qr/:qrCode', publicRateLimit, async (request, response, next)
 		return next(error);
 	}
 });
-
-function normalizePhone(rawPhone) {
-	if (typeof rawPhone !== 'string') return '';
-	const digits = rawPhone.replace(/\D/g, '');
-	// Handles +91/91/0091-prefixed and pasted/formatted Indian numbers
-	// (+91 98765 43210, 0091 9876543210, etc.) down to the bare 10 digits — same convention
-	// as the staff-facing normalizeMobile() in admin.js/sales.js/registrations.js.
-	if (digits.startsWith('0091') && digits.length === 14) return digits.slice(4);
-	if (digits.startsWith('91') && digits.length === 12) return digits.slice(2);
-	return digits || rawPhone.trim();
-}
-
-function customerHashFor(normalizedPhone) {
-	if (!env.customerHashSecret) {
-		const error = new Error('Customer identity protection is not configured.');
-		error.statusCode = 503;
-		error.code = 'CUSTOMER_IDENTITY_UNAVAILABLE';
-		throw error;
-	}
-	return createHmac('sha256', env.customerHashSecret).update(normalizedPhone).digest('hex');
-}
-
-function customerAlreadyExistsError() {
-	const error = new Error('This phone number has already been used to submit an enquiry.');
-	error.statusCode = 409;
-	error.code = 'CUSTOMER_ALREADY_EXISTS';
-	return error;
-}
-
-// Business rule: one phone number can create at most one lead across the entire system
-// (global uniqueness, not per-vendor) — confirmed explicitly, not assumed. A customer already
-// attributed to one vendor cannot generate a second lead under a different vendor's QR.
-// The database's unique constraint on Lead.customerIdentityId is the real enforcement (see the
-// migration and the P2002 handling below); this lookup is purely a fast, non-transactional
-// pre-check so the common "already submitted" case never needs to open a transaction or hold a
-// pooled connection at all.
-async function findExistingLeadByHash(customerHash) {
-	return prisma.lead.findFirst({
-		where: { customerIdentity: { hash: customerHash } },
-		select: { id: true },
-	});
-}
 
 publicRoutes.post('/leads/check-phone', publicRateLimit, async (request, response, next) => {
 	try {
