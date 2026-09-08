@@ -217,7 +217,7 @@ function SalesPage() {
 
       await loadSalesVendors();
 
-      setMessage('Vendor created. Assign an unassigned QR next.');
+      setMessage('Solar Mitra created. Assign an unassigned QR next.');
       setMessageType('success');
     } catch (error) {
       setMessage(error.message);
@@ -324,10 +324,10 @@ function SalesPage() {
             <div className="sales-login-heading">
               <div className="sales-eyebrow">SALES PORTAL</div>
 
-              <h1>Get vendors<br />up and running.</h1>
+              <h1>Get Solar Mitras<br />up and running.</h1>
 
               <p>
-                Onboard vendors, activate their QR codes and keep every
+                Onboard Solar Mitras, activate their QR codes and keep every
                 setup moving smoothly.
               </p>
             </div>
@@ -430,10 +430,10 @@ function SalesPage() {
               <div>
                 <div className="sales-eyebrow">SALES WORKSPACE</div>
 
-                <h1>Let&apos;s get vendors<br />live.</h1>
+                <h1>Let&apos;s get Solar Mitras<br />live.</h1>
 
                 <p>
-                  Complete onboarding first, then connect the vendor
+                  Complete onboarding first, then connect the Solar Mitra
                   to their physical QR.
                 </p>
               </div>
@@ -443,7 +443,7 @@ function SalesPage() {
                   <span>1</span>
                   <div>
                     <strong>Onboard</strong>
-                    <small>Vendor setup</small>
+                    <small>Solar Mitra setup</small>
                   </div>
                 </div>
 
@@ -475,12 +475,12 @@ function SalesPage() {
 
                   <div>
                     <span className="sales-card-label">STEP 01</span>
-                    <h2>Onboard vendor</h2>
+                    <h2>Onboard Solar Mitra</h2>
                   </div>
                 </div>
 
                 <p className="sales-card-description">
-                  Vendors who self-registered are listed here. Onboard one to
+                  Solar Mitras who self-registered are listed here. Onboard one to
                   create their login access.
                 </p>
 
@@ -586,7 +586,7 @@ function SalesPage() {
                 </div>
 
                 <p className="sales-card-description">
-                  Scan or enter the QR code printed on the vendor&apos;s
+                  Scan or enter the QR code printed on the Solar Mitra&apos;s
                   physical material and connect it to their account.
                 </p>
 
@@ -674,7 +674,7 @@ function SalesPage() {
                       htmlFor="sales-vendor-picker"
                       className="sales-input-label"
                     >
-                      Assign to vendor
+                      Assign to Solar Mitra
                     </label>
 
                     <select
@@ -686,7 +686,7 @@ function SalesPage() {
                       }
                     >
                       <option value="">
-                        Select vendor
+                        Select Solar Mitra
                       </option>
 
                       {salesVendorOptions.map((vendor) => (
@@ -726,12 +726,12 @@ function SalesPage() {
 
                   <div>
                     <span className="sales-card-label">STEP 01</span>
-                    <h2>Create vendor directly</h2>
+                    <h2>Create Solar Mitra directly</h2>
                   </div>
                 </div>
 
                 <p className="sales-card-description">
-                  Already spoke with a vendor who hasn&apos;t self-registered? Create
+                  Already spoke with a Solar Mitra who hasn&apos;t self-registered? Create
                   their account directly — no verification needed for now.
                 </p>
 
@@ -741,7 +741,7 @@ function SalesPage() {
                     className="sales-primary-button"
                     onClick={() => setShowCreateVendor(true)}
                   >
-                    Create vendor
+                    Create Solar Mitra
                     <Icon path={ICONS.plus} className="sales-button-icon" />
                   </button>
                 ) : (
@@ -807,7 +807,7 @@ function SalesPage() {
                           onChange={(event) => setNewVendor({ ...newVendor, login_identifier: event.target.value })}
                         />
                       </div>
-                      <small>This is what the vendor will type to sign in — not their name or business name.</small>
+                      <small>This is what the Solar Mitra will type to sign in — not their name or business name.</small>
                     </label>
                     <label className="sales-field-labeled">
                       <span>Temporary password</span>
@@ -829,7 +829,7 @@ function SalesPage() {
 
                     <div className="sales-create-vendor-actions">
                       <button type="submit" className="sales-primary-button" disabled={loading}>
-                        {loading ? 'Creating...' : 'Create vendor'}
+                        {loading ? 'Creating...' : 'Create Solar Mitra'}
                         {!loading && <Icon path={ICONS.check} className="sales-button-icon" />}
                       </button>
                       <button

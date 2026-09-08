@@ -63,7 +63,7 @@ function parseBulkVendorNames(text) {
 
 const NAV_ITEMS = [
   ['dashboard', 'Dashboard'],
-  ['vendors', 'Vendors'],
+  ['vendors', 'Solar Mitras'],
   ['qr', 'QR Management'],
   ['leads', 'Leads'],
   ['scans', 'Scans'],
@@ -131,7 +131,7 @@ function AdminPage() {
   const [qrQuantity, setQrQuantity] = useState('20');
   const [qrTemplates, setQrTemplates] = useState([]);
   const [templateDraft, setTemplateDraft] = useState({
-    name: 'Vendor Sticker A4',
+    name: 'Solar Mitra Sticker A4',
     page_width_mm: '210',
     page_height_mm: '297',
     dpi: '300',
@@ -459,7 +459,7 @@ function AdminPage() {
 
       await loadAdminResource('vendors', adminPage);
 
-      setMessage('Vendor created.');
+      setMessage('Solar Mitra created.');
       setMessageType('success');
     } catch (error) {
       setMessage(error.message);
@@ -516,7 +516,7 @@ function AdminPage() {
 
       await loadAdminResource('vendors', adminPage);
 
-      setMessage('Vendor deactivated.');
+      setMessage('Solar Mitra deactivated.');
       setMessageType('success');
     } catch (error) {
       setMessage(error.message);
@@ -529,7 +529,7 @@ function AdminPage() {
   async function deleteVendor(vendorId, businessName) {
     if (
       !window.confirm(
-        `Delete ${businessName}? This only succeeds if the Vendor has no leads, scans, payouts, or QR assignments.`
+        `Delete ${businessName}? This only succeeds if the Solar Mitra has no leads, scans, payouts, or QR assignments.`
       )
     ) {
       return;
@@ -544,7 +544,7 @@ function AdminPage() {
 
       await loadAdminResource('vendors', adminPage);
 
-      setMessage('Vendor deleted.');
+      setMessage('Solar Mitra deleted.');
       setMessageType('success');
     } catch (error) {
       setMessage(error.message);
@@ -556,12 +556,12 @@ function AdminPage() {
 
   async function purgeVendor(vendorId, businessName) {
     const confirmation = window.prompt(
-      `Permanent cleanup will remove ${businessName}, assignments, scans, sessions, registration, and bank documents. Leads will remain as Deleted Vendor records. Type the exact business name to continue:`,
+      `Permanent cleanup will remove ${businessName}, assignments, scans, sessions, registration, and bank documents. Leads will remain as Deleted Solar Mitra records. Type the exact business name to continue:`,
       ''
     );
     if (confirmation === null) return;
     if (confirmation.trim() !== businessName) {
-      setMessage('Vendor purge cancelled: the business name did not match exactly.');
+      setMessage('Solar Mitra purge cancelled: the business name did not match exactly.');
       setMessageType('error');
       return;
     }
@@ -574,7 +574,7 @@ function AdminPage() {
         body: JSON.stringify({ confirm_vendor_name: confirmation.trim() }),
       });
       await loadAdminResource('vendors', adminPage, undefined, undefined, true);
-      setMessage(`${businessName} was permanently cleaned up. Its Leads remain labeled as a deleted Vendor.`);
+      setMessage(`${businessName} was permanently cleaned up. Its Leads remain labeled as a deleted Solar Mitra.`);
       setMessageType('success');
     } catch (error) {
       setMessage(error.message);
@@ -585,7 +585,7 @@ function AdminPage() {
   }
 
   function leadVendorLabel(lead) {
-    return lead.vendor?.businessName || lead.vendorNameSnapshot || 'Deleted Vendor';
+    return lead.vendor?.businessName || lead.vendorNameSnapshot || 'Deleted Solar Mitra';
   }
 
   function startEditVendor(vendor) {
@@ -602,7 +602,7 @@ function AdminPage() {
   async function saveVendorEdit(event, vendorId) {
     event.preventDefault();
 
-    if (!window.confirm('Save these changes to the Vendor record?')) {
+    if (!window.confirm('Save these changes to the Solar Mitra record?')) {
       return;
     }
 
@@ -618,7 +618,7 @@ function AdminPage() {
 
       await loadAdminResource('vendors', adminPage);
 
-      setMessage('Vendor updated.');
+      setMessage('Solar Mitra updated.');
       setMessageType('success');
     } catch (error) {
       setMessage(error.message);
@@ -734,7 +734,7 @@ function AdminPage() {
       setShowTemplateForm(false);
       setTemplateArtwork(null);
       setTemplateDraft({
-        name: 'Vendor Sticker A4',
+        name: 'Solar Mitra Sticker A4',
         page_width_mm: '210',
         page_height_mm: '297',
         dpi: '300',
@@ -890,7 +890,7 @@ function AdminPage() {
     ).trim();
 
     if (!vendorId) {
-      setMessage('Select a vendor first.');
+      setMessage('Select a Solar Mitra first.');
       setMessageType('error');
       return;
     }
@@ -902,7 +902,7 @@ function AdminPage() {
     if (
       !window.confirm(
         `${reassign ? 'Reassign' : 'Assign'} ${qr.code} to ${
-          vendor?.businessName || 'the selected Vendor'
+          vendor?.businessName || 'the selected Solar Mitra'
         }?`
       )
     ) {
@@ -970,15 +970,15 @@ function AdminPage() {
 
   async function bulkDeleteVendors() {
     if (!selectedVendorIds.length) return;
-    if (!window.confirm(`Delete ${selectedVendorIds.length} selected Vendor${selectedVendorIds.length === 1 ? '' : 's'}? Vendors with history will block the entire operation.`)) return;
+    if (!window.confirm(`Delete ${selectedVendorIds.length} selected Solar Mitra${selectedVendorIds.length === 1 ? '' : 's'}? Solar Mitras with history will block the entire operation.`)) return;
     setLoading(true);
     try {
       const result = await apiRequest('/admin/vendors/bulk-delete', { method: 'POST', body: JSON.stringify({ ids: selectedVendorIds }) });
-      setDeletionResult({ entity: 'Vendors', deleted: result.count, blocked: [] });
+      setDeletionResult({ entity: 'Solar Mitras', deleted: result.count, blocked: [] });
       setSelectedVendorIds([]);
       await loadAdminResource('vendors', adminPage, undefined, undefined, true);
     } catch (error) {
-      if (error.code === 'BULK_DELETE_BLOCKED') setDeletionResult({ entity: 'Vendors', deleted: 0, blocked: error.details || [] });
+      if (error.code === 'BULK_DELETE_BLOCKED') setDeletionResult({ entity: 'Solar Mitras', deleted: 0, blocked: error.details || [] });
       else { setMessage(error.message); setMessageType('error'); }
     } finally {
       setLoading(false);
@@ -1021,7 +1021,7 @@ function AdminPage() {
     if (
       !window.confirm(
         `${isReassign ? 'Reassign' : 'Assign'} ${scannedQr.code} to ${
-          vendor?.businessName || 'the selected Vendor'
+          vendor?.businessName || 'the selected Solar Mitra'
         }?`
       )
     ) {
@@ -1079,7 +1079,7 @@ function AdminPage() {
     if (
       !window.confirm(
         `Mark ${
-          payout.vendor?.businessName || 'this Vendor'
+          payout.vendor?.businessName || 'this Solar Mitra'
         } payout as ${status}?`
       )
     ) {
@@ -1375,8 +1375,8 @@ function AdminPage() {
     const data = portalData?.data || {};
 
     const stats = [
-      ['Total Vendors', data.totalVendors ?? 0, 'store'],
-      ['Active Vendors', data.activeVendors ?? 0, 'users'],
+      ['Total Solar Mitras', data.totalVendors ?? 0, 'store'],
+      ['Active Solar Mitras', data.activeVendors ?? 0, 'users'],
       ['Total QR Codes', data.totalQrCodes ?? 0, 'qr'],
       ['Unassigned QR', data.unassignedQrCodes ?? 0, 'qr'],
       ['Total Scans', data.totalScans ?? 0, 'scan'],
@@ -1395,7 +1395,7 @@ function AdminPage() {
             <span className="admin-eyebrow">OVERVIEW</span>
             <h2>System at a glance</h2>
             <p>
-              Everything important across vendors, QR,
+              Everything important across Solar Mitras, QR,
               customers, leads and commissions.
             </p>
           </div>
@@ -1443,8 +1443,8 @@ function AdminPage() {
           >
             <Icon path={ICONS.store} />
             <div>
-              <strong>Manage vendors</strong>
-              <span>View, edit and control vendor access</span>
+              <strong>Manage Solar Mitras</strong>
+              <span>View, edit and control Solar Mitra access</span>
             </div>
             <Icon path={ICONS.arrow} />
           </button>
@@ -1519,11 +1519,11 @@ function AdminPage() {
         <div className="admin-resource-heading">
           <div>
             <span className="admin-eyebrow">
-              VENDOR MANAGEMENT
+              SOLAR MITRA MANAGEMENT
             </span>
-            <h2>Vendors</h2>
+            <h2>Solar Mitras</h2>
             <p>
-              Manage every vendor account and its QR
+              Manage every Solar Mitra account and its QR
               relationship.
             </p>
           </div>
@@ -1538,7 +1538,7 @@ function AdminPage() {
               }
             >
               <Icon path={ICONS.plus} />
-              Add vendor
+              Add Solar Mitra
             </button>
 
             <button
@@ -1557,7 +1557,7 @@ function AdminPage() {
             className="admin-form-card"
           >
             <div className="admin-form-title">
-              Create vendor
+              Create Solar Mitra
             </div>
 
             <div className="admin-form-grid">
@@ -1617,7 +1617,7 @@ function AdminPage() {
                   }
                 />
                 <small>
-                  This is what the Vendor will type to sign in — not their name or business name.
+                  This is what the Solar Mitra will type to sign in — not their name or business name.
                 </small>
               </label>
 
@@ -1680,7 +1680,7 @@ function AdminPage() {
               >
                 {loading
                   ? 'Creating...'
-                  : 'Create vendor'}
+                  : 'Create Solar Mitra'}
               </button>
             </div>
           </form>
@@ -1692,7 +1692,7 @@ function AdminPage() {
             <input
               id="vendor-search"
               name="vendor_search"
-              placeholder="Search vendors..."
+              placeholder="Search Solar Mitras..."
               value={search}
               onChange={(event) =>
                 setSearch(event.target.value)
@@ -1732,7 +1732,7 @@ function AdminPage() {
             <thead>
               <tr>
                 <th className="admin-check-cell">Select</th>
-                <th>Vendor</th>
+                <th>Solar Mitra</th>
                 <th>Owner</th>
                 <th>QR</th>
                 <th>Status</th>
@@ -1934,7 +1934,7 @@ function AdminPage() {
                     colSpan="7"
                     className="admin-empty"
                   >
-                    No vendors found.
+                    No Solar Mitras found.
                   </td>
                 </tr>
               )}
@@ -2073,7 +2073,7 @@ function AdminPage() {
                   value={scanVendorId}
                   onChange={(event) => setScanVendorId(event.target.value)}
                 >
-                  <option value="">Select a vendor...</option>
+                  <option value="">Select a Solar Mitra...</option>
                   {vendorLookup.map((vendor) => (
                     <option key={vendor.id} value={vendor.id}>
                       {vendor.businessName}
@@ -2460,10 +2460,10 @@ function AdminPage() {
             <thead>
               <tr>
                 <th>QR ID</th>
-                <th>Current vendor</th>
+                <th>Current Solar Mitra</th>
                 <th>Status</th>
                 <th>Assigned date</th>
-                <th>Vendor action</th>
+                <th>Solar Mitra action</th>
               </tr>
             </thead>
 
@@ -2530,7 +2530,7 @@ function AdminPage() {
                             }
                           >
                             <option value="">
-                              Select vendor
+                              Select Solar Mitra
                             </option>
 
                             {vendorLookup.map(
@@ -2656,7 +2656,7 @@ function AdminPage() {
               <p>
                 Upload a CSV of leads the company already has. Imported
                 leads are stored as "Company Uploaded Leads" — no QR scan
-                or vendor referral is involved.
+                or Solar Mitra referral is involved.
               </p>
             </div>
             <button
@@ -2962,8 +2962,8 @@ function AdminPage() {
             <div className="admin-modal-section">
               <h3>Attribution</h3>
               <dl className="admin-modal-fields">
-                <dt>Vendor</dt>
-                <dd>{lead.vendor ? lead.vendor.businessName : `Deleted Vendor: ${lead.vendorNameSnapshot || 'Unknown'}`}</dd>
+                <dt>Solar Mitra</dt>
+                <dd>{lead.vendor ? lead.vendor.businessName : `Deleted Solar Mitra: ${lead.vendorNameSnapshot || 'Unknown'}`}</dd>
                 <dt>QR code</dt>
                 <dd>{lead.qr?.code || '—'}</dd>
                 <dt>Lead status</dt>
@@ -3000,7 +3000,7 @@ function AdminPage() {
               <dl className="admin-modal-fields mono">
                 <dt>Lead ID</dt>
                 <dd>{lead.id}</dd>
-                <dt>Vendor ID</dt>
+                <dt>Solar Mitra ID</dt>
                 <dd>{lead.vendorId}</dd>
                 <dt>QR ID</dt>
                 <dd>{lead.qrId}</dd>
@@ -3028,7 +3028,7 @@ function AdminPage() {
             <h2>Scans</h2>
             <p>
               Monitor QR scans and their resolved
-              vendor attribution.
+              Solar Mitra attribution.
             </p>
           </div>
 
@@ -3055,7 +3055,7 @@ function AdminPage() {
               <tr>
                 <th>Scan ID</th>
                 <th>QR</th>
-                <th>Vendor</th>
+                <th>Solar Mitra</th>
                 <th>Customer</th>
                 <th>Scanned</th>
               </tr>
@@ -3179,7 +3179,7 @@ function AdminPage() {
                     aria-expanded={isOpen}
                   >
                     <Icon path={ICONS.arrow} className={`admin-vendor-group-chevron ${isOpen ? 'open' : ''}`} />
-                    <span className="admin-vendor-group-name">{group.vendor?.businessName || 'Unknown vendor'}</span>
+                    <span className="admin-vendor-group-name">{group.vendor?.businessName || 'Unknown Solar Mitra'}</span>
                     <span className="admin-vendor-group-count">{group.payouts.length} {group.payouts.length === 1 ? 'commission' : 'commissions'}</span>
                   </button>
 
@@ -3679,7 +3679,7 @@ function AdminPage() {
     const details = detailBank.details;
     return (
       <div className="admin-modal-overlay" onClick={() => setDetailBank(null)}>
-        <div className="admin-modal" role="dialog" aria-modal="true" aria-label="Vendor bank details" onClick={(event) => event.stopPropagation()}>
+        <div className="admin-modal" role="dialog" aria-modal="true" aria-label="Solar Mitra bank details" onClick={(event) => event.stopPropagation()}>
           <div className="admin-modal-header">
             <div>
               <span className="admin-eyebrow">PAYOUT ACCOUNT</span>
@@ -3822,13 +3822,13 @@ function AdminPage() {
           className="admin-modal"
           role="dialog"
           aria-modal="true"
-          aria-label="Bulk create vendors"
+          aria-label="Bulk create Solar Mitras"
           onClick={(event) => event.stopPropagation()}
         >
           <div className="admin-modal-header">
             <div>
-              <span className="admin-eyebrow">VENDOR MANAGEMENT</span>
-              <h2>Bulk create vendors</h2>
+              <span className="admin-eyebrow">SOLAR MITRA MANAGEMENT</span>
+              <h2>Bulk create Solar Mitras</h2>
             </div>
             <button
               className="admin-mini-button"
@@ -3841,7 +3841,7 @@ function AdminPage() {
 
           <form onSubmit={bulkCreateVendors} className="admin-modal-body">
             <p>
-              Paste vendor business names, one per line (from a
+              Paste Solar Mitra business names, one per line (from a
               spreadsheet column), or upload a .csv/.txt file. Up
               to 500 at a time.
             </p>
@@ -3874,7 +3874,7 @@ function AdminPage() {
             </label>
 
             {bulkVendorAutoPassword && loading && (
-              <small>Creating vendors and passwords — this may take up to a minute for large batches.</small>
+              <small>Creating Solar Mitras and passwords — this may take up to a minute for large batches.</small>
             )}
 
             <div className="admin-form-actions">
@@ -3890,7 +3890,7 @@ function AdminPage() {
                 className="admin-primary-button"
                 disabled={loading || detectedNames.length === 0 || overLimit}
               >
-                {loading ? 'Creating...' : `Create ${detectedNames.length} vendor${detectedNames.length === 1 ? '' : 's'}`}
+                {loading ? 'Creating...' : `Create ${detectedNames.length} Solar Mitra${detectedNames.length === 1 ? '' : 's'}`}
               </button>
             </div>
           </form>
@@ -3904,17 +3904,17 @@ function AdminPage() {
     const failures = bulkVendorResult.failures || [];
     return (
       <div className="admin-modal-overlay" onClick={() => setBulkVendorResult(null)}>
-        <div className="admin-modal admin-deletion-modal" role="dialog" aria-modal="true" aria-label="Bulk vendor creation result" onClick={(event) => event.stopPropagation()}>
+        <div className="admin-modal admin-deletion-modal" role="dialog" aria-modal="true" aria-label="Bulk Solar Mitra creation result" onClick={(event) => event.stopPropagation()}>
           <div className="admin-modal-header">
             <div>
               <span className="admin-eyebrow">BULK CREATE</span>
-              <h2>Vendors created</h2>
+              <h2>Solar Mitras created</h2>
             </div>
             <button className="admin-mini-button" onClick={() => setBulkVendorResult(null)} aria-label="Close"><Icon path={ICONS.close} /></button>
           </div>
           <div className="admin-modal-body">
             <p className="admin-deletion-lead">
-              {bulkVendorResult.created} of {bulkVendorResult.totalRows} vendor(s) created successfully.
+              {bulkVendorResult.created} of {bulkVendorResult.totalRows} Solar Mitra(s) created successfully.
             </p>
             {failures.length > 0 && (
               <>
@@ -4126,7 +4126,7 @@ function AdminPage() {
             </h1>
 
             <p>
-              Manage vendors, QR inventory, leads,
+              Manage Solar Mitras, QR inventory, leads,
               commissions and system activity.
             </p>
           </div>

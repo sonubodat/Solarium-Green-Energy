@@ -398,7 +398,7 @@ function VendorPage() {
               </div>
 
               <div>
-                <h2>Vendor login</h2>
+                <h2>Solar Mitra login</h2>
                 <p>Access your partner workspace</p>
               </div>
             </div>
@@ -531,7 +531,7 @@ function VendorPage() {
       <>
         <div className="vendor-welcome">
           <div>
-            <span className="vendor-section-kicker">VENDOR DASHBOARD</span>
+            <span className="vendor-section-kicker">SOLAR MITRA DASHBOARD</span>
 
             <h1>
               Welcome back,{' '}
@@ -549,7 +549,7 @@ function VendorPage() {
             </span>
 
             <div>
-              <strong>{vendor.businessName || 'Vendor Partner'}</strong>
+              <strong>{vendor.businessName || 'Solar Mitra Partner'}</strong>
               <small>Active partner</small>
             </div>
           </div>
@@ -682,7 +682,7 @@ function VendorPage() {
 
               <div>
                 <small>Access</small>
-                <strong>Vendor Partner</strong>
+                <strong>Solar Mitra Partner</strong>
               </div>
 
               <div>
@@ -870,7 +870,7 @@ function VendorPage() {
           <div>
             <span className="vendor-panel-kicker">ACCOUNT</span>
             <h2>Business account</h2>
-            <p>Review your vendor account information.</p>
+            <p>Review your Solar Mitra account information.</p>
           </div>
         </div>
 
@@ -880,7 +880,7 @@ function VendorPage() {
           </div>
 
           <div>
-            <strong>{vendor.businessName || 'Vendor Partner'}</strong>
+            <strong>{vendor.businessName || 'Solar Mitra Partner'}</strong>
             <span>{vendor.ownerName || 'Business Owner'}</span>
           </div>
 
@@ -910,7 +910,7 @@ function VendorPage() {
 
           <div>
             <small>Account access</small>
-            <strong>Vendor Partner</strong>
+            <strong>Solar Mitra Partner</strong>
           </div>
 
           <div>
@@ -1008,8 +1008,8 @@ function VendorPage() {
                 </span>
 
                 <div>
-                  <strong>{vendor.businessName || 'Vendor'}</strong>
-                  <small>Vendor Partner</small>
+                  <strong>{vendor.businessName || 'Solar Mitra'}</strong>
+                  <small>Solar Mitra Partner</small>
                 </div>
               </div>
 
@@ -1030,7 +1030,7 @@ function VendorPage() {
         <main className="vendor-main">
           {renderPasswordSetup(vendor)}
 
-          <nav className="vendor-tabs" aria-label="Vendor navigation">
+          <nav className="vendor-tabs" aria-label="Solar Mitra navigation">
             <button
               type="button"
               className={activeSection === 'overview' ? 'active' : ''}
