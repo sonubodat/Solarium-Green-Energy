@@ -17,6 +17,7 @@ const ICONS = {
   alert: 'M12 9v4m0 4h.01M10.3 3.7 2.5 18a2 2 0 0 0 1.7 3h15.6a2 2 0 0 0 1.7-3L13.7 3.7a2 2 0 0 0-3.4 0Z',
   camera: 'M4 8a2 2 0 0 1 2-2h1l1.2-2h7.6L17 6h1a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8Zm8 3a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7Z',
   plus: 'M12 5v14M5 12h14',
+  target: 'M12 2v3m0 14v3M2 12h3m14 0h3M12 16a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z',
 };
 
 function Icon({ path, className = '' }) {
@@ -55,6 +56,15 @@ function SalesPage() {
   const [showScanner, setShowScanner] = useState(false);
   const [showCreateVendor, setShowCreateVendor] = useState(false);
   const [newVendor, setNewVendor] = useState({ business_name: '', owner_name: '', login_identifier: '', mobile_number: '', password: '' });
+  const [newVendorLocation, setNewVendorLocation] = useState(null);
+  const [locatingVendor, setLocatingVendor] = useState(false);
+  const [vendorLocationError, setVendorLocationError] = useState('');
+  const [shopPhotoFile, setShopPhotoFile] = useState(null);
+  const [qrPlacementPhotoFile, setQrPlacementPhotoFile] = useState(null);
+  const [shopPhotoPreview, setShopPhotoPreview] = useState('');
+  const [qrPlacementPhotoPreview, setQrPlacementPhotoPreview] = useState('');
+  const [showCompleteOnboarding, setShowCompleteOnboarding] = useState(false);
+  const [completeVendorId, setCompleteVendorId] = useState('');
   const [salesVendorOptions, setSalesVendorOptions] = useState([]);
   const [message, setMessage] = useState('');
   const [messageType, setMessageType] = useState('');
@@ -196,6 +206,71 @@ function SalesPage() {
     }
   }
 
+  // Being physically at the shop is the whole point of a Solar Mitra geo-tag, so
+  // enableHighAccuracy is on here (unlike the public enquiry page's rougher "which city"
+  // need) — Sales is standing there and precision is worth the extra GPS settle time.
+  function captureVendorLocation() {
+    if (!navigator.geolocation) {
+      setVendorLocationError('Location is not available on this device.');
+      return;
+    }
+    setLocatingVendor(true);
+    setVendorLocationError('');
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        const { latitude, longitude, accuracy } = position.coords;
+        setNewVendorLocation({ latitude, longitude, accuracy, capturedAt: new Date(position.timestamp).toISOString() });
+        setLocatingVendor(false);
+      },
+      () => {
+        setVendorLocationError('Could not detect the shop’s location — check location permission and try again.');
+        setLocatingVendor(false);
+      },
+      { timeout: 8000, enableHighAccuracy: true },
+    );
+  }
+
+  // Client-side check is just an early sanity/UX check — the server compresses whatever
+  // comes in down to ~100KB before storing it, so this isn't the real cap.
+  function handlePhotoSelect(kind, event) {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+    if (file.size > 15 * 1024 * 1024) {
+      setMessage('Photos must be 15 MB or smaller.');
+      setMessageType('error');
+      return;
+    }
+    if (!['image/jpeg', 'image/png'].includes(file.type)) {
+      setMessage('Upload a JPG or PNG photo.');
+      setMessageType('error');
+      return;
+    }
+    const previewUrl = URL.createObjectURL(file);
+    if (kind === 'shop') {
+      setShopPhotoFile(file);
+      setShopPhotoPreview(previewUrl);
+    } else {
+      setQrPlacementPhotoFile(file);
+      setQrPlacementPhotoPreview(previewUrl);
+    }
+  }
+
+  function resetOnboardingCapture() {
+    setNewVendorLocation(null);
+    setVendorLocationError('');
+    setShopPhotoFile(null);
+    setQrPlacementPhotoFile(null);
+    setShopPhotoPreview('');
+    setQrPlacementPhotoPreview('');
+  }
+
+  async function uploadOnboardingPhoto(vendorId, kind, file) {
+    const body = new FormData();
+    body.append('photo', file);
+    await apiRequest(`/sales/vendors/${vendorId}/photos/${kind}`, { method: 'POST', body });
+  }
+
   async function createVendorDirect(event) {
     event.preventDefault();
 
@@ -204,20 +279,100 @@ function SalesPage() {
     setMessageType('');
 
     try {
+      const body = {
+        ...newVendor,
+        ...(newVendorLocation
+          ? {
+              latitude: newVendorLocation.latitude,
+              longitude: newVendorLocation.longitude,
+              accuracy: newVendorLocation.accuracy,
+              captured_at: newVendorLocation.capturedAt,
+            }
+          : {}),
+      };
       const result = await apiRequest('/sales/vendors', {
         method: 'POST',
-        body: JSON.stringify(newVendor),
+        body: JSON.stringify(body),
       });
 
       if (!mountedRef.current) return;
+      const vendorId = result.vendor.id;
+
+      const photoFailures = [];
+      for (const [kind, file] of [['shop', shopPhotoFile], ['qr-placement', qrPlacementPhotoFile]]) {
+        if (!file) continue;
+        try {
+          await uploadOnboardingPhoto(vendorId, kind, file);
+        } catch (photoError) {
+          photoFailures.push(kind);
+        }
+      }
 
       setNewVendor({ business_name: '', owner_name: '', login_identifier: '', mobile_number: '', password: '' });
+      resetOnboardingCapture();
       setShowCreateVendor(false);
-      setSelectedVendorId(result.vendor.id);
+      setSelectedVendorId(vendorId);
 
       await loadSalesVendors();
 
-      setMessage('Solar Mitra created. Assign an unassigned QR next.');
+      if (photoFailures.length) {
+        const labels = { shop: 'shop', 'qr-placement': 'QR placement' };
+        setMessage(`Solar Mitra created, but the ${photoFailures.map((kind) => labels[kind]).join(' and ')} photo failed to upload — finish it from "Complete Solar Mitra onboarding" below.`);
+        setMessageType('error');
+      } else {
+        setMessage('Solar Mitra created. Assign an unassigned QR next.');
+        setMessageType('success');
+      }
+    } catch (error) {
+      setMessage(error.message);
+      setMessageType('error');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function completeOnboardingLocation() {
+    if (!completeVendorId || !newVendorLocation) return;
+    setLoading(true);
+    setMessage('');
+    setMessageType('');
+    try {
+      await apiRequest(`/sales/vendors/${completeVendorId}/location`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          latitude: newVendorLocation.latitude,
+          longitude: newVendorLocation.longitude,
+          accuracy: newVendorLocation.accuracy,
+          captured_at: newVendorLocation.capturedAt,
+        }),
+      });
+      setNewVendorLocation(null);
+      setMessage('Location saved.');
+      setMessageType('success');
+    } catch (error) {
+      setMessage(error.message);
+      setMessageType('error');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function completeOnboardingPhoto(kind) {
+    const file = kind === 'shop' ? shopPhotoFile : qrPlacementPhotoFile;
+    if (!completeVendorId || !file) return;
+    setLoading(true);
+    setMessage('');
+    setMessageType('');
+    try {
+      await uploadOnboardingPhoto(completeVendorId, kind, file);
+      if (kind === 'shop') {
+        setShopPhotoFile(null);
+        setShopPhotoPreview('');
+      } else {
+        setQrPlacementPhotoFile(null);
+        setQrPlacementPhotoPreview('');
+      }
+      setMessage(`${kind === 'shop' ? 'Shop' : 'QR placement'} photo saved.`);
       setMessageType('success');
     } catch (error) {
       setMessage(error.message);
@@ -739,7 +894,12 @@ function SalesPage() {
                   <button
                     type="button"
                     className="sales-primary-button"
-                    onClick={() => setShowCreateVendor(true)}
+                    onClick={() => {
+                      setShowCompleteOnboarding(false);
+                      setCompleteVendorId('');
+                      resetOnboardingCapture();
+                      setShowCreateVendor(true);
+                    }}
                   >
                     Create Solar Mitra
                     <Icon path={ICONS.plus} className="sales-button-icon" />
@@ -827,6 +987,39 @@ function SalesPage() {
                       </div>
                     </label>
 
+                    <div className="sales-field-labeled">
+                      <span>Shop location (optional)</span>
+                      <button
+                        type="button"
+                        className={`sales-location-button${newVendorLocation ? ' captured' : ''}`}
+                        onClick={captureVendorLocation}
+                        disabled={locatingVendor}
+                      >
+                        <Icon path={ICONS.target} className="sales-field-icon" />
+                        {locatingVendor ? 'Detecting...' : newVendorLocation ? 'Location captured' : 'Capture shop location'}
+                        {newVendorLocation && !locatingVendor && <Icon path={ICONS.check} className="sales-field-icon" />}
+                      </button>
+                      {vendorLocationError && <small className="sales-field-error">{vendorLocationError}</small>}
+                    </div>
+
+                    <label className="sales-field-labeled">
+                      <span>Shop photo (optional)</span>
+                      <div className="sales-field-input">
+                        <Icon path={ICONS.camera} className="sales-field-icon" />
+                        <input type="file" accept="image/jpeg,image/png" onChange={(event) => handlePhotoSelect('shop', event)} />
+                      </div>
+                      {shopPhotoPreview && <img src={shopPhotoPreview} alt="Shop preview" className="sales-photo-preview" />}
+                    </label>
+
+                    <label className="sales-field-labeled">
+                      <span>QR placement photo (optional)</span>
+                      <div className="sales-field-input">
+                        <Icon path={ICONS.camera} className="sales-field-icon" />
+                        <input type="file" accept="image/jpeg,image/png" onChange={(event) => handlePhotoSelect('qr-placement', event)} />
+                      </div>
+                      {qrPlacementPhotoPreview && <img src={qrPlacementPhotoPreview} alt="QR placement preview" className="sales-photo-preview" />}
+                    </label>
+
                     <div className="sales-create-vendor-actions">
                       <button type="submit" className="sales-primary-button" disabled={loading}>
                         {loading ? 'Creating...' : 'Create Solar Mitra'}
@@ -835,13 +1028,127 @@ function SalesPage() {
                       <button
                         type="button"
                         className="sales-cancel-button"
-                        onClick={() => setShowCreateVendor(false)}
+                        onClick={() => {
+                          setShowCreateVendor(false);
+                          resetOnboardingCapture();
+                        }}
                         disabled={loading}
                       >
                         Cancel
                       </button>
                     </div>
                   </form>
+                )}
+              </article>
+
+              <article className="sales-card sales-card-wide">
+                <div className="sales-card-header">
+                  <div className="sales-card-icon">
+                    <Icon path={ICONS.target} />
+                  </div>
+                  <div>
+                    <span className="sales-card-label">ANY TIME</span>
+                    <h2>Complete Solar Mitra onboarding</h2>
+                  </div>
+                </div>
+
+                <p className="sales-card-description">
+                  Missing a Solar Mitra&apos;s shop location or photos from
+                  when they were created? Add them here.
+                </p>
+
+                {!showCompleteOnboarding ? (
+                  <button
+                    type="button"
+                    className="sales-primary-button"
+                    onClick={() => {
+                      setShowCreateVendor(false);
+                      resetOnboardingCapture();
+                      setShowCompleteOnboarding(true);
+                    }}
+                  >
+                    Complete onboarding
+                    <Icon path={ICONS.plus} className="sales-button-icon" />
+                  </button>
+                ) : (
+                  <div className="sales-work-form">
+                    <label className="sales-field-labeled">
+                      <span>Solar Mitra</span>
+                      <div className="sales-field-input">
+                        <Icon path={ICONS.store} className="sales-field-icon" />
+                        <select value={completeVendorId} onChange={(event) => setCompleteVendorId(event.target.value)}>
+                          <option value="">Select Solar Mitra</option>
+                          {salesVendorOptions.map((vendor) => (
+                            <option key={vendor.id} value={vendor.id}>
+                              {vendor.businessName} ({vendor.loginIdentifier})
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    </label>
+
+                    <div className="sales-field-labeled">
+                      <span>Shop location</span>
+                      <button
+                        type="button"
+                        className={`sales-location-button${newVendorLocation ? ' captured' : ''}`}
+                        onClick={captureVendorLocation}
+                        disabled={locatingVendor || !completeVendorId}
+                      >
+                        <Icon path={ICONS.target} className="sales-field-icon" />
+                        {locatingVendor ? 'Detecting...' : newVendorLocation ? 'Location captured' : 'Capture shop location'}
+                      </button>
+                      {vendorLocationError && <small className="sales-field-error">{vendorLocationError}</small>}
+                      {newVendorLocation && (
+                        <button type="button" className="sales-primary-button" disabled={loading} onClick={completeOnboardingLocation}>
+                          Save location
+                        </button>
+                      )}
+                    </div>
+
+                    <label className="sales-field-labeled">
+                      <span>Shop photo</span>
+                      <div className="sales-field-input">
+                        <Icon path={ICONS.camera} className="sales-field-icon" />
+                        <input type="file" accept="image/jpeg,image/png" disabled={!completeVendorId} onChange={(event) => handlePhotoSelect('shop', event)} />
+                      </div>
+                      {shopPhotoPreview && <img src={shopPhotoPreview} alt="Shop preview" className="sales-photo-preview" />}
+                      {shopPhotoFile && (
+                        <button type="button" className="sales-primary-button" disabled={loading} onClick={() => completeOnboardingPhoto('shop')}>
+                          Save shop photo
+                        </button>
+                      )}
+                    </label>
+
+                    <label className="sales-field-labeled">
+                      <span>QR placement photo</span>
+                      <div className="sales-field-input">
+                        <Icon path={ICONS.camera} className="sales-field-icon" />
+                        <input type="file" accept="image/jpeg,image/png" disabled={!completeVendorId} onChange={(event) => handlePhotoSelect('qr-placement', event)} />
+                      </div>
+                      {qrPlacementPhotoPreview && <img src={qrPlacementPhotoPreview} alt="QR placement preview" className="sales-photo-preview" />}
+                      {qrPlacementPhotoFile && (
+                        <button type="button" className="sales-primary-button" disabled={loading} onClick={() => completeOnboardingPhoto('qr-placement')}>
+                          Save QR placement photo
+                        </button>
+                      )}
+                    </label>
+
+                    <div className="sales-create-vendor-actions">
+                      <button
+                        type="button"
+                        className="sales-cancel-button"
+                        onClick={() => {
+                          setShowCompleteOnboarding(false);
+                          setCompleteVendorId('');
+                          resetOnboardingCapture();
+                        }}
+                        disabled={loading}
+                      >
+                        Done
+                      </button>
+                    </div>
+                  </div>
                 )}
               </article>
             </section>

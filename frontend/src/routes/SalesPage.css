@@ -213,6 +213,45 @@
   box-shadow: 0 0 0 3px rgba(0, 111, 174, 0.08);
 }
 
+.sales-location-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 53px;
+  border: 1px solid var(--sales-border);
+  border-radius: 10px;
+  background: #fff;
+  color: var(--sales-text);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.sales-location-button:disabled {
+  color: #8496a3;
+  cursor: wait;
+}
+
+.sales-location-button.captured {
+  color: #2d7250;
+  border-color: #d3e8da;
+  background: #f0f8f3;
+}
+
+.sales-field-error {
+  color: #a54e35;
+  font-size: 12px;
+}
+
+.sales-photo-preview {
+  width: 100%;
+  max-height: 160px;
+  object-fit: cover;
+  border-radius: 10px;
+  border: 1px solid var(--sales-border);
+}
+
 .sales-primary-button {
   min-height: 52px;
   border: 0;

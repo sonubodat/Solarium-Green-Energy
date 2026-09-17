@@ -486,6 +486,60 @@
   height: 15px;
 }
 
+.admin-outline-button.captured {
+  color: #2d7250;
+  border-color: #d3e8da;
+  background: #f0f8f3;
+}
+
+.admin-field-error {
+  color: #a54e35;
+  font-size: 12px;
+}
+
+.admin-photo-preview {
+  width: 100%;
+  max-height: 160px;
+  object-fit: cover;
+  border-radius: 10px;
+  border: 1px solid var(--admin-border);
+  margin-top: 6px;
+}
+
+.admin-onboarding-photos {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 16px;
+  margin-top: 14px;
+}
+
+.admin-coords-row {
+  display: flex;
+  gap: 7px;
+}
+
+.admin-coords-row input {
+  flex: 1;
+  min-width: 0;
+  height: 39px;
+  box-sizing: border-box;
+  border: 1px solid var(--admin-border);
+  border-radius: 7px;
+  padding: 0 11px;
+  outline: 0;
+  color: var(--admin-text);
+  font-size: 11px;
+  background: #fff;
+}
+
+.admin-coords-row input:focus {
+  border-color: rgba(0,111,174,.5);
+}
+
+.admin-coords-row .admin-outline-button {
+  flex-shrink: 0;
+}
+
 /* --------------------------------------------------
    DASHBOARD
 -------------------------------------------------- */
@@ -850,6 +904,30 @@
   color: #a45b42;
 }
 
+.admin-mini-button.danger.solid {
+  color: #fff;
+  background: #c65b3f;
+  border-color: #c65b3f;
+}
+
+.admin-mini-button.danger.solid:hover:not(:disabled) {
+  background: #b34f35;
+  border-color: #b34f35;
+  color: #fff;
+}
+
+.admin-mini-button.primary.solid {
+  color: #fff;
+  background: var(--admin-blue);
+  border-color: var(--admin-blue);
+}
+
+.admin-mini-button.primary.solid:hover:not(:disabled) {
+  background: #005a8c;
+  border-color: #005a8c;
+  color: #fff;
+}
+
 .admin-mini-button.success,
 .admin-mini-button.selected {
   color: #2b7a4e;
@@ -859,6 +937,34 @@
 
 .admin-mini-button:disabled {
   opacity: .5;
+}
+
+/* Inline "Delete -> Confirm/Cancel" pair, in place of a window.confirm() popup. */
+.admin-inline-confirm {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.admin-inline-confirm-cancel {
+  padding: 0 6px;
+}
+
+.admin-inline-confirm-input {
+  min-height: 29px;
+  box-sizing: border-box;
+  width: 170px;
+  border: 1px solid var(--admin-border);
+  border-radius: 6px;
+  padding: 0 8px;
+  outline: 0;
+  color: var(--admin-text);
+  font-size: 9px;
+  background: #fff;
+}
+
+.admin-inline-confirm-input:focus {
+  border-color: rgba(0,111,174,.5);
 }
 
 .admin-table-input,

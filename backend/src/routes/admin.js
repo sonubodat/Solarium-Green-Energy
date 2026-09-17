@@ -10,11 +10,12 @@ import PDFDocument from 'pdfkit';
 import { randomUUID } from 'node:crypto';
 import { hashPassword, normalizeLoginIdentifier, publicVendor, slugifyVendorName, autoPasswordFor } from '../services/auth.js';
 import { z } from 'zod';
-import { createQrArtworkUrl, createVendorDocumentUrl, removeQrArtwork, removeVendorDocument, uploadQrArtwork, uploadQrProof } from '../services/vendor-documents.js';
+import { createQrArtworkUrl, createVendorDocumentUrl, removeQrArtwork, removeVendorDocument, uploadQrArtwork, uploadQrProof, uploadVendorPhoto, removeVendorPhoto, createVendorPhotoUrl } from '../services/vendor-documents.js';
 import { generateQrProof, generateQrTemplatePdf } from '../services/qr-proof.js';
 import { buildQrCodeSequence, normalizeQrCode, parseQrRange } from '../services/qr-print.js';
 import { env } from '../config/env.js';
 import { normalizePhone, customerHashFor, findExistingLeadByHash } from '../lib/customer-identity.js';
+import { geoTagFields, resolveGeoTag } from '../lib/geo-tag.js';
 import { billBands, solarSizeBands } from './public.js';
 
 export const adminRoutes = Router();
@@ -28,9 +29,15 @@ const vendorSchema = z.object({
 	mobile_number: z.string().trim().min(10).max(20),
 	password: z.string().min(8).optional(),
 });
+const vendorCreateSchema = vendorSchema.extend(geoTagFields);
 const vendorUpdateSchema = vendorSchema.partial().extend({
 	status: z.enum(['ACTIVE', 'INACTIVE', 'DELETED']).optional(),
 });
+// Admin's geo-tag isn't live device GPS (typed or pasted instead — see PATCH
+// .../vendors/:vendorId/location below), so the same field shape works for both create and
+// "set/fix later," unlike Sales where only the latter has its own dedicated endpoint.
+const vendorLocationSchema = z.object(geoTagFields);
+const photoUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } });
 const leadStatusSchema = z.object({ status: z.enum(['NEW', 'CONTACTED', 'QUALIFIED', 'CONVERTED', 'LOST', 'REJECTED', 'DUPLICATE']) });
 const payoutStatusSchema = z.object({
 	status: z.enum(['UNPAID', 'PAID', 'PARTIAL']),
@@ -225,11 +232,14 @@ adminRoutes.get('/dashboard', requireAuth, requireAdmin, async (request, respons
 
 adminRoutes.post('/vendors', requireAuth, requireAdmin, async (request, response, next) => {
 	try {
-		const input = vendorSchema.parse(request.body);
+		const input = vendorCreateSchema.parse(request.body);
 		const mobileNumber = normalizeMobile(input.mobile_number);
 		if (!/^[6-9]\d{9}$/.test(mobileNumber)) {
 			return response.status(400).json({ success: false, error: { code: 'INVALID_MOBILE_NUMBER', message: 'Enter a valid Indian mobile number.' } });
 		}
+		// Never blocks creation — a missing/incomplete geo-tag is fine, only a half-supplied
+		// one (lat without lng or vice versa) is rejected, before anything is written.
+		const geoTag = resolveGeoTag(input);
 		const vendor = await prisma.$transaction(async (transaction) => {
 			const created = await transaction.vendor.create({
 				data: {
@@ -240,6 +250,9 @@ adminRoutes.post('/vendors', requireAuth, requireAdmin, async (request, response
 					passwordHash: input.password ? await hashPassword(input.password) : null,
 				},
 			});
+			if (geoTag) {
+				await transaction.vendorOnboardingMedia.create({ data: { vendorId: created.id, ...geoTag } });
+			}
 			await writeAudit(transaction, request, 'VENDOR_CREATED', 'Vendor', created.id);
 			return created;
 		});
@@ -417,11 +430,12 @@ adminRoutes.post('/vendors/:vendorId/delete', requireAuth, requireAdmin, async (
 
 adminRoutes.post('/vendors/:vendorId/purge', requireAuth, requireAdmin, async (request, response, next) => {
 	let bankDocumentKeys = [];
+	let photoKeys = [];
 	try {
 		const { confirm_vendor_name: confirmation } = vendorPurgeSchema.parse(request.body);
 		const vendor = await prisma.vendor.findUnique({
 			where: { id: request.params.vendorId },
-			include: { bankDetails: true },
+			include: { bankDetails: true, onboardingMedia: true },
 		});
 		if (!vendor) return response.status(404).json({ success: false, error: { code: 'VENDOR_NOT_FOUND', message: 'Vendor was not found.' } });
 		if (confirmation !== vendor.businessName) {
@@ -440,6 +454,7 @@ adminRoutes.post('/vendors/:vendorId/purge', requireAuth, requireAdmin, async (r
 			prisma.passwordResetToken.count({ where: { vendorId: vendor.id } }),
 		]);
 		bankDocumentKeys = [vendor.bankDetails?.passbookObjectKey, vendor.bankDetails?.chequeObjectKey].filter(Boolean);
+		photoKeys = [vendor.onboardingMedia?.shopPhotoObjectKey, vendor.onboardingMedia?.qrPlacementPhotoObjectKey].filter(Boolean);
 
 		await prisma.$transaction(async (transaction) => {
 			await transaction.lead.updateMany({
@@ -452,6 +467,7 @@ adminRoutes.post('/vendors/:vendorId/purge', requireAuth, requireAdmin, async (r
 			await transaction.session.deleteMany({ where: { vendorId: vendor.id } });
 			await transaction.passwordResetToken.deleteMany({ where: { vendorId: vendor.id } });
 			await transaction.vendorBankDetails.deleteMany({ where: { vendorId: vendor.id } });
+			await transaction.vendorOnboardingMedia.deleteMany({ where: { vendorId: vendor.id } });
 			await transaction.vendor.delete({ where: { id: vendor.id } });
 			await writeAudit(transaction, request, 'VENDOR_PURGED', 'Vendor', vendor.id, { businessName: vendor.businessName, preservedLeadName: vendor.businessName });
 		});
@@ -461,6 +477,13 @@ adminRoutes.post('/vendors/:vendorId/purge', requireAuth, requireAdmin, async (r
 				await removeVendorDocument(objectKey);
 			} catch (cleanupError) {
 				console.error('Vendor purge document cleanup failed.', cleanupError);
+			}
+		}
+		for (const objectKey of photoKeys) {
+			try {
+				await removeVendorPhoto(objectKey);
+			} catch (cleanupError) {
+				console.error('Vendor purge photo cleanup failed.', cleanupError);
 			}
 		}
 		return response.json({ success: true, vendor_id: vendor.id, preserved_lead_vendor_name: vendor.businessName, removed: { leadsPreserved: leadCount, scans: scanCount, assignments: assignmentCount, registrations: registrationCount, sessions: sessionCount, resetTokens: resetTokenCount } });
@@ -1722,6 +1745,98 @@ adminRoutes.get('/vendors/:vendorId/bank-details', requireAuth, requireAdmin, as
 			},
 		});
 	} catch (error) {
+		return next(error);
+	}
+});
+
+// Coordinates plus signed URLs for both photos, mirroring GET .../bank-details.
+adminRoutes.get('/vendors/:vendorId/onboarding-media', requireAuth, requireAdmin, async (request, response, next) => {
+	try {
+		const media = await prisma.vendorOnboardingMedia.findUnique({ where: { vendorId: request.params.vendorId } });
+		if (!media) return response.json({ success: true, onboarding_media: null });
+		const [shopPhotoUrl, qrPlacementPhotoUrl] = await Promise.all([
+			createVendorPhotoUrl(media.shopPhotoObjectKey),
+			createVendorPhotoUrl(media.qrPlacementPhotoObjectKey),
+		]);
+		return response.json({
+			success: true,
+			onboarding_media: {
+				latitude: media.latitude,
+				longitude: media.longitude,
+				accuracy: media.accuracy,
+				capturedAt: media.capturedAt,
+				shopPhotoUrl,
+				qrPlacementPhotoUrl,
+			},
+		});
+	} catch (error) {
+		return next(error);
+	}
+});
+
+// "Set/fix later" for the geo-tag — unlike Sales' equivalent, this isn't live device GPS;
+// Admin types or pastes coordinates (e.g. relayed by the Sales rep, or copied from Google
+// Maps), so there's no ownership restriction, matching Admin's other vendor-mutation routes.
+adminRoutes.patch('/vendors/:vendorId/location', requireAuth, requireAdmin, async (request, response, next) => {
+	try {
+		const input = vendorLocationSchema.parse(request.body);
+		const geoTag = resolveGeoTag(input);
+		if (!geoTag) {
+			const error = new Error('Provide both latitude and longitude.');
+			error.statusCode = 400;
+			error.code = 'INVALID_LOCATION';
+			throw error;
+		}
+		const vendor = await prisma.vendor.findUnique({ where: { id: request.params.vendorId }, select: { id: true } });
+		if (!vendor) {
+			return response.status(404).json({ success: false, error: { code: 'VENDOR_NOT_FOUND', message: 'Vendor was not found.' } });
+		}
+		await prisma.vendorOnboardingMedia.upsert({
+			where: { vendorId: vendor.id },
+			create: { vendorId: vendor.id, ...geoTag },
+			update: geoTag,
+		});
+		return response.json({ success: true });
+	} catch (error) {
+		return next(error);
+	}
+});
+
+// Attaches (or replaces) a shop photo or a QR-placement photo (where the QR code sticker is
+// placed in the shop) — used both right after creation and to complete/fix onboarding media
+// later. No ownership restriction, matching Admin's other vendor-mutation routes (Admin
+// doesn't scope by salesUserId the way Sales does).
+adminRoutes.post('/vendors/:vendorId/photos/:photoType', requireAuth, requireAdmin, photoUpload.single('photo'), async (request, response, next) => {
+	try {
+		const type = request.params.photoType;
+		if (!['shop', 'qr-placement'].includes(type)) {
+			const error = new Error('Photo type must be shop or qr-placement.');
+			error.statusCode = 400;
+			error.code = 'INVALID_PHOTO_TYPE';
+			throw error;
+		}
+		const vendor = await prisma.vendor.findUnique({ where: { id: request.params.vendorId }, select: { id: true } });
+		if (!vendor) {
+			return response.status(404).json({ success: false, error: { code: 'VENDOR_NOT_FOUND', message: 'Vendor was not found.' } });
+		}
+		const uploaded = await uploadVendorPhoto(vendor.id, type, request.file);
+		try {
+			const existing = await prisma.vendorOnboardingMedia.findUnique({ where: { vendorId: vendor.id } });
+			const data = type === 'shop'
+				? { shopPhotoObjectKey: uploaded.objectKey, shopPhotoFileName: uploaded.fileName, shopPhotoFileSize: uploaded.fileSize, shopPhotoContentType: uploaded.contentType }
+				: { qrPlacementPhotoObjectKey: uploaded.objectKey, qrPlacementPhotoFileName: uploaded.fileName, qrPlacementPhotoFileSize: uploaded.fileSize, qrPlacementPhotoContentType: uploaded.contentType };
+			await prisma.vendorOnboardingMedia.upsert({ where: { vendorId: vendor.id }, create: { vendorId: vendor.id, ...data }, update: data });
+			const previousKey = type === 'shop' ? existing?.shopPhotoObjectKey : existing?.qrPlacementPhotoObjectKey;
+			await removeVendorPhoto(previousKey);
+		} catch (dbError) {
+			await removeVendorPhoto(uploaded.objectKey);
+			throw dbError;
+		}
+		return response.json({ success: true, photo: { type, fileName: uploaded.fileName, fileSize: uploaded.fileSize } });
+	} catch (error) {
+		// A multer size-limit error never reaches here — it's thrown by multer's own
+		// middleware before this handler runs, so Express routes it straight to the global
+		// errorHandler (which distinguishes it by the 'photo' field name). Nothing to remap.
 		return next(error);
 	}
 });

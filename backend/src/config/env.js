@@ -33,4 +33,5 @@ export const env = {
   supabaseServiceRoleKey: process.env.SUPABASE_SERVICE_ROLE_KEY || '',
   supabaseStorageBucket: process.env.SUPABASE_STORAGE_BUCKET || 'vendor-documents',
   supabaseQrStorageBucket: process.env.SUPABASE_QR_STORAGE_BUCKET || 'qr-artifacts',
+  supabaseVendorPhotosBucket: process.env.SUPABASE_VENDOR_PHOTOS_BUCKET || 'vendor-photos',
 };

@@ -123,7 +123,7 @@ Request example:
 
 `pincode` is required. Pincode must be a six-digit Indian pincode beginning with 1-9. `average_electricity_bill` and `solar_size` are optional; when provided, accepted bill bands are `1-2k` through `9-10k` and `10k+`, and accepted solar-size bands are `1-2 kW` through `9-10 kW` and `10+ kW`.
 
-**Optional GPS capture (pilot scope).** `location_lat`/`location_lng`/`location_accuracy`/`location_captured_at` are all optional — sent only if the customer tapped "Use my location" and the browser actually returned coordinates; omitted entirely (not sent as `null`) if they declined or skipped it, and the lead is created normally either way. When present, `location_lat` and `location_lng` must both be present (`400 INVALID_LOCATION` otherwise) and are validated server-side regardless of what the browser sent: latitude in [-90, 90], longitude in [-180, 180], accuracy >= 0 (`400 VALIDATION_ERROR` otherwise). A valid pair creates a `LeadLocation` row 1:1 with the new lead, created only inside the same lead-creation transaction — there is no separate endpoint that could attach a location to an arbitrary `lead_id`. See `data-model.md`'s LeadLocation section for what's deliberately out of scope for this pilot (no vendor/login location, no IP geolocation, no maps/analytics).
+**Optional GPS capture (pilot scope).** `location_lat`/`location_lng`/`location_accuracy`/`location_captured_at` are all optional — sent only if the customer tapped "Use my location" and the browser actually returned coordinates; omitted entirely (not sent as `null`) if they declined or skipped it, and the lead is created normally either way. When present, `location_lat` and `location_lng` must both be present (`400 INVALID_LOCATION` otherwise) and are validated server-side regardless of what the browser sent: latitude in [-90, 90], longitude in [-180, 180], accuracy >= 0 (`400 VALIDATION_ERROR` otherwise). A valid pair creates a `LeadLocation` row 1:1 with the new lead, created only inside the same lead-creation transaction — there is no separate endpoint that could attach a location to an arbitrary `lead_id`. See `data-model.md`'s LeadLocation section for what's deliberately out of scope for this pilot (no login-location history, no IP geolocation, no maps/analytics). Vendor/Solar Mitra shop location is captured separately — see `VendorOnboardingMedia` below.
 
 **Duplicate rule (confirmed): global uniqueness.** One phone number can create at most one lead across the entire system, not one per vendor — a customer already attributed to one vendor is rejected if they scan a different vendor's QR and try to submit again. The server normalizes the phone number and stores only its HMAC identity (`CustomerIdentity.hash`) for deduplication; the hash is never exposed to the client.
 
@@ -177,9 +177,43 @@ Complete onboarding for an eligible registration.
 Create a Vendor directly — the third onboarding path, alongside self-registration-then-onboard and Admin's direct create (`POST /api/admin/vendors`).
 
 - Authentication: Sales
-- Request: `business_name`, `owner_name`, `login_identifier`, `mobile_number`, `password` (temporary — no OTP/mobile verification, matching the rest of this app's vendor-creation paths)
-- Rules: normalize identifiers, store only a password hash, set `must_change_password = true`, set ownership to the creating Sales user (`sales_user_id`), write an audit log (`VENDOR_CREATED`)
+- Request: `business_name`, `owner_name`, `login_identifier`, `mobile_number`, `password` (temporary — no OTP/mobile verification, matching the rest of this app's vendor-creation paths); optional `latitude`, `longitude`, `accuracy`, `captured_at` (the Solar Mitra's shop geo-tag — same validation as `POST /api/public/leads`'s location fields: both-or-neither, `400 INVALID_LOCATION` otherwise)
+- Rules: normalize identifiers, store only a password hash, set `must_change_password = true`, set ownership to the creating Sales user (`sales_user_id`), write an audit log (`VENDOR_CREATED`); a valid geo-tag creates a `VendorOnboardingMedia` row in the same transaction — never blocks creation if omitted
 - Errors: a duplicate `login_identifier` or `mobile_number` returns `409 VENDOR_ALREADY_EXISTS`; an invalid mobile number returns `400 INVALID_MOBILE_NUMBER`
+
+### `PATCH /api/sales/vendors/:vendorId/location`
+
+Set or fix a Solar Mitra's shop geo-tag after creation ("complete later" — Sales only, using live device GPS, since capturing real coordinates only means something if the capturing device is actually at the shop).
+
+- Authentication: Sales (same ownership rule as `GET /api/sales/vendors`: the vendor must be owned by the requesting Sales user, or unowned)
+- Request: `latitude`, `longitude` (both required here — this endpoint's whole purpose is setting them), optional `accuracy`, `captured_at`
+- Rules: upserts the `VendorOnboardingMedia` row's geo fields, leaving any existing photos untouched
+- Errors: `400 INVALID_LOCATION` if latitude/longitude are missing; `404 VENDOR_NOT_FOUND` if not owned/found
+
+### `PATCH /api/admin/vendors/:vendorId/location`
+
+Set or fix a Solar Mitra's shop geo-tag — Admin only. Unlike the Sales endpoint above, Admin isn't at the shop, so this isn't live device GPS: Admin types or pastes coordinates (e.g. relayed by the Sales rep, or copied from Google Maps).
+
+- Authentication: Admin (no ownership restriction, matching Admin's other vendor-mutation routes)
+- Request: `latitude`, `longitude` (both required), optional `accuracy`, `captured_at`
+- Rules: upserts the `VendorOnboardingMedia` row's geo fields, leaving any existing photos untouched
+- Errors: `400 INVALID_LOCATION` if latitude/longitude are missing; `404 VENDOR_NOT_FOUND` if not found
+
+### `POST /api/sales/vendors/:vendorId/photos/:photoType` and `POST /api/admin/vendors/:vendorId/photos/:photoType`
+
+Attach or replace a Solar Mitra's shop photo or QR placement photo — a photo of where the QR code sticker is placed in the shop (`photoType` is `shop` or `qr-placement`). Used both right after creation and to complete/fix onboarding media later — the same endpoint serves both.
+
+- Authentication: Sales (owned-or-unowned vendor only) or Admin (no ownership restriction)
+- Request: `multipart/form-data` with the image under the `photo` field (`image/jpeg` or `image/png`, 15 MB raw upload cap — an abuse ceiling, not the stored size)
+- Rules: the uploaded image is compressed server-side to roughly 800 KB–1 MB (resized, JPEG-re-encoded, EXIF-orientation-corrected) before it reaches the private `vendor-photos` bucket (`SUPABASE_VENDOR_PHOTOS_BUCKET`); only the object key and compressed file's metadata are stored in `VendorOnboardingMedia`; if the database write fails after upload, the just-uploaded object is removed; on a successful replacement, the *previous* object is removed after the new one is saved
+- Errors: `400 INVALID_PHOTO_TYPE` (bad `photoType` or non-image upload), `413 PHOTO_TOO_LARGE` (over 15 MB raw), `404 VENDOR_NOT_FOUND`
+
+### `GET /api/admin/vendors/:vendorId/onboarding-media`
+
+View a Solar Mitra's captured geo-tag and both photos — Admin only.
+
+- Authentication: Admin
+- Response: `{ latitude, longitude, accuracy, capturedAt, shopPhotoUrl, qrPlacementPhotoUrl }`, or `{ onboarding_media: null }` if nothing has been captured yet. Photo URLs are short-lived (300s) signed URLs, never raw object keys — the bucket is never made public.
 
 ### `GET /api/sales/qr/:code`
 
@@ -211,10 +245,11 @@ List all vendors.
 
 ### `POST /api/admin/vendors`
 
-Create a vendor directly.
+Create a Vendor directly.
 
 - Authentication: Admin
-- Rules: validate database-unique identifiers and write an audit log
+- Request: business details, optional initial password, and optional `latitude`, `longitude`, `accuracy`, `captured_at` (the Solar Mitra's shop geo-tag — same both-or-neither validation as the Sales equivalent, `400 INVALID_LOCATION` otherwise)
+- Rules: normalize identifiers, store only a password hash, and audit the creation; a valid geo-tag creates a `VendorOnboardingMedia` row in the same transaction — never blocks creation if omitted
 
 ### `PATCH /api/admin/vendors/:vendorId`
 
@@ -222,14 +257,6 @@ Modify vendor information or status.
 
 - Authentication: Admin
 - Rules: preserve historical records and write an audit log
-
-### `POST /api/admin/vendors`
-
-Create a Vendor directly.
-
-- Authentication: Admin
-- Request: business details and optional initial password
-- Rules: normalize identifiers, store only a password hash, and audit the creation
 
 ### `POST /api/admin/vendors/:vendorId/deactivate`
 
@@ -252,7 +279,7 @@ Destructively remove a Vendor while preserving its Leads as deleted-Vendor histo
 
 - Authentication: Admin
 - Request: `{ "confirm_vendor_name": "Exact Business Name" }`
-- Rules: requires exact business-name confirmation; blocks when any payout history exists; preserves Lead rows and stores the former business name in `vendor_name_snapshot`; removes permitted assignments, scans, sessions, reset tokens, registrations, bank metadata, and the Vendor row; QR inventory is not deleted
+- Rules: requires exact business-name confirmation; blocks when any payout history exists; preserves Lead rows and stores the former business name in `vendor_name_snapshot`; removes permitted assignments, scans, sessions, reset tokens, registrations, bank metadata, onboarding-media metadata (both photo objects removed from the `vendor-photos` bucket), and the Vendor row; QR inventory is not deleted
 - Response: `{ success: true, vendor_id, preserved_lead_vendor_name }`
 - Errors: `409 VENDOR_PURGE_CONFIRMATION_MISMATCH` for wrong confirmation; `409 VENDOR_PURGE_FINANCIAL_HISTORY` when payout history exists
 

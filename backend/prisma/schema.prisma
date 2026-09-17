@@ -62,17 +62,17 @@ enum QrPrintItemStatus {
 }
 
 model User {
-  id             String      @id @default(cuid())
+  id             String               @id @default(cuid())
   name           String
-  usernameMobile String      @unique @map("username_or_mobile")
-  passwordHash   String      @map("password_hash")
+  usernameMobile String               @unique @map("username_or_mobile")
+  passwordHash   String               @map("password_hash")
   role           StaffRole
-  status         AccountStatus @default(ACTIVE)
-  createdAt      DateTime    @default(now()) @map("created_at")
-  updatedAt      DateTime    @updatedAt @map("updated_at")
-  ownedVendors   Vendor[]    @relation("SalesOwner")
+  status         AccountStatus        @default(ACTIVE)
+  createdAt      DateTime             @default(now()) @map("created_at")
+  updatedAt      DateTime             @updatedAt @map("updated_at")
+  ownedVendors   Vendor[]             @relation("SalesOwner")
   assignments    QrAssignment[]
-  payoutsPaid    Payout[]    @relation("PayoutPaidBy")
+  payoutsPaid    Payout[]             @relation("PayoutPaidBy")
   auditLogs      AuditLog[]
   sessions       Session[]
   resetTokens    PasswordResetToken[]
@@ -86,23 +86,24 @@ model User {
 }
 
 model Vendor {
-  id                 String      @id @default(cuid())
-  businessName       String      @map("business_name")
-  ownerName          String      @map("owner_name")
-  loginIdentifier    String      @unique @map("login_identifier")
-  mobileNumber       String      @map("mobile_number")
-  passwordHash       String?     @map("password_hash")
-  mustChangePassword Boolean     @default(true) @map("must_change_password")
-  status             AccountStatus @default(ACTIVE)
-  salesUserId        String?     @map("sales_user_id")
-  createdAt          DateTime    @default(now()) @map("created_at")
-  updatedAt          DateTime    @updatedAt @map("updated_at")
-  salesUser          User?      @relation("SalesOwner", fields: [salesUserId], references: [id])
+  id                 String                 @id @default(cuid())
+  businessName       String                 @map("business_name")
+  ownerName          String                 @map("owner_name")
+  loginIdentifier    String                 @unique @map("login_identifier")
+  mobileNumber       String                 @map("mobile_number")
+  passwordHash       String?                @map("password_hash")
+  mustChangePassword Boolean                @default(true) @map("must_change_password")
+  status             AccountStatus          @default(ACTIVE)
+  salesUserId        String?                @map("sales_user_id")
+  createdAt          DateTime               @default(now()) @map("created_at")
+  updatedAt          DateTime               @updatedAt @map("updated_at")
+  salesUser          User?                  @relation("SalesOwner", fields: [salesUserId], references: [id])
   assignments        QrAssignment[]
   scans              Scan[]
   leads              Lead[]
   payouts            Payout[]
   bankDetails        VendorBankDetails?
+  onboardingMedia    VendorOnboardingMedia?
   sessions           Session[]
   resetTokens        PasswordResetToken[]
   registrations      VendorRegistration[]
@@ -114,32 +115,32 @@ model Vendor {
 }
 
 model VendorRegistration {
-  id             String      @id @default(cuid())
-  vendorId       String?     @unique @map("vendor_id")
-  businessName   String      @map("business_name")
-  ownerName      String      @map("owner_name")
-  mobileNumber   String      @map("mobile_number")
-  loginIdentifier String     @unique @map("login_identifier")
-  salesUserId    String?     @map("sales_user_id")
-  status         VendorRegistrationStatus @default(PENDING)
-  createdAt      DateTime    @default(now()) @map("created_at")
-  updatedAt      DateTime    @updatedAt @map("updated_at")
-  vendor         Vendor?     @relation(fields: [vendorId], references: [id])
-  salesUser      User?       @relation(fields: [salesUserId], references: [id])
+  id              String                   @id @default(cuid())
+  vendorId        String?                  @unique @map("vendor_id")
+  businessName    String                   @map("business_name")
+  ownerName       String                   @map("owner_name")
+  mobileNumber    String                   @map("mobile_number")
+  loginIdentifier String                   @unique @map("login_identifier")
+  salesUserId     String?                  @map("sales_user_id")
+  status          VendorRegistrationStatus @default(PENDING)
+  createdAt       DateTime                 @default(now()) @map("created_at")
+  updatedAt       DateTime                 @updatedAt @map("updated_at")
+  vendor          Vendor?                  @relation(fields: [vendorId], references: [id])
+  salesUser       User?                    @relation(fields: [salesUserId], references: [id])
 
   @@index([salesUserId, status, createdAt])
   @@map("vendor_registrations")
 }
 
 model QrCode {
-  id           String         @id @default(cuid())
-  code         String         @unique
-  status       QrStatus       @default(UNASSIGNED)
-  createdAt    DateTime       @default(now()) @map("created_at")
-  updatedAt    DateTime       @updatedAt @map("updated_at")
-  assignments  QrAssignment[]
-  scans        Scan[]
-  leads        Lead[]
+  id            String           @id @default(cuid())
+  code          String           @unique
+  status        QrStatus         @default(UNASSIGNED)
+  createdAt     DateTime         @default(now()) @map("created_at")
+  updatedAt     DateTime         @updatedAt @map("updated_at")
+  assignments   QrAssignment[]
+  scans         Scan[]
+  leads         Lead[]
   printJobItems QrPrintJobItem[]
 
   @@index([status])
@@ -183,7 +184,7 @@ model Scan {
   customerIdentityId String?           @map("customer_identity_id")
   createdAt          DateTime          @default(now()) @map("created_at")
   qr                 QrCode            @relation(fields: [qrId], references: [id])
-  assignment         QrAssignment     @relation(fields: [qrAssignmentId], references: [id])
+  assignment         QrAssignment      @relation(fields: [qrAssignmentId], references: [id])
   vendor             Vendor            @relation(fields: [vendorId], references: [id])
   customerIdentity   CustomerIdentity? @relation(fields: [customerIdentityId], references: [id])
   lead               Lead?
@@ -195,33 +196,33 @@ model Scan {
 }
 
 model Lead {
-  id                 String            @id @default(cuid())
-  vendorId           String?           @map("vendor_id")
-  vendorNameSnapshot String            @map("vendor_name_snapshot")
-  qrId               String            @map("qr_id")
-  qrAssignmentId     String?           @map("qr_assignment_id")
-  scanId             String?            @unique @map("scan_id")
+  id                     String           @id @default(cuid())
+  vendorId               String?          @map("vendor_id")
+  vendorNameSnapshot     String           @map("vendor_name_snapshot")
+  qrId                   String           @map("qr_id")
+  qrAssignmentId         String?          @map("qr_assignment_id")
+  scanId                 String?          @unique @map("scan_id")
   // Enforces global one-lead-per-customer at the database level (chosen business rule: a
   // customer already attributed to one vendor cannot generate a second lead under another
   // vendor's QR). Application-level checks alone cannot prevent this under concurrent requests.
-  customerIdentityId String            @unique @map("customer_identity_id")
-  customerName       String            @map("customer_name")
-  phone              String
-  email              String?
-  location           String?
-  pincode            String?
-  averageElectricityBill String? @map("average_electricity_bill")
-  solarSize          String?     @map("solar_size")
-  status             String
-  createdAt          DateTime          @default(now()) @map("created_at")
-  updatedAt          DateTime          @updatedAt @map("updated_at")
-  vendor             Vendor?           @relation(fields: [vendorId], references: [id])
-  qr                 QrCode            @relation(fields: [qrId], references: [id])
-  assignment         QrAssignment?    @relation(fields: [qrAssignmentId], references: [id])
-  scan               Scan?             @relation(fields: [scanId], references: [id])
-  customerIdentity   CustomerIdentity  @relation(fields: [customerIdentityId], references: [id])
-  payout             Payout?
-  geoLocation        LeadLocation?
+  customerIdentityId     String           @unique @map("customer_identity_id")
+  customerName           String           @map("customer_name")
+  phone                  String
+  email                  String?
+  location               String?
+  pincode                String?
+  averageElectricityBill String?          @map("average_electricity_bill")
+  solarSize              String?          @map("solar_size")
+  status                 String
+  createdAt              DateTime         @default(now()) @map("created_at")
+  updatedAt              DateTime         @updatedAt @map("updated_at")
+  vendor                 Vendor?          @relation(fields: [vendorId], references: [id])
+  qr                     QrCode           @relation(fields: [qrId], references: [id])
+  assignment             QrAssignment?    @relation(fields: [qrAssignmentId], references: [id])
+  scan                   Scan?            @relation(fields: [scanId], references: [id])
+  customerIdentity       CustomerIdentity @relation(fields: [customerIdentityId], references: [id])
+  payout                 Payout?
+  geoLocation            LeadLocation?
 
   @@index([vendorId, createdAt])
   @@index([qrId, createdAt])
@@ -268,82 +269,110 @@ model Payout {
 }
 
 model VendorBankDetails {
-  id                    String   @id @default(cuid())
-  vendorId              String   @unique @map("vendor_id")
-  upiNumber             String?  @map("upi_number")
-  upiId                 String?  @map("upi_id")
-  accountHolderName     String?  @map("account_holder_name")
-  accountNumber         String?  @map("account_number")
-  ifscCode              String?  @map("ifsc_code")
-  passbookObjectKey     String?  @map("passbook_object_key")
-  passbookFileName      String?  @map("passbook_file_name")
-  passbookFileSize      Int?     @map("passbook_file_size")
-  passbookContentType   String?  @map("passbook_content_type")
-  chequeObjectKey       String?  @map("cheque_object_key")
-  chequeFileName        String?  @map("cheque_file_name")
-  chequeFileSize        Int?     @map("cheque_file_size")
-  chequeContentType     String?  @map("cheque_content_type")
-  createdAt             DateTime @default(now()) @map("created_at")
-  updatedAt             DateTime @updatedAt @map("updated_at")
-  vendor                Vendor   @relation(fields: [vendorId], references: [id])
+  id                  String   @id @default(cuid())
+  vendorId            String   @unique @map("vendor_id")
+  upiNumber           String?  @map("upi_number")
+  upiId               String?  @map("upi_id")
+  accountHolderName   String?  @map("account_holder_name")
+  accountNumber       String?  @map("account_number")
+  ifscCode            String?  @map("ifsc_code")
+  passbookObjectKey   String?  @map("passbook_object_key")
+  passbookFileName    String?  @map("passbook_file_name")
+  passbookFileSize    Int?     @map("passbook_file_size")
+  passbookContentType String?  @map("passbook_content_type")
+  chequeObjectKey     String?  @map("cheque_object_key")
+  chequeFileName      String?  @map("cheque_file_name")
+  chequeFileSize      Int?     @map("cheque_file_size")
+  chequeContentType   String?  @map("cheque_content_type")
+  createdAt           DateTime @default(now()) @map("created_at")
+  updatedAt           DateTime @updatedAt @map("updated_at")
+  vendor              Vendor   @relation(fields: [vendorId], references: [id])
 
   @@map("vendor_bank_details")
 }
 
+// Captured at Sales/Admin onboarding time: GPS coordinates of the Solar Mitra's shop, plus a
+// photo of the shop and a photo of the Solar Mitra (the person/owner) — evidence that
+// onboarding happened at the real shop. Optional and completable in pieces (all fields
+// nullable): a vendor can be created before any of this exists, and each piece can be
+// captured/replaced independently later. Photos are stored compressed (~800KB-1MB) in
+// Supabase Storage; only the object key + metadata live here (never the file itself).
+model VendorOnboardingMedia {
+  id                          String    @id @default(cuid())
+  vendorId                    String    @unique @map("vendor_id")
+  latitude                    Float?
+  longitude                   Float?
+  accuracy                    Float?
+  capturedAt                  DateTime? @map("captured_at")
+  shopPhotoObjectKey          String?   @map("shop_photo_object_key")
+  shopPhotoFileName           String?   @map("shop_photo_file_name")
+  shopPhotoFileSize           Int?      @map("shop_photo_file_size")
+  shopPhotoContentType        String?   @map("shop_photo_content_type")
+  qrPlacementPhotoObjectKey   String?   @map("qr_placement_photo_object_key")
+  qrPlacementPhotoFileName    String?   @map("qr_placement_photo_file_name")
+  qrPlacementPhotoFileSize    Int?      @map("qr_placement_photo_file_size")
+  qrPlacementPhotoContentType String?   @map("qr_placement_photo_content_type")
+  createdAt                   DateTime  @default(now()) @map("created_at")
+  updatedAt                   DateTime  @updatedAt @map("updated_at")
+  vendor                      Vendor    @relation(fields: [vendorId], references: [id])
+
+  @@map("vendor_onboarding_media")
+}
+
 model Session {
-  id               String   @id @default(cuid())
-  userId           String?  @map("user_id")
-  vendorId         String?  @map("vendor_id")
-  tokenHash        String   @unique @map("session_token_hash")
-  expiresAt        DateTime @map("expires_at")
-  createdAt        DateTime @default(now()) @map("created_at")
-  revokedAt        DateTime? @map("revoked_at")
-  user             User?    @relation(fields: [userId], references: [id])
-  vendor           Vendor?  @relation(fields: [vendorId], references: [id])
+  id        String    @id @default(cuid())
+  userId    String?   @map("user_id")
+  vendorId  String?   @map("vendor_id")
+  tokenHash String    @unique @map("session_token_hash")
+  expiresAt DateTime  @map("expires_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+  revokedAt DateTime? @map("revoked_at")
+  user      User?     @relation(fields: [userId], references: [id])
+  vendor    Vendor?   @relation(fields: [vendorId], references: [id])
 
   @@index([expiresAt])
   @@map("sessions")
 }
 
 model PasswordResetToken {
-  id        String   @id @default(cuid())
-  userId    String?  @map("user_id")
-  vendorId  String?  @map("vendor_id")
-  tokenHash String   @unique @map("token_hash")
-  expiresAt DateTime @map("expires_at")
+  id        String    @id @default(cuid())
+  userId    String?   @map("user_id")
+  vendorId  String?   @map("vendor_id")
+  tokenHash String    @unique @map("token_hash")
+  expiresAt DateTime  @map("expires_at")
   usedAt    DateTime? @map("used_at")
-  createdAt DateTime @default(now()) @map("created_at")
-  user      User?    @relation(fields: [userId], references: [id])
-  vendor    Vendor?  @relation(fields: [vendorId], references: [id])
+  createdAt DateTime  @default(now()) @map("created_at")
+  user      User?     @relation(fields: [userId], references: [id])
+  vendor    Vendor?   @relation(fields: [vendorId], references: [id])
 
   @@index([expiresAt])
   @@map("password_reset_tokens")
 }
 
 model QrPrintTemplate {
-  id                String                  @id @default(cuid())
-  createdById       String                  @map("created_by_id")
-  name              String
-  artworkFileName   String?                 @map("artwork_file_name")
-  artworkPath       String?                 @map("artwork_path")
-  artworkMimeType   String?                 @map("artwork_mime_type")
-  pageWidthMm       Float                   @map("page_width_mm")
-  pageHeightMm      Float                   @map("page_height_mm")
-  dpi               Int                     @default(300)
-  qrX               Float                   @map("qr_x")
-  qrY               Float                   @map("qr_y")
-  qrWidth           Float                   @map("qr_width")
-  qrHeight          Float                   @map("qr_height")
-  labelEnabled      Boolean                 @default(false) @map("label_enabled")
-  labelTextX        Float?                  @map("label_text_x")
-  labelTextY        Float?                  @map("label_text_y")
-  labelFontSize     Float?                  @map("label_font_size")
-  version           Int                     @default(1)
-  status            QrPrintTemplateStatus   @default(DRAFT)
-  createdAt         DateTime                @default(now()) @map("created_at")
-  updatedAt         DateTime                @updatedAt @map("updated_at")
-  createdBy         User                    @relation(fields: [createdById], references: [id])
-  printJobs         QrPrintJob[]
+  id              String                @id @default(cuid())
+  createdById     String                @map("created_by_id")
+  name            String
+  artworkFileName String?               @map("artwork_file_name")
+  artworkPath     String?               @map("artwork_path")
+  artworkMimeType String?               @map("artwork_mime_type")
+  pageWidthMm     Float                 @map("page_width_mm")
+  pageHeightMm    Float                 @map("page_height_mm")
+  dpi             Int                   @default(300)
+  qrX             Float                 @map("qr_x")
+  qrY             Float                 @map("qr_y")
+  qrWidth         Float                 @map("qr_width")
+  qrHeight        Float                 @map("qr_height")
+  labelEnabled    Boolean               @default(false) @map("label_enabled")
+  labelTextX      Float?                @map("label_text_x")
+  labelTextY      Float?                @map("label_text_y")
+  labelFontSize   Float?                @map("label_font_size")
+  version         Int                   @default(1)
+  status          QrPrintTemplateStatus @default(DRAFT)
+  createdAt       DateTime              @default(now()) @map("created_at")
+  updatedAt       DateTime              @updatedAt @map("updated_at")
+  createdBy       User                  @relation(fields: [createdById], references: [id])
+  printJobs       QrPrintJob[]
 
   @@index([status, createdAt])
   @@index([createdById])
@@ -351,28 +380,28 @@ model QrPrintTemplate {
 }
 
 model QrPrintJob {
-  id               String          @id @default(cuid())
-  templateId       String          @map("template_id")
-  createdById      String          @map("created_by_id")
-  idempotencyKey   String          @unique @map("idempotency_key")
+  id               String           @id @default(cuid())
+  templateId       String           @map("template_id")
+  createdById      String           @map("created_by_id")
+  idempotencyKey   String           @unique @map("idempotency_key")
   status           QrPrintJobStatus @default(QUEUED)
-  rangeStart       String?         @map("range_start")
-  rangeEnd         String?         @map("range_end")
-  itemCount        Int             @default(0) @map("item_count")
-  proofSummary     Json?           @map("proof_summary")
-  templateSnapshot Json?          @map("template_snapshot")
-  proofPath        String?         @map("proof_path")
-  proofFileName    String?         @map("proof_file_name")
-  proofCheckedAt   DateTime?       @map("proof_checked_at")
-  proofError       String?         @map("proof_error")
-  pdfPath          String?         @map("pdf_path")
-  pdfFileName      String?         @map("pdf_file_name")
-  generatedAt      DateTime?       @map("generated_at")
-  approvedAt       DateTime?       @map("approved_at")
-  createdAt        DateTime        @default(now()) @map("created_at")
-  updatedAt        DateTime        @updatedAt @map("updated_at")
-  template         QrPrintTemplate @relation(fields: [templateId], references: [id])
-  createdBy        User            @relation(fields: [createdById], references: [id])
+  rangeStart       String?          @map("range_start")
+  rangeEnd         String?          @map("range_end")
+  itemCount        Int              @default(0) @map("item_count")
+  proofSummary     Json?            @map("proof_summary")
+  templateSnapshot Json?            @map("template_snapshot")
+  proofPath        String?          @map("proof_path")
+  proofFileName    String?          @map("proof_file_name")
+  proofCheckedAt   DateTime?        @map("proof_checked_at")
+  proofError       String?          @map("proof_error")
+  pdfPath          String?          @map("pdf_path")
+  pdfFileName      String?          @map("pdf_file_name")
+  generatedAt      DateTime?        @map("generated_at")
+  approvedAt       DateTime?        @map("approved_at")
+  createdAt        DateTime         @default(now()) @map("created_at")
+  updatedAt        DateTime         @updatedAt @map("updated_at")
+  template         QrPrintTemplate  @relation(fields: [templateId], references: [id])
+  createdBy        User             @relation(fields: [createdById], references: [id])
   items            QrPrintJobItem[]
 
   @@index([status, createdAt])
@@ -381,18 +410,18 @@ model QrPrintJob {
 }
 
 model QrPrintJobItem {
-  id             String           @id @default(cuid())
-  printJobId     String           @map("print_job_id")
-  qrCodeId       String           @map("qr_code_id")
-  sequence       Int
-  expectedCode   String           @map("expected_code")
-  expectedUrl    String           @map("expected_url")
-  previewPath    String?          @map("preview_path")
-  status         QrPrintItemStatus @default(PENDING)
-  createdAt      DateTime         @default(now()) @map("created_at")
-  updatedAt      DateTime         @updatedAt @map("updated_at")
-  printJob       QrPrintJob       @relation(fields: [printJobId], references: [id])
-  qrCode         QrCode           @relation(fields: [qrCodeId], references: [id])
+  id           String            @id @default(cuid())
+  printJobId   String            @map("print_job_id")
+  qrCodeId     String            @map("qr_code_id")
+  sequence     Int
+  expectedCode String            @map("expected_code")
+  expectedUrl  String            @map("expected_url")
+  previewPath  String?           @map("preview_path")
+  status       QrPrintItemStatus @default(PENDING)
+  createdAt    DateTime          @default(now()) @map("created_at")
+  updatedAt    DateTime          @updatedAt @map("updated_at")
+  printJob     QrPrintJob        @relation(fields: [printJobId], references: [id])
+  qrCode       QrCode            @relation(fields: [qrCodeId], references: [id])
 
   @@unique([printJobId, sequence])
   @@index([printJobId, status])

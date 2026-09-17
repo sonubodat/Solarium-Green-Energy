@@ -1,9 +1,12 @@
 import { Router } from 'express';
+import multer from 'multer';
 import { z } from 'zod';
 import { prisma } from '../lib/prisma.js';
 import { requireAuth, requireSales } from '../middleware/auth.js';
 import { hashPassword, normalizeLoginIdentifier, publicVendor } from '../services/auth.js';
 import { assignUnassignedQr } from '../services/qr.js';
+import { uploadVendorPhoto, removeVendorPhoto } from '../services/vendor-documents.js';
+import { geoTagFields, resolveGeoTag } from '../lib/geo-tag.js';
 
 export const salesRoutes = Router();
 
@@ -22,7 +25,12 @@ const vendorCreateSchema = z.object({
 	login_identifier: z.string().trim().min(3).max(120),
 	mobile_number: z.string().trim().min(10).max(20),
 	password: z.string().min(8),
+	...geoTagFields,
 });
+
+const vendorLocationSchema = z.object(geoTagFields);
+
+const photoUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } });
 
 function pagination(query) {
 	const page = Math.max(Number.parseInt(query.page, 10) || 1, 1);
@@ -182,6 +190,9 @@ salesRoutes.post('/vendors', requireAuth, requireSales, async (request, response
 		if (!/^[6-9]\d{9}$/.test(mobileNumber)) {
 			return response.status(400).json({ success: false, error: { code: 'INVALID_MOBILE_NUMBER', message: 'Enter a valid Indian mobile number.' } });
 		}
+		// Never blocks creation — a missing/incomplete geo-tag is fine, only a half-supplied
+		// one (lat without lng or vice versa) is rejected, before anything is written.
+		const geoTag = resolveGeoTag(input);
 		const vendor = await prisma.$transaction(async (transaction) => {
 			const created = await transaction.vendor.create({
 				data: {
@@ -194,6 +205,9 @@ salesRoutes.post('/vendors', requireAuth, requireSales, async (request, response
 					salesUserId: request.auth.user.id,
 				},
 			});
+			if (geoTag) {
+				await transaction.vendorOnboardingMedia.create({ data: { vendorId: created.id, ...geoTag } });
+			}
 			await writeAudit(transaction, request, 'VENDOR_CREATED', 'Vendor', created.id, { source: 'SALES_DIRECT' });
 			return created;
 		});
@@ -204,6 +218,79 @@ salesRoutes.post('/vendors', requireAuth, requireSales, async (request, response
 			error.code = 'VENDOR_ALREADY_EXISTS';
 			error.message = 'A Vendor already exists for these identifiers.';
 		}
+		return next(error);
+	}
+});
+
+// "Complete later" for the geo-tag half of onboarding media — capturing GPS only means
+// something if the capturing device is actually at the shop, so this stays Sales-only (no
+// Admin equivalent). Same OR-with-null ownership rule as GET /vendors and POST /qr/assign:
+// an unclaimed vendor (e.g. created directly by Admin) is completable by any Sales user.
+salesRoutes.patch('/vendors/:vendorId/location', requireAuth, requireSales, async (request, response, next) => {
+	try {
+		const input = vendorLocationSchema.parse(request.body);
+		const geoTag = resolveGeoTag(input);
+		if (!geoTag) {
+			const error = new Error('Provide both latitude and longitude.');
+			error.statusCode = 400;
+			error.code = 'INVALID_LOCATION';
+			throw error;
+		}
+		const vendor = await prisma.vendor.findFirst({
+			where: { id: request.params.vendorId, OR: [{ salesUserId: request.auth.user.id }, { salesUserId: null }] },
+			select: { id: true },
+		});
+		if (!vendor) {
+			return response.status(404).json({ success: false, error: { code: 'VENDOR_NOT_FOUND', message: 'Vendor was not found.' } });
+		}
+		await prisma.vendorOnboardingMedia.upsert({
+			where: { vendorId: vendor.id },
+			create: { vendorId: vendor.id, ...geoTag },
+			update: geoTag,
+		});
+		return response.json({ success: true });
+	} catch (error) {
+		return next(error);
+	}
+});
+
+// Attaches (or replaces) a shop photo or a QR-placement photo (where the QR code sticker is
+// placed in the shop) — used both right after creation and to complete onboarding media
+// later. Same ownership rule as above.
+salesRoutes.post('/vendors/:vendorId/photos/:photoType', requireAuth, requireSales, photoUpload.single('photo'), async (request, response, next) => {
+	try {
+		const type = request.params.photoType;
+		if (!['shop', 'qr-placement'].includes(type)) {
+			const error = new Error('Photo type must be shop or qr-placement.');
+			error.statusCode = 400;
+			error.code = 'INVALID_PHOTO_TYPE';
+			throw error;
+		}
+		const vendor = await prisma.vendor.findFirst({
+			where: { id: request.params.vendorId, OR: [{ salesUserId: request.auth.user.id }, { salesUserId: null }] },
+			select: { id: true },
+		});
+		if (!vendor) {
+			return response.status(404).json({ success: false, error: { code: 'VENDOR_NOT_FOUND', message: 'Vendor was not found.' } });
+		}
+		const uploaded = await uploadVendorPhoto(vendor.id, type, request.file);
+		try {
+			const existing = await prisma.vendorOnboardingMedia.findUnique({ where: { vendorId: vendor.id } });
+			const data = type === 'shop'
+				? { shopPhotoObjectKey: uploaded.objectKey, shopPhotoFileName: uploaded.fileName, shopPhotoFileSize: uploaded.fileSize, shopPhotoContentType: uploaded.contentType }
+				: { qrPlacementPhotoObjectKey: uploaded.objectKey, qrPlacementPhotoFileName: uploaded.fileName, qrPlacementPhotoFileSize: uploaded.fileSize, qrPlacementPhotoContentType: uploaded.contentType };
+			await prisma.vendorOnboardingMedia.upsert({ where: { vendorId: vendor.id }, create: { vendorId: vendor.id, ...data }, update: data });
+			const previousKey = type === 'shop' ? existing?.shopPhotoObjectKey : existing?.qrPlacementPhotoObjectKey;
+			await removeVendorPhoto(previousKey);
+		} catch (dbError) {
+			await removeVendorPhoto(uploaded.objectKey);
+			throw dbError;
+		}
+		return response.json({ success: true, photo: { type, fileName: uploaded.fileName, fileSize: uploaded.fileSize } });
+	} catch (error) {
+		// A multer size-limit error never reaches here — it's thrown by multer's own
+		// middleware before this handler runs, so Express routes it straight to the global
+		// errorHandler (which distinguishes it by the 'photo' field name). Nothing to remap.
 		return next(error);
 	}
 });

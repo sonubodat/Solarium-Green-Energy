@@ -203,7 +203,34 @@ If the customer denies the browser's location permission or never taps the butto
 
 The backend validates real ranges regardless of what the browser sends: `latitude` in [-90, 90], `longitude` in [-180, 180], `accuracy` >= 0. `latitude`/`longitude` must be supplied together or not at all (`400 INVALID_LOCATION` otherwise).
 
-**Deliberately out of scope for this pilot** — do not add without a concrete need: vendor location/store address, login-location or location history, IP-based geolocation, maps, geofencing, distance calculations, or any location analytics view. This table exists to be built on later (e.g. "show leads on a map," "verify a scan happened at the vendor's shop"), not to pre-build those features now.
+**Deliberately out of scope for this pilot** — do not add without a concrete need: login-location or location history, IP-based geolocation, maps, geofencing, distance calculations, or any location analytics view. This table exists to be built on later (e.g. "show leads on a map"), not to pre-build those features now. Vendor/Solar Mitra shop location moved out of this list once a concrete need arrived — see `VendorOnboardingMedia` below.
+
+### VendorOnboardingMedia
+
+Captured at Sales/Admin onboarding time: GPS coordinates of the Solar Mitra's shop, plus a photo of the shop and a photo of where the QR code sticker is placed in the shop — evidence that onboarding happened at the real shop. This is the concrete need that justified moving vendor location out of `LeadLocation`'s out-of-scope list above.
+
+```text
+id
+vendor_id                          unique — one row per vendor
+latitude                           nullable
+longitude                          nullable
+accuracy                           nullable
+captured_at                        nullable
+shop_photo_object_key              nullable
+shop_photo_file_name               nullable
+shop_photo_file_size               nullable
+shop_photo_content_type            nullable
+qr_placement_photo_object_key      nullable
+qr_placement_photo_file_name       nullable
+qr_placement_photo_file_size       nullable
+qr_placement_photo_content_type    nullable
+created_at
+updated_at
+```
+
+Every field is optional and independently completable — unlike `LeadLocation` (an all-or-nothing row created once alongside its lead), a Solar Mitra can be created with none of this captured, and each piece (location, shop photo, QR placement photo) can be added or replaced later by its own request. Capturing real GPS only means something if the capturing device is actually at the shop, so Sales sets/fixes the geo-tag from live device location (`PATCH /api/sales/vendors/:vendorId/location`). Admin isn't at the shop, so Admin instead types or pastes coordinates — e.g. relayed by the Sales rep, or copied from Google Maps — both at vendor-creation time and later via its own endpoint (`PATCH /api/admin/vendors/:vendorId/location`), which has no ownership restriction (unlike Sales' equivalent, which is scoped to vendors Sales created). Both Sales and Admin can upload/replace either photo (`POST .../vendors/:vendorId/photos/:photoType`), since that doesn't require physical presence. Admin can view both photos and the coordinates via `GET /api/admin/vendors/:vendorId/onboarding-media`.
+
+Photos are never stored as uploaded: every photo is compressed server-side to roughly 800KB–1MB (resized and JPEG-re-encoded, EXIF-orientation-corrected) before it reaches Supabase Storage, in a dedicated private `vendor-photos` bucket (`SUPABASE_VENDOR_PHOTOS_BUCKET`) — kept separate from the `vendor-documents` bucket used for bank KYC documents, which has a different sensitivity profile. Only the object key and file metadata are stored in Postgres; an object is removed from Storage if the accompanying database write fails, and the previous object is removed after a successful replacement — the same rules already documented for QR template artwork in `qr-template-placement.md`.
 
 ### Payout
 

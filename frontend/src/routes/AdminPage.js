@@ -28,6 +28,8 @@ const ICONS = {
   filter: 'M4 5h16M7 12h10M10 19h4',
   eye: 'M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Zm10 2.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5Z',
   edit: 'M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4L16.5 3.5Z',
+  camera: 'M4 8a2 2 0 0 1 2-2h1l1.2-2h7.6L17 6h1a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8Zm8 3a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7Z',
+  target: 'M12 2v3m0 14v3M2 12h3m14 0h3M12 16a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z',
 };
 
 function Icon({ path, className = '' }) {
@@ -120,6 +122,16 @@ function AdminPage() {
     mobile_number: '',
     password: '',
   });
+  const [newVendorLocation, setNewVendorLocation] = useState(null);
+  const [newVendorCoordsText, setNewVendorCoordsText] = useState('');
+  const [vendorLocationError, setVendorLocationError] = useState('');
+  const [shopPhotoFile, setShopPhotoFile] = useState(null);
+  const [qrPlacementPhotoFile, setQrPlacementPhotoFile] = useState(null);
+  const [shopPhotoPreview, setShopPhotoPreview] = useState('');
+  const [qrPlacementPhotoPreview, setQrPlacementPhotoPreview] = useState('');
+  const [detailOnboardingMedia, setDetailOnboardingMedia] = useState(null);
+  const [mediaCoordsText, setMediaCoordsText] = useState('');
+  const [mediaLocationError, setMediaLocationError] = useState('');
 
   const [newStaffUser, setNewStaffUser] = useState({
     name: '',
@@ -149,23 +161,38 @@ function AdminPage() {
   const [templateInteraction, setTemplateInteraction] = useState(null);
   const [printBatchDraft, setPrintBatchDraft] = useState({ template_id: '', range_start: '', range_end: '' });
   const [lastPrintJob, setLastPrintJob] = useState(null);
+  const [confirmApprovePrintProof, setConfirmApprovePrintProof] = useState(false);
   const [templateSingleDraft, setTemplateSingleDraft] = useState({ template_id: '', code: '' });
   const [reassignVendorInputs, setReassignVendorInputs] = useState({});
+  const [confirmDeleteQrId, setConfirmDeleteQrId] = useState(null);
+  const [confirmAssignQrId, setConfirmAssignQrId] = useState(null);
 
   const [showScanAssign, setShowScanAssign] = useState(false);
   const [singleQrCode, setSingleQrCode] = useState('');
   const [scannedQr, setScannedQr] = useState(null);
   const [scanVendorId, setScanVendorId] = useState('');
+  const [confirmAssignScannedQr, setConfirmAssignScannedQr] = useState(false);
   const [paidReferenceInputs, setPaidReferenceInputs] = useState({});
+  const [confirmPayoutStatusKey, setConfirmPayoutStatusKey] = useState(null);
   const [selectedVendorIds, setSelectedVendorIds] = useState([]);
   const [deletionResult, setDeletionResult] = useState(null);
+  const [confirmBulkDeleteVendors, setConfirmBulkDeleteVendors] = useState(false);
 
   const [editingVendorId, setEditingVendorId] = useState(null);
   const [editVendorDraft, setEditVendorDraft] = useState({});
+  const [confirmSaveVendorEdit, setConfirmSaveVendorEdit] = useState(false);
+  const [confirmDeleteVendorId, setConfirmDeleteVendorId] = useState(null);
+  const [confirmDeactivateVendorId, setConfirmDeactivateVendorId] = useState(null);
+  const [confirmResetPasswordVendorId, setConfirmResetPasswordVendorId] = useState(null);
+  const [confirmPurgeVendorId, setConfirmPurgeVendorId] = useState(null);
+  const [purgeConfirmText, setPurgeConfirmText] = useState('');
 
   const [staffRoleInputs, setStaffRoleInputs] = useState({});
+  const [confirmUpdateRoleId, setConfirmUpdateRoleId] = useState(null);
+  const [confirmDeactivateStaffId, setConfirmDeactivateStaffId] = useState(null);
 
   const [detailLead, setDetailLead] = useState(null);
+  const [confirmDeleteLeadId, setConfirmDeleteLeadId] = useState(null);
   const [detailBank, setDetailBank] = useState(null);
   const [detailAuditLog, setDetailAuditLog] = useState(null);
   const [expandedVendorGroups, setExpandedVendorGroups] = useState({});
@@ -428,6 +455,79 @@ function AdminPage() {
     );
   }
 
+  // Mirrors PublicPage.jsx's "Use my location" pattern, adapted for Admin standing at (or
+  // near) the shop while onboarding — enableHighAccuracy on since precision is worth it here.
+  // Admin isn't physically at the shop, so there's no GPS capture here — the coordinates are
+  // typed or pasted (e.g. relayed by the Sales rep, or copied from Google Maps), usually as
+  // "lat, lng". Returns { latitude, longitude } or throws a descriptive Error.
+  function parseCoordsText(text) {
+    const parts = text.split(',').map((part) => part.trim()).filter(Boolean);
+    if (parts.length !== 2) {
+      throw new Error('Enter coordinates as "latitude, longitude", e.g. 18.5204, 73.8567.');
+    }
+    const [latitude, longitude] = parts.map(Number);
+    if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+      throw new Error('Enter coordinates as "latitude, longitude", e.g. 18.5204, 73.8567.');
+    }
+    if (latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180) {
+      throw new Error('Latitude must be between -90 and 90, longitude between -180 and 180.');
+    }
+    return { latitude, longitude };
+  }
+
+  function applyVendorCoordsText() {
+    setVendorLocationError('');
+    try {
+      const { latitude, longitude } = parseCoordsText(newVendorCoordsText);
+      setNewVendorLocation({ latitude, longitude, accuracy: null, capturedAt: new Date().toISOString() });
+    } catch (error) {
+      setNewVendorLocation(null);
+      setVendorLocationError(error.message);
+    }
+  }
+
+  // Client-side check is just an early sanity/UX check — the server compresses whatever
+  // comes in down to ~100KB before storing it, so this isn't the real cap.
+  function handlePhotoSelect(kind, event) {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+    if (file.size > 15 * 1024 * 1024) {
+      setMessage('Photos must be 15 MB or smaller.');
+      setMessageType('error');
+      return;
+    }
+    if (!['image/jpeg', 'image/png'].includes(file.type)) {
+      setMessage('Upload a JPG or PNG photo.');
+      setMessageType('error');
+      return;
+    }
+    const previewUrl = URL.createObjectURL(file);
+    if (kind === 'shop') {
+      setShopPhotoFile(file);
+      setShopPhotoPreview(previewUrl);
+    } else {
+      setQrPlacementPhotoFile(file);
+      setQrPlacementPhotoPreview(previewUrl);
+    }
+  }
+
+  function resetOnboardingCapture() {
+    setNewVendorLocation(null);
+    setNewVendorCoordsText('');
+    setVendorLocationError('');
+    setShopPhotoFile(null);
+    setQrPlacementPhotoFile(null);
+    setShopPhotoPreview('');
+    setQrPlacementPhotoPreview('');
+  }
+
+  async function uploadOnboardingPhoto(vendorId, kind, file) {
+    const body = new FormData();
+    body.append('photo', file);
+    await apiRequest(`/admin/vendors/${vendorId}/photos/${kind}`, { method: 'POST', body });
+  }
+
   async function createVendor(event) {
     event.preventDefault();
 
@@ -441,11 +541,28 @@ function AdminPage() {
       if (!body.password) {
         delete body.password;
       }
+      if (newVendorLocation) {
+        body.latitude = newVendorLocation.latitude;
+        body.longitude = newVendorLocation.longitude;
+        body.accuracy = newVendorLocation.accuracy;
+        body.captured_at = newVendorLocation.capturedAt;
+      }
 
-      await apiRequest('/admin/vendors', {
+      const result = await apiRequest('/admin/vendors', {
         method: 'POST',
         body: JSON.stringify(body),
       });
+      const vendorId = result.vendor.id;
+
+      const photoFailures = [];
+      for (const [kind, file] of [['shop', shopPhotoFile], ['qr-placement', qrPlacementPhotoFile]]) {
+        if (!file) continue;
+        try {
+          await uploadOnboardingPhoto(vendorId, kind, file);
+        } catch (photoError) {
+          photoFailures.push(kind);
+        }
+      }
 
       setNewVendor({
         business_name: '',
@@ -454,13 +571,20 @@ function AdminPage() {
         mobile_number: '',
         password: '',
       });
+      resetOnboardingCapture();
 
       setShowCreateVendor(false);
 
       await loadAdminResource('vendors', adminPage);
 
-      setMessage('Solar Mitra created.');
-      setMessageType('success');
+      if (photoFailures.length) {
+        const labels = { shop: 'shop', 'qr-placement': 'QR placement' };
+        setMessage(`Solar Mitra created, but the ${photoFailures.map((kind) => labels[kind]).join(' and ')} photo failed to upload — retry from its "Onboarding media" panel.`);
+        setMessageType('error');
+      } else {
+        setMessage('Solar Mitra created.');
+        setMessageType('success');
+      }
     } catch (error) {
       setMessage(error.message);
       setMessageType('error');
@@ -499,14 +623,6 @@ function AdminPage() {
   }
 
   async function deactivateVendor(vendorId, businessName) {
-    if (
-      !window.confirm(
-        `Deactivate ${businessName}? Historical records are preserved.`
-      )
-    ) {
-      return;
-    }
-
     setLoading(true);
 
     try {
@@ -523,18 +639,11 @@ function AdminPage() {
       setMessageType('error');
     } finally {
       setLoading(false);
+      setConfirmDeactivateVendorId(null);
     }
   }
 
   async function deleteVendor(vendorId, businessName) {
-    if (
-      !window.confirm(
-        `Delete ${businessName}? This only succeeds if the Solar Mitra has no leads, scans, payouts, or QR assignments.`
-      )
-    ) {
-      return;
-    }
-
     setLoading(true);
 
     try {
@@ -551,27 +660,24 @@ function AdminPage() {
       setMessageType('error');
     } finally {
       setLoading(false);
+      setConfirmDeleteVendorId(null);
     }
   }
 
+  // window.prompt()/window.confirm() are unsupported in some embedded/managed browser
+  // contexts (they throw "prompt() is not supported"), so the two-step "type the exact
+  // business name, then confirm" gate is inline instead: purgeConfirmVendorId arms the row,
+  // purgeConfirmText holds what's typed so far, and the Confirm button itself stays disabled
+  // until the typed text exactly matches the business name — same safety guarantee, no dialogs.
   async function purgeVendor(vendorId, businessName) {
-    const confirmation = window.prompt(
-      `Permanent cleanup will remove ${businessName}, assignments, scans, sessions, registration, and bank documents. Leads will remain as Deleted Solar Mitra records. Type the exact business name to continue:`,
-      ''
-    );
-    if (confirmation === null) return;
-    if (confirmation.trim() !== businessName) {
-      setMessage('Solar Mitra purge cancelled: the business name did not match exactly.');
-      setMessageType('error');
-      return;
-    }
-    if (!window.confirm(`Permanently clean up ${businessName}? This cannot be undone. Paid/unpaid payout history blocks the operation.`)) return;
+    const confirmation = purgeConfirmText.trim();
+    if (confirmation !== businessName) return;
 
     setLoading(true);
     try {
       await apiRequest(`/admin/vendors/${vendorId}/purge`, {
         method: 'POST',
-        body: JSON.stringify({ confirm_vendor_name: confirmation.trim() }),
+        body: JSON.stringify({ confirm_vendor_name: confirmation }),
       });
       await loadAdminResource('vendors', adminPage, undefined, undefined, true);
       setMessage(`${businessName} was permanently cleaned up. Its Leads remain labeled as a deleted Solar Mitra.`);
@@ -581,6 +687,8 @@ function AdminPage() {
       setMessageType('error');
     } finally {
       setLoading(false);
+      setConfirmPurgeVendorId(null);
+      setPurgeConfirmText('');
     }
   }
 
@@ -602,10 +710,6 @@ function AdminPage() {
   async function saveVendorEdit(event, vendorId) {
     event.preventDefault();
 
-    if (!window.confirm('Save these changes to the Solar Mitra record?')) {
-      return;
-    }
-
     setLoading(true);
 
     try {
@@ -625,18 +729,11 @@ function AdminPage() {
       setMessageType('error');
     } finally {
       setLoading(false);
+      setConfirmSaveVendorEdit(false);
     }
   }
 
   async function resetVendorPassword(vendorId, businessName) {
-    if (
-      !window.confirm(
-        `Issue a temporary password reset for ${businessName}?`
-      )
-    ) {
-      return;
-    }
-
     setLoading(true);
 
     try {
@@ -659,6 +756,7 @@ function AdminPage() {
       setMessageType('error');
     } finally {
       setLoading(false);
+      setConfirmResetPasswordVendorId(null);
     }
   }
 
@@ -838,7 +936,7 @@ function AdminPage() {
   }
 
   async function approvePrintProof(job) {
-    if (!job?.id || !window.confirm('Approve this verified proof and allow the designed PDF to be downloaded?')) return;
+    if (!job?.id) return;
     setLoading(true);
     try {
       const result = await apiRequest(`/admin/qr/print-batch/${encodeURIComponent(job.id)}/approve`, { method: 'POST' });
@@ -850,6 +948,7 @@ function AdminPage() {
       setMessageType('error');
     } finally {
       setLoading(false);
+      setConfirmApprovePrintProof(false);
     }
   }
 
@@ -895,20 +994,6 @@ function AdminPage() {
       return;
     }
 
-    const vendor = vendorLookup.find(
-      (item) => item.id === vendorId
-    );
-
-    if (
-      !window.confirm(
-        `${reassign ? 'Reassign' : 'Assign'} ${qr.code} to ${
-          vendor?.businessName || 'the selected Solar Mitra'
-        }?`
-      )
-    ) {
-      return;
-    }
-
     setLoading(true);
 
     try {
@@ -941,18 +1026,24 @@ function AdminPage() {
       setMessageType('error');
     } finally {
       setLoading(false);
+      setConfirmAssignQrId(null);
     }
   }
 
-  async function deleteQr(qr) {
-    if (
-      !window.confirm(
-        `Delete ${qr.code}? This only works for QR codes that have never been assigned, and cannot be undone.`
-      )
-    ) {
+  function armAssignQr(qr) {
+    const vendorId = (reassignVendorInputs[qr.id] || '').trim();
+    if (!vendorId) {
+      setMessage('Select a Solar Mitra first.');
+      setMessageType('error');
       return;
     }
+    setConfirmAssignQrId(qr.id);
+  }
 
+  // Delete is a two-click inline confirm (Delete -> Confirm/Cancel in the same row), not a
+  // window.confirm() popup — clicking Delete just arms confirmDeleteQrId; this only runs once
+  // that armed Confirm button is actually clicked.
+  async function deleteQr(qr) {
     setLoading(true);
 
     try {
@@ -965,12 +1056,12 @@ function AdminPage() {
       setMessageType('error');
     } finally {
       setLoading(false);
+      setConfirmDeleteQrId(null);
     }
   }
 
   async function bulkDeleteVendors() {
     if (!selectedVendorIds.length) return;
-    if (!window.confirm(`Delete ${selectedVendorIds.length} selected Solar Mitra${selectedVendorIds.length === 1 ? '' : 's'}? Solar Mitras with history will block the entire operation.`)) return;
     setLoading(true);
     try {
       const result = await apiRequest('/admin/vendors/bulk-delete', { method: 'POST', body: JSON.stringify({ ids: selectedVendorIds }) });
@@ -982,6 +1073,7 @@ function AdminPage() {
       else { setMessage(error.message); setMessageType('error'); }
     } finally {
       setLoading(false);
+      setConfirmBulkDeleteVendors(false);
     }
   }
 
@@ -1014,19 +1106,6 @@ function AdminPage() {
     if (!scannedQr || !scanVendorId) return;
 
     const isReassign = scannedQr.status === 'ACTIVE';
-    const vendor = vendorLookup.find(
-      (item) => item.id === scanVendorId
-    );
-
-    if (
-      !window.confirm(
-        `${isReassign ? 'Reassign' : 'Assign'} ${scannedQr.code} to ${
-          vendor?.businessName || 'the selected Solar Mitra'
-        }?`
-      )
-    ) {
-      return;
-    }
 
     setLoading(true);
 
@@ -1057,6 +1136,7 @@ function AdminPage() {
       setMessageType('error');
     } finally {
       setLoading(false);
+      setConfirmAssignScannedQr(false);
     }
   }
 
@@ -1064,27 +1144,6 @@ function AdminPage() {
     const reference = (
       paidReferenceInputs[payout.id] || ''
     ).trim();
-
-    if (
-      (status === 'PAID' || status === 'PARTIAL') &&
-      !reference
-    ) {
-      setMessage(
-        'Enter a payment reference before marking this payout.'
-      );
-      setMessageType('error');
-      return;
-    }
-
-    if (
-      !window.confirm(
-        `Mark ${
-          payout.vendor?.businessName || 'this Solar Mitra'
-        } payout as ${status}?`
-      )
-    ) {
-      return;
-    }
 
     setLoading(true);
 
@@ -1116,7 +1175,18 @@ function AdminPage() {
       setMessageType('error');
     } finally {
       setLoading(false);
+      setConfirmPayoutStatusKey(null);
     }
+  }
+
+  function armPayoutStatus(payout, status) {
+    const reference = (paidReferenceInputs[payout.id] || '').trim();
+    if ((status === 'PAID' || status === 'PARTIAL') && !reference) {
+      setMessage('Enter a payment reference before marking this payout.');
+      setMessageType('error');
+      return;
+    }
+    setConfirmPayoutStatusKey(`${payout.id}:${status}`);
   }
 
   async function viewVendorBankDetails(vendor) {
@@ -1124,6 +1194,77 @@ function AdminPage() {
     try {
       const result = await apiRequest(`/admin/vendors/${vendor.id}/bank-details`, { forceRefresh: true });
       setDetailBank({ vendor, details: result.bank_details });
+    } catch (error) {
+      setMessage(error.message);
+      setMessageType('error');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function viewVendorOnboardingMedia(vendor) {
+    setMediaCoordsText('');
+    setMediaLocationError('');
+    setLoading(true);
+    try {
+      const result = await apiRequest(`/admin/vendors/${vendor.id}/onboarding-media`, { forceRefresh: true });
+      setDetailOnboardingMedia({ vendor, media: result.onboarding_media });
+    } catch (error) {
+      setMessage(error.message);
+      setMessageType('error');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // Uploads/replaces a photo from inside the "Onboarding media" modal — same endpoint the
+  // create form uses, just targeting an existing vendor. Re-fetches so the modal shows the
+  // new signed URL immediately instead of a stale one.
+  async function replaceOnboardingPhoto(vendorId, kind, event) {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+    setLoading(true);
+    setMessage('');
+    setMessageType('');
+    try {
+      await uploadOnboardingPhoto(vendorId, kind, file);
+      const result = await apiRequest(`/admin/vendors/${vendorId}/onboarding-media`, { forceRefresh: true });
+      setDetailOnboardingMedia((current) => (current ? { ...current, media: result.onboarding_media } : current));
+      setMessage(`${kind === 'shop' ? 'Shop' : 'QR placement'} photo saved.`);
+      setMessageType('success');
+    } catch (error) {
+      setMessage(error.message);
+      setMessageType('error');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // Same type-or-paste approach as the create form's coordinates field, but submits
+  // immediately against an already-existing vendor instead of staging local state.
+  async function applyMediaCoordsText(vendorId) {
+    setMediaLocationError('');
+    let coords;
+    try {
+      coords = parseCoordsText(mediaCoordsText);
+    } catch (error) {
+      setMediaLocationError(error.message);
+      return;
+    }
+    setLoading(true);
+    setMessage('');
+    setMessageType('');
+    try {
+      await apiRequest(`/admin/vendors/${vendorId}/location`, {
+        method: 'PATCH',
+        body: JSON.stringify({ latitude: coords.latitude, longitude: coords.longitude }),
+      });
+      const result = await apiRequest(`/admin/vendors/${vendorId}/onboarding-media`, { forceRefresh: true });
+      setDetailOnboardingMedia((current) => (current ? { ...current, media: result.onboarding_media } : current));
+      setMediaCoordsText('');
+      setMessage('Location saved.');
+      setMessageType('success');
     } catch (error) {
       setMessage(error.message);
       setMessageType('error');
@@ -1153,14 +1294,6 @@ function AdminPage() {
   }
 
   async function deleteLead(lead) {
-    if (
-      !window.confirm(
-        `Delete the lead for ${lead.customerName || lead.phone || 'this customer'}? This cannot be undone.`
-      )
-    ) {
-      return;
-    }
-
     setLoading(true);
 
     try {
@@ -1174,6 +1307,7 @@ function AdminPage() {
       setMessageType('error');
     } finally {
       setLoading(false);
+      setConfirmDeleteLeadId(null);
     }
   }
 
@@ -1213,20 +1347,6 @@ function AdminPage() {
     const nextRole =
       staffRoleInputs[user.id] || user.role;
 
-    if (nextRole === user.role) {
-      setMessage('Select a different role first.');
-      setMessageType('error');
-      return;
-    }
-
-    if (
-      !window.confirm(
-        `Change ${user.name}'s role from ${user.role} to ${nextRole}?`
-      )
-    ) {
-      return;
-    }
-
     setLoading(true);
 
     try {
@@ -1246,18 +1366,21 @@ function AdminPage() {
       setMessageType('error');
     } finally {
       setLoading(false);
+      setConfirmUpdateRoleId(null);
     }
   }
 
-  async function deactivateStaffUser(user) {
-    if (
-      !window.confirm(
-        `Deactivate staff user ${user.name}?`
-      )
-    ) {
+  function armUpdateStaffUserRole(user) {
+    const nextRole = staffRoleInputs[user.id] || user.role;
+    if (nextRole === user.role) {
+      setMessage('Select a different role first.');
+      setMessageType('error');
       return;
     }
+    setConfirmUpdateRoleId(user.id);
+  }
 
+  async function deactivateStaffUser(user) {
     setLoading(true);
 
     try {
@@ -1277,6 +1400,7 @@ function AdminPage() {
       setMessageType('error');
     } finally {
       setLoading(false);
+      setConfirmDeactivateStaffId(null);
     }
   }
 
@@ -1661,15 +1785,46 @@ function AdminPage() {
                   }
                 />
               </label>
+
+              <div className="admin-form-field">
+                <span>Shop coordinates (optional — type or paste from Sales/Google Maps)</span>
+                <div className="admin-coords-row">
+                  <input
+                    type="text"
+                    placeholder="e.g. 18.5204, 73.8567"
+                    value={newVendorCoordsText}
+                    onChange={(event) => setNewVendorCoordsText(event.target.value)}
+                  />
+                  <button type="button" className={`admin-outline-button${newVendorLocation ? ' captured' : ''}`} onClick={applyVendorCoordsText}>
+                    <Icon path={ICONS.target} />
+                    {newVendorLocation ? 'Location saved' : 'Use these coordinates'}
+                    {newVendorLocation && <Icon path={ICONS.check} />}
+                  </button>
+                </div>
+                {vendorLocationError && <small className="admin-field-error">{vendorLocationError}</small>}
+              </div>
+
+              <label className="admin-form-field">
+                <span>Shop photo (optional)</span>
+                <input type="file" accept="image/jpeg,image/png" onChange={(event) => handlePhotoSelect('shop', event)} />
+                {shopPhotoPreview && <img src={shopPhotoPreview} alt="Shop preview" className="admin-photo-preview" />}
+              </label>
+
+              <label className="admin-form-field">
+                <span>QR placement photo (optional)</span>
+                <input type="file" accept="image/jpeg,image/png" onChange={(event) => handlePhotoSelect('qr-placement', event)} />
+                {qrPlacementPhotoPreview && <img src={qrPlacementPhotoPreview} alt="QR placement preview" className="admin-photo-preview" />}
+              </label>
             </div>
 
             <div className="admin-form-actions">
               <button
                 type="button"
                 className="admin-outline-button"
-                onClick={() =>
-                  setShowCreateVendor(false)
-                }
+                onClick={() => {
+                  setShowCreateVendor(false);
+                  resetOnboardingCapture();
+                }}
               >
                 Cancel
               </button>
@@ -1724,7 +1879,16 @@ function AdminPage() {
             Select current page
           </label>
           <span>{selectedVendorIds.length} selected</span>
-          <button type="button" className="admin-mini-button danger" disabled={!selectedVendorIds.length || loading} onClick={bulkDeleteVendors}>Delete selected</button>
+          {confirmBulkDeleteVendors ? (
+            <span className="admin-inline-confirm">
+              <button type="button" className="admin-mini-button danger solid" disabled={loading} onClick={bulkDeleteVendors}>Confirm</button>
+              <button type="button" className="admin-mini-button admin-inline-confirm-cancel" disabled={loading} onClick={() => setConfirmBulkDeleteVendors(false)} aria-label="Cancel delete">
+                <Icon path={ICONS.close} />
+              </button>
+            </span>
+          ) : (
+            <button type="button" className="admin-mini-button danger" disabled={!selectedVendorIds.length || loading} onClick={() => setConfirmBulkDeleteVendors(true)}>Delete selected</button>
+          )}
         </div>
 
         <div className="admin-table-wrap">
@@ -1840,27 +2004,48 @@ function AdminPage() {
                         {editingVendorId ===
                         vendor.id ? (
                           <>
-                            <button
-                              className="admin-mini-button success"
-                              onClick={(event) =>
-                                saveVendorEdit(
-                                  event,
-                                  vendor.id
-                                )
-                              }
-                            >
-                              <Icon
-                                path={ICONS.check}
-                              />
-                            </button>
+                            {confirmSaveVendorEdit ? (
+                              <span className="admin-inline-confirm">
+                                <button
+                                  className="admin-mini-button success"
+                                  disabled={loading}
+                                  onClick={(event) =>
+                                    saveVendorEdit(
+                                      event,
+                                      vendor.id
+                                    )
+                                  }
+                                >
+                                  Confirm
+                                </button>
+                                <button
+                                  className="admin-mini-button admin-inline-confirm-cancel"
+                                  disabled={loading}
+                                  onClick={() => setConfirmSaveVendorEdit(false)}
+                                  aria-label="Cancel save"
+                                >
+                                  <Icon path={ICONS.close} />
+                                </button>
+                              </span>
+                            ) : (
+                              <button
+                                className="admin-mini-button success"
+                                disabled={loading}
+                                onClick={() => setConfirmSaveVendorEdit(true)}
+                              >
+                                <Icon
+                                  path={ICONS.check}
+                                />
+                              </button>
+                            )}
 
                             <button
                               className="admin-mini-button"
-                              onClick={() =>
-                                setEditingVendorId(
-                                  null
-                                )
-                              }
+                              disabled={loading}
+                              onClick={() => {
+                                setEditingVendorId(null);
+                                setConfirmSaveVendorEdit(false);
+                              }}
                             >
                               Cancel
                             </button>
@@ -1881,46 +2066,152 @@ function AdminPage() {
                               Edit
                             </button>
 
+                            {confirmResetPasswordVendorId === vendor.id ? (
+                              <span className="admin-inline-confirm">
+                                <button
+                                  className="admin-mini-button primary solid"
+                                  disabled={loading}
+                                  onClick={() =>
+                                    resetVendorPassword(
+                                      vendor.id,
+                                      vendor.businessName
+                                    )
+                                  }
+                                >
+                                  Confirm
+                                </button>
+                                <button
+                                  className="admin-mini-button admin-inline-confirm-cancel"
+                                  disabled={loading}
+                                  onClick={() => setConfirmResetPasswordVendorId(null)}
+                                  aria-label="Cancel reset"
+                                >
+                                  <Icon path={ICONS.close} />
+                                </button>
+                              </span>
+                            ) : (
+                              <button
+                                className="admin-mini-button"
+                                disabled={loading}
+                                onClick={() => setConfirmResetPasswordVendorId(vendor.id)}
+                              >
+                                Reset
+                              </button>
+                            )}
+
+                            {confirmDeactivateVendorId === vendor.id ? (
+                              <span className="admin-inline-confirm">
+                                <button
+                                  className="admin-mini-button danger solid"
+                                  disabled={loading}
+                                  onClick={() =>
+                                    deactivateVendor(
+                                      vendor.id,
+                                      vendor.businessName
+                                    )
+                                  }
+                                >
+                                  Confirm
+                                </button>
+                                <button
+                                  className="admin-mini-button admin-inline-confirm-cancel"
+                                  disabled={loading}
+                                  onClick={() => setConfirmDeactivateVendorId(null)}
+                                  aria-label="Cancel deactivation"
+                                >
+                                  <Icon path={ICONS.close} />
+                                </button>
+                              </span>
+                            ) : (
+                              <button
+                                className="admin-mini-button danger"
+                                disabled={loading}
+                                onClick={() => setConfirmDeactivateVendorId(vendor.id)}
+                              >
+                                Deactivate
+                              </button>
+                            )}
+
+                            {confirmDeleteVendorId === vendor.id ? (
+                              <span className="admin-inline-confirm">
+                                <button
+                                  className="admin-mini-button danger solid"
+                                  disabled={loading}
+                                  onClick={() =>
+                                    deleteVendor(
+                                      vendor.id,
+                                      vendor.businessName
+                                    )
+                                  }
+                                >
+                                  Confirm
+                                </button>
+                                <button
+                                  className="admin-mini-button admin-inline-confirm-cancel"
+                                  disabled={loading}
+                                  onClick={() => setConfirmDeleteVendorId(null)}
+                                  aria-label="Cancel delete"
+                                >
+                                  <Icon path={ICONS.close} />
+                                </button>
+                              </span>
+                            ) : (
+                              <button
+                                className="admin-mini-button danger"
+                                disabled={loading}
+                                onClick={() => setConfirmDeleteVendorId(vendor.id)}
+                              >
+                                Delete
+                              </button>
+                            )}
+                            {confirmPurgeVendorId === vendor.id ? (
+                              <span className="admin-inline-confirm">
+                                <input
+                                  type="text"
+                                  className="admin-inline-confirm-input"
+                                  placeholder={`Type "${vendor.businessName}" to confirm`}
+                                  title={`Permanent cleanup will remove ${vendor.businessName}, assignments, scans, sessions, registration, and bank documents. Leads will remain as Deleted Solar Mitra records. This cannot be undone.`}
+                                  value={purgeConfirmText}
+                                  disabled={loading}
+                                  onChange={(event) => setPurgeConfirmText(event.target.value)}
+                                />
+                                <button
+                                  className="admin-mini-button danger solid"
+                                  disabled={loading || purgeConfirmText.trim() !== vendor.businessName}
+                                  onClick={() => purgeVendor(vendor.id, vendor.businessName)}
+                                >
+                                  Confirm
+                                </button>
+                                <button
+                                  className="admin-mini-button admin-inline-confirm-cancel"
+                                  disabled={loading}
+                                  onClick={() => {
+                                    setConfirmPurgeVendorId(null);
+                                    setPurgeConfirmText('');
+                                  }}
+                                  aria-label="Cancel purge"
+                                >
+                                  <Icon path={ICONS.close} />
+                                </button>
+                              </span>
+                            ) : (
+                              <button
+                                className="admin-mini-button danger"
+                                disabled={loading}
+                                title={`Permanent cleanup will remove ${vendor.businessName}, assignments, scans, sessions, registration, and bank documents. Leads will remain as Deleted Solar Mitra records. This cannot be undone.`}
+                                onClick={() => {
+                                  setConfirmPurgeVendorId(vendor.id);
+                                  setPurgeConfirmText('');
+                                }}
+                              >
+                                Purge history
+                              </button>
+                            )}
                             <button
                               className="admin-mini-button"
-                              onClick={() =>
-                                resetVendorPassword(
-                                  vendor.id,
-                                  vendor.businessName
-                                )
-                              }
+                              onClick={() => viewVendorOnboardingMedia(vendor)}
                             >
-                              Reset
-                            </button>
-
-                            <button
-                              className="admin-mini-button danger"
-                              onClick={() =>
-                                deactivateVendor(
-                                  vendor.id,
-                                  vendor.businessName
-                                )
-                              }
-                            >
-                              Deactivate
-                            </button>
-
-                            <button
-                              className="admin-mini-button danger"
-                              onClick={() =>
-                                deleteVendor(
-                                  vendor.id,
-                                  vendor.businessName
-                                )
-                              }
-                            >
-                              Delete
-                            </button>
-                            <button
-                              className="admin-mini-button danger"
-                              onClick={() => purgeVendor(vendor.id, vendor.businessName)}
-                            >
-                              Purge history
+                              Onboarding media
                             </button>
                           </>
                         )}
@@ -2081,19 +2372,31 @@ function AdminPage() {
                   ))}
                 </select>
 
-                <button
-                  className="admin-primary-button"
-                  disabled={loading || !scanVendorId}
-                  onClick={assignScannedQr}
-                >
-                  {scannedQr.status === 'ACTIVE' ? 'Reassign' : 'Assign'}
-                </button>
+                {confirmAssignScannedQr ? (
+                  <span className="admin-inline-confirm">
+                    <button className="admin-primary-button" disabled={loading} onClick={assignScannedQr}>
+                      Confirm
+                    </button>
+                    <button className="admin-outline-button" disabled={loading} onClick={() => setConfirmAssignScannedQr(false)} aria-label="Cancel assignment">
+                      <Icon path={ICONS.close} />
+                    </button>
+                  </span>
+                ) : (
+                  <button
+                    className="admin-primary-button"
+                    disabled={loading || !scanVendorId}
+                    onClick={() => setConfirmAssignScannedQr(true)}
+                  >
+                    {scannedQr.status === 'ACTIVE' ? 'Reassign' : 'Assign'}
+                  </button>
+                )}
 
                 <button
                   className="admin-outline-button"
                   onClick={() => {
                     setScannedQr(null);
                     setScanVendorId('');
+                    setConfirmAssignScannedQr(false);
                   }}
                 >
                   Cancel
@@ -2322,9 +2625,20 @@ function AdminPage() {
                     </button>
                   )}
                   {lastPrintJob.status === 'PENDING_APPROVAL' && lastPrintJob.proofCheckedAt && (
-                    <button type="button" className="admin-primary-button" disabled={loading} onClick={() => approvePrintProof(lastPrintJob)}>
-                      Approve proof
-                    </button>
+                    confirmApprovePrintProof ? (
+                      <span className="admin-inline-confirm">
+                        <button type="button" className="admin-primary-button" disabled={loading} onClick={() => approvePrintProof(lastPrintJob)}>
+                          Confirm approval
+                        </button>
+                        <button type="button" className="admin-outline-button" disabled={loading} onClick={() => setConfirmApprovePrintProof(false)} aria-label="Cancel approval">
+                          <Icon path={ICONS.close} />
+                        </button>
+                      </span>
+                    ) : (
+                      <button type="button" className="admin-primary-button" disabled={loading} onClick={() => setConfirmApprovePrintProof(true)}>
+                        Approve proof
+                      </button>
+                    )
                   )}
                   {(lastPrintJob.status === 'APPROVED' || process.env.NODE_ENV === 'development') && (
                     <>
@@ -2547,31 +2861,64 @@ function AdminPage() {
                             )}
                           </select>
 
-                          <button
-                            className="admin-mini-button"
-                            disabled={loading}
-                            onClick={() =>
-                              assignQr(
-                                qr,
-                                Boolean(
-                                  currentVendor
-                                )
-                              )
-                            }
-                          >
-                            {currentVendor
-                              ? 'Reassign'
-                              : 'Assign'}
-                          </button>
+                          {confirmAssignQrId === qr.id ? (
+                            <span className="admin-inline-confirm">
+                              <button
+                                className="admin-mini-button primary solid"
+                                disabled={loading}
+                                onClick={() => assignQr(qr, Boolean(currentVendor))}
+                              >
+                                Confirm
+                              </button>
+                              <button
+                                className="admin-mini-button admin-inline-confirm-cancel"
+                                disabled={loading}
+                                onClick={() => setConfirmAssignQrId(null)}
+                                aria-label="Cancel assignment"
+                              >
+                                <Icon path={ICONS.close} />
+                              </button>
+                            </span>
+                          ) : (
+                            <button
+                              className="admin-mini-button"
+                              disabled={loading}
+                              onClick={() => armAssignQr(qr)}
+                            >
+                              {currentVendor
+                                ? 'Reassign'
+                                : 'Assign'}
+                            </button>
+                          )}
 
                           {qr.status === 'UNASSIGNED' && (
-                            <button
-                              className="admin-mini-button danger"
-                              disabled={loading}
-                              onClick={() => deleteQr(qr)}
-                            >
-                              Delete
-                            </button>
+                            confirmDeleteQrId === qr.id ? (
+                              <span className="admin-inline-confirm">
+                                <button
+                                  className="admin-mini-button danger solid"
+                                  disabled={loading}
+                                  onClick={() => deleteQr(qr)}
+                                >
+                                  Confirm
+                                </button>
+                                <button
+                                  className="admin-mini-button admin-inline-confirm-cancel"
+                                  disabled={loading}
+                                  onClick={() => setConfirmDeleteQrId(null)}
+                                  aria-label="Cancel delete"
+                                >
+                                  <Icon path={ICONS.close} />
+                                </button>
+                              </span>
+                            ) : (
+                              <button
+                                className="admin-mini-button danger"
+                                disabled={loading}
+                                onClick={() => setConfirmDeleteQrId(qr.id)}
+                              >
+                                Delete
+                              </button>
+                            )
                           )}
                         </div>
                       </td>
@@ -2873,13 +3220,33 @@ function AdminPage() {
                                 <Icon path={ICONS.eye} />
                                 View
                               </button>
-                              <button
-                                className="admin-mini-button danger"
-                                disabled={loading}
-                                onClick={() => deleteLead(lead)}
-                              >
-                                Delete
-                              </button>
+                              {confirmDeleteLeadId === lead.id ? (
+                                <span className="admin-inline-confirm">
+                                  <button
+                                    className="admin-mini-button danger solid"
+                                    disabled={loading}
+                                    onClick={() => deleteLead(lead)}
+                                  >
+                                    Confirm
+                                  </button>
+                                  <button
+                                    className="admin-mini-button admin-inline-confirm-cancel"
+                                    disabled={loading}
+                                    onClick={() => setConfirmDeleteLeadId(null)}
+                                    aria-label="Cancel delete"
+                                  >
+                                    <Icon path={ICONS.close} />
+                                  </button>
+                                </span>
+                              ) : (
+                                <button
+                                  className="admin-mini-button danger"
+                                  disabled={loading}
+                                  onClick={() => setConfirmDeleteLeadId(lead.id)}
+                                >
+                                  Delete
+                                </button>
+                              )}
                             </div>
                           </td>
                         </tr>
@@ -3216,18 +3583,43 @@ function AdminPage() {
                               <td>
                                 <div className="admin-row-actions">
                                   {['UNPAID', 'PARTIAL', 'PAID'].map((status) => (
-                                    <button
-                                      key={status}
-                                      className={`admin-mini-button ${payout.status === status ? 'selected' : ''}`}
-                                      disabled={loading}
-                                      onClick={() => updatePayoutStatus(payout, status)}
-                                    >
-                                      {payout.status === status ? '✓ ' : ''}{status}
-                                    </button>
+                                    confirmPayoutStatusKey === `${payout.id}:${status}` ? (
+                                      <span key={status} className="admin-inline-confirm">
+                                        <button
+                                          className="admin-mini-button primary solid"
+                                          disabled={loading}
+                                          onClick={() => updatePayoutStatus(payout, status)}
+                                        >
+                                          Confirm
+                                        </button>
+                                        <button
+                                          className="admin-mini-button admin-inline-confirm-cancel"
+                                          disabled={loading}
+                                          onClick={() => setConfirmPayoutStatusKey(null)}
+                                          aria-label="Cancel status change"
+                                        >
+                                          <Icon path={ICONS.close} />
+                                        </button>
+                                      </span>
+                                    ) : (
+                                      <button
+                                        key={status}
+                                        className={`admin-mini-button ${payout.status === status ? 'selected' : ''}`}
+                                        disabled={loading}
+                                        onClick={() => armPayoutStatus(payout, status)}
+                                      >
+                                        {payout.status === status ? '✓ ' : ''}{status}
+                                      </button>
+                                    )
                                   ))}
                                   {group.vendor && (
                                     <button className="admin-mini-button" onClick={() => viewVendorBankDetails(group.vendor)}>
                                       Bank details
+                                    </button>
+                                  )}
+                                  {group.vendor && (
+                                    <button className="admin-mini-button" onClick={() => viewVendorOnboardingMedia(group.vendor)}>
+                                      Onboarding media
                                     </button>
                                   )}
                                 </div>
@@ -3449,30 +3841,64 @@ function AdminPage() {
                           </option>
                         </select>
 
-                        <button
-                          className="admin-mini-button"
-                          onClick={() =>
-                            updateStaffUserRole(
-                              user
-                            )
-                          }
-                        >
-                          Update
-                        </button>
+                        {confirmUpdateRoleId === user.id ? (
+                          <span className="admin-inline-confirm">
+                            <button
+                              className="admin-mini-button primary solid"
+                              disabled={loading}
+                              onClick={() => updateStaffUserRole(user)}
+                            >
+                              Confirm
+                            </button>
+                            <button
+                              className="admin-mini-button admin-inline-confirm-cancel"
+                              disabled={loading}
+                              onClick={() => setConfirmUpdateRoleId(null)}
+                              aria-label="Cancel role change"
+                            >
+                              <Icon path={ICONS.close} />
+                            </button>
+                          </span>
+                        ) : (
+                          <button
+                            className="admin-mini-button"
+                            disabled={loading}
+                            onClick={() => armUpdateStaffUserRole(user)}
+                          >
+                            Update
+                          </button>
+                        )}
                       </div>
                     </td>
 
                     <td>
-                      <button
-                        className="admin-mini-button danger"
-                        onClick={() =>
-                          deactivateStaffUser(
-                            user
-                          )
-                        }
-                      >
-                        Deactivate
-                      </button>
+                      {confirmDeactivateStaffId === user.id ? (
+                        <span className="admin-inline-confirm">
+                          <button
+                            className="admin-mini-button danger solid"
+                            disabled={loading}
+                            onClick={() => deactivateStaffUser(user)}
+                          >
+                            Confirm
+                          </button>
+                          <button
+                            className="admin-mini-button admin-inline-confirm-cancel"
+                            disabled={loading}
+                            onClick={() => setConfirmDeactivateStaffId(null)}
+                            aria-label="Cancel deactivation"
+                          >
+                            <Icon path={ICONS.close} />
+                          </button>
+                        </span>
+                      ) : (
+                        <button
+                          className="admin-mini-button danger"
+                          disabled={loading}
+                          onClick={() => setConfirmDeactivateStaffId(user.id)}
+                        >
+                          Deactivate
+                        </button>
+                      )}
                     </td>
                   </tr>
                 ))
@@ -3703,6 +4129,77 @@ function AdminPage() {
                 </div>
               </>
             ) : <p className="admin-scan-assign-blocked">No bank details submitted yet.</p>}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  function closeOnboardingMediaModal() {
+    setDetailOnboardingMedia(null);
+    setMediaCoordsText('');
+    setMediaLocationError('');
+  }
+
+  function renderOnboardingMediaModal() {
+    const { vendor, media } = detailOnboardingMedia;
+    return (
+      <div className="admin-modal-overlay" onClick={closeOnboardingMediaModal}>
+        <div className="admin-modal" role="dialog" aria-modal="true" aria-label="Solar Mitra onboarding media" onClick={(event) => event.stopPropagation()}>
+          <div className="admin-modal-header">
+            <div>
+              <span className="admin-eyebrow">ONBOARDING MEDIA</span>
+              <h2>{vendor.businessName}</h2>
+            </div>
+            <button className="admin-mini-button" onClick={closeOnboardingMediaModal} aria-label="Close"><Icon path={ICONS.close} /></button>
+          </div>
+          <div className="admin-modal-body">
+            <dl className="admin-modal-fields">
+              <dt>Shop location</dt>
+              <dd>
+                {media?.latitude != null && media?.longitude != null ? (
+                  <a href={`https://maps.google.com/?q=${media.latitude},${media.longitude}`} target="_blank" rel="noreferrer">
+                    {media.latitude.toFixed(5)}, {media.longitude.toFixed(5)}
+                    {media.accuracy != null ? ` (±${Math.round(media.accuracy)}m)` : ''}
+                  </a>
+                ) : 'Not captured yet.'}
+              </dd>
+            </dl>
+
+            <div className="admin-form-field">
+              <span>Set or fix shop coordinates (type or paste)</span>
+              <div className="admin-coords-row">
+                <input
+                  type="text"
+                  placeholder="e.g. 18.5204, 73.8567"
+                  value={mediaCoordsText}
+                  onChange={(event) => setMediaCoordsText(event.target.value)}
+                />
+                <button type="button" className="admin-outline-button" disabled={loading} onClick={() => applyMediaCoordsText(vendor.id)}>
+                  <Icon path={ICONS.target} />
+                  Save location
+                </button>
+              </div>
+              {mediaLocationError && <small className="admin-field-error">{mediaLocationError}</small>}
+            </div>
+
+            <div className="admin-onboarding-photos">
+              <div className="admin-form-field">
+                <span>Shop photo</span>
+                {media?.shopPhotoUrl
+                  ? <img src={media.shopPhotoUrl} alt="Shop" className="admin-photo-preview" />
+                  : <p className="admin-scan-assign-blocked">Not uploaded yet.</p>}
+                <input type="file" accept="image/jpeg,image/png" disabled={loading} onChange={(event) => replaceOnboardingPhoto(vendor.id, 'shop', event)} />
+              </div>
+
+              <div className="admin-form-field">
+                <span>QR placement photo</span>
+                {media?.qrPlacementPhotoUrl
+                  ? <img src={media.qrPlacementPhotoUrl} alt="QR placement" className="admin-photo-preview" />
+                  : <p className="admin-scan-assign-blocked">Not uploaded yet.</p>}
+                <input type="file" accept="image/jpeg,image/png" disabled={loading} onChange={(event) => replaceOnboardingPhoto(vendor.id, 'qr-placement', event)} />
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -4378,6 +4875,7 @@ function AdminPage() {
 
         {detailLead && renderLeadDetailModal()}
         {detailBank && renderBankDetailsModal()}
+        {detailOnboardingMedia && renderOnboardingMediaModal()}
         {detailAuditLog && renderAuditLogDetailModal()}
         {deletionResult && renderDeletionResultModal()}
         {importResult && renderImportResultModal()}

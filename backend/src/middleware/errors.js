@@ -7,14 +7,17 @@ export function notFoundHandler(_request, response) {
 
 export function errorHandler(error, request, response, _next) {
   if (error.name === 'MulterError' && error.code === 'LIMIT_FILE_SIZE') {
-    const isQrArtwork = error.field === 'artwork';
-    return response.status(413).json({
-      success: false,
-      error: {
-        code: isQrArtwork ? 'QR_ARTWORK_TOO_LARGE' : 'DOCUMENT_TOO_LARGE',
-        message: isQrArtwork ? 'QR artwork must be 2 MB or smaller.' : 'Documents must be 200 KB or smaller.',
-      },
-    });
+    // Multer's own size-limit error is thrown by its middleware before the route handler
+    // ever runs, so it always lands here (Express skips straight to error-handling
+    // middleware) — a route's own inline MulterError check in its catch block never fires.
+    // The multipart field name is the only way to tell which upload this was.
+    if (error.field === 'artwork') {
+      return response.status(413).json({ success: false, error: { code: 'QR_ARTWORK_TOO_LARGE', message: 'QR artwork must be 2 MB or smaller.' } });
+    }
+    if (error.field === 'photo') {
+      return response.status(413).json({ success: false, error: { code: 'PHOTO_TOO_LARGE', message: 'Photos must be 15 MB or smaller.' } });
+    }
+    return response.status(413).json({ success: false, error: { code: 'DOCUMENT_TOO_LARGE', message: 'Documents must be 200 KB or smaller.' } });
   }
   if (error.name === 'ZodError') {
     return response.status(400).json({
