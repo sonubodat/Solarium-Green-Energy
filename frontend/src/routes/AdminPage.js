@@ -87,6 +87,11 @@ function AdminPage() {
   // backend is, e.g. a cold Render instance waking up), before silently swapping to the
   // dashboard. Shows a skeleton instead of that flash.
   const [sessionChecked, setSessionChecked] = useState(false);
+  // Latest `retention` object from whichever admin resource last loaded (dashboard or
+  // audit-logs, the only two endpoints that return it) — drives both the blocking
+  // "export before it gets deleted" modal and the informational at-capacity note.
+  const [retentionStatus, setRetentionStatus] = useState(null);
+  const [retentionExportState, setRetentionExportState] = useState({ loading: false, error: '' });
   const [resource, setResource] = useState('dashboard');
   // Scoped to switching resources specifically (sidebar nav clicks), not every filter change,
   // pagination click, or Refresh — those already show their own loading state on the button and
@@ -163,6 +168,9 @@ function AdminPage() {
   const [lastPrintJob, setLastPrintJob] = useState(null);
   const [confirmApprovePrintProof, setConfirmApprovePrintProof] = useState(false);
   const [templateSingleDraft, setTemplateSingleDraft] = useState({ template_id: '', code: '' });
+  const [confirmDeleteTemplateId, setConfirmDeleteTemplateId] = useState(null);
+  const [confirmArchiveTemplateId, setConfirmArchiveTemplateId] = useState(null);
+  const [previewTemplate, setPreviewTemplate] = useState(null);
   const [reassignVendorInputs, setReassignVendorInputs] = useState({});
   const [confirmDeleteQrId, setConfirmDeleteQrId] = useState(null);
   const [confirmAssignQrId, setConfirmAssignQrId] = useState(null);
@@ -398,6 +406,7 @@ function AdminPage() {
           ...current,
           data,
         }));
+        if (data.retention) setRetentionStatus(data.retention);
 
         return;
       }
@@ -422,6 +431,7 @@ function AdminPage() {
         ...current,
         data,
       }));
+      if (data.retention) setRetentionStatus(data.retention);
 
       if (nextResource === 'qr') {
         const [lookup, templates] = await Promise.all([
@@ -885,6 +895,55 @@ function AdminPage() {
     }
   }
 
+  // Only reaches the backend when the row's own inline Confirm is clicked — the backend
+  // independently re-checks print-job usage regardless of what this page currently shows.
+  async function deleteQrTemplate(templateId) {
+    setLoading(true);
+    try {
+      await apiRequest(`/admin/qr/templates/${templateId}/delete`, { method: 'POST' });
+      setMessage('Template deleted.');
+      setMessageType('success');
+      await loadAdminResource('qr', adminPage);
+    } catch (error) {
+      setMessage(error.message);
+      setMessageType('error');
+    } finally {
+      setLoading(false);
+      setConfirmDeleteTemplateId(null);
+    }
+  }
+
+  async function archiveQrTemplate(templateId) {
+    setLoading(true);
+    try {
+      await apiRequest(`/admin/qr/templates/${templateId}/archive`, { method: 'POST' });
+      setMessage('Template archived. It can be restored later.');
+      setMessageType('success');
+      await loadAdminResource('qr', adminPage);
+    } catch (error) {
+      setMessage(error.message);
+      setMessageType('error');
+    } finally {
+      setLoading(false);
+      setConfirmArchiveTemplateId(null);
+    }
+  }
+
+  async function restoreQrTemplate(templateId) {
+    setLoading(true);
+    try {
+      await apiRequest(`/admin/qr/templates/${templateId}/restore`, { method: 'POST' });
+      setMessage('Template restored.');
+      setMessageType('success');
+      await loadAdminResource('qr', adminPage);
+    } catch (error) {
+      setMessage(error.message);
+      setMessageType('error');
+    } finally {
+      setLoading(false);
+    }
+  }
+
   async function createPrintBatch(event) {
     event.preventDefault();
     const { template_id, range_start, range_end } = printBatchDraft;
@@ -956,6 +1015,25 @@ function AdminPage() {
     try {
       const result = await apiRequest(`/admin/qr/print-batch/${encodeURIComponent(job.id)}/proof`, { forceRefresh: true });
       window.open(result.proof_url, '_blank', 'noopener,noreferrer');
+    } catch (error) {
+      setMessage(error.message);
+      setMessageType('error');
+    }
+  }
+
+  // The artwork URL already on `template` (from the last /qr/templates load) is a signed URL —
+  // it can go stale if the page has sat open a while, so this refetches fresh right before
+  // opening it, same reasoning as viewPrintProof above.
+  async function previewQrTemplateArtwork(template) {
+    try {
+      const result = await apiRequest('/admin/qr/templates', { forceRefresh: true });
+      const fresh = (result.templates || []).find((item) => item.id === template.id);
+      if (!fresh?.artworkUrl) {
+        setMessage('No artwork is available for this template.');
+        setMessageType('error');
+        return;
+      }
+      setPreviewTemplate(fresh);
     } catch (error) {
       setMessage(error.message);
       setMessageType('error');
@@ -1463,6 +1541,41 @@ function AdminPage() {
     window.location.href = `${API_BASE_URL}/admin/leads/export`;
   }
 
+  // Plain, non-blocking export — used by the Audit Logs page's own "Export CSV" button.
+  // Nothing gates on this succeeding, so the simple navigation-triggered download (same
+  // pattern as downloadLeadsCsv) is fine here.
+  function downloadAuditLogsCsv() {
+    window.location.href = `${API_BASE_URL}/admin/audit-logs/export`;
+  }
+
+  // Used by the blocking retention-warning modal specifically. Unlike downloadAuditLogsCsv
+  // above, this one's success/failure actually matters — the modal only dismisses once the
+  // download is confirmed to have worked, so it needs a real fetch (a plain navigation gives
+  // no success/failure signal in JS at all).
+  async function confirmRetentionExport() {
+    setRetentionExportState({ loading: true, error: '' });
+    try {
+      const response = await fetch(`${API_BASE_URL}/admin/audit-logs/export`, { credentials: 'include' });
+      if (!response.ok) {
+        throw new Error('Export failed. Please try again.');
+      }
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = 'solarium-audit-logs.csv';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+
+      setRetentionExportState({ loading: false, error: '' });
+      setRetentionStatus((current) => (current ? { ...current, needsAcknowledgment: false } : current));
+    } catch (error) {
+      setRetentionExportState({ loading: false, error: error.message });
+    }
+  }
+
   function downloadLeadsImportTemplate() {
     window.location.href = `${API_BASE_URL}/admin/leads/import-template`;
   }
@@ -1535,6 +1648,12 @@ function AdminPage() {
             Refresh
           </button>
         </div>
+
+        {data.retention?.atCapacity && (
+          <p className="admin-audit-capacity-note">
+            Audit log storage is at its {data.retention.cap}-row limit. Older entries are removed automatically as new ones are added.
+          </p>
+        )}
 
         <div className="admin-stat-grid">
           {stats.map(([label, value, icon]) => (
@@ -2684,11 +2803,96 @@ function AdminPage() {
                   <div>
                     <strong>{template.name}</strong>
                     <div className="muted">{template.status} · {template.pageWidthMm} × {template.pageHeightMm} mm · {template.dpi} DPI</div>
+                    <div className="muted">
+                      {template.printJobCount > 0
+                        ? `Used in ${template.printJobCount} print job${template.printJobCount === 1 ? '' : 's'}`
+                        : 'Not used yet'}
+                    </div>
                   </div>
-                  {template.status !== 'PUBLISHED' && (
+
+                  {template.artworkUrl && (
+                    <button
+                      type="button"
+                      className="admin-mini-button"
+                      onClick={() => previewQrTemplateArtwork(template)}
+                    >
+                      Preview
+                    </button>
+                  )}
+
+                  {template.status === 'DRAFT' && (
                     <button type="button" className="admin-mini-button" onClick={() => publishQrTemplate(template.id)}>
                       Publish
                     </button>
+                  )}
+
+                  {template.status === 'ARCHIVED' && (
+                    <button type="button" className="admin-mini-button" onClick={() => restoreQrTemplate(template.id)}>
+                      Restore
+                    </button>
+                  )}
+
+                  {template.status !== 'ARCHIVED' && (
+                    template.printJobCount > 0 ? (
+                      confirmArchiveTemplateId === template.id ? (
+                        <span className="admin-inline-confirm">
+                          <button
+                            className="admin-mini-button primary solid"
+                            disabled={loading}
+                            onClick={() => archiveQrTemplate(template.id)}
+                          >
+                            Confirm
+                          </button>
+                          <button
+                            className="admin-mini-button admin-inline-confirm-cancel"
+                            disabled={loading}
+                            onClick={() => setConfirmArchiveTemplateId(null)}
+                            aria-label="Cancel archive"
+                          >
+                            <Icon path={ICONS.close} />
+                          </button>
+                        </span>
+                      ) : (
+                        <button
+                          type="button"
+                          className="admin-mini-button"
+                          disabled={loading}
+                          title="This template has print job history and can't be deleted. Archiving removes it from future template selection without affecting existing print jobs — it can be restored later."
+                          onClick={() => setConfirmArchiveTemplateId(template.id)}
+                        >
+                          Archive
+                        </button>
+                      )
+                    ) : (
+                      confirmDeleteTemplateId === template.id ? (
+                        <span className="admin-inline-confirm">
+                          <button
+                            className="admin-mini-button danger solid"
+                            disabled={loading}
+                            onClick={() => deleteQrTemplate(template.id)}
+                          >
+                            Confirm
+                          </button>
+                          <button
+                            className="admin-mini-button admin-inline-confirm-cancel"
+                            disabled={loading}
+                            onClick={() => setConfirmDeleteTemplateId(null)}
+                            aria-label="Cancel delete"
+                          >
+                            <Icon path={ICONS.close} />
+                          </button>
+                        </span>
+                      ) : (
+                        <button
+                          type="button"
+                          className="admin-mini-button danger"
+                          disabled={loading}
+                          onClick={() => setConfirmDeleteTemplateId(template.id)}
+                        >
+                          Delete
+                        </button>
+                      )
+                    )
                   )}
                 </div>
               ))}
@@ -3943,22 +4147,33 @@ function AdminPage() {
             </p>
           </div>
 
-          <button
-            className="admin-outline-button"
-            onClick={() =>
-              loadAdminResource(
-                'audit-logs',
-                adminPage,
-                undefined,
-                undefined,
-                true
-              )
-            }
-          >
-            <Icon path={ICONS.refresh} />
-            Refresh
-          </button>
+          <div className="admin-heading-actions">
+            <button className="admin-outline-button" onClick={downloadAuditLogsCsv}>
+              Export CSV
+            </button>
+            <button
+              className="admin-outline-button"
+              onClick={() =>
+                loadAdminResource(
+                  'audit-logs',
+                  adminPage,
+                  undefined,
+                  undefined,
+                  true
+                )
+              }
+            >
+              <Icon path={ICONS.refresh} />
+              Refresh
+            </button>
+          </div>
         </div>
+
+        {portalData?.data?.retention?.atCapacity && (
+          <p className="admin-audit-capacity-note">
+            Audit log storage is at its {portalData.data.retention.cap}-row limit. Older entries are removed automatically as new ones are added.
+          </p>
+        )}
 
         <div className="admin-audit-list">
           {logs.length ? (
@@ -4139,6 +4354,70 @@ function AdminPage() {
     setDetailOnboardingMedia(null);
     setMediaCoordsText('');
     setMediaLocationError('');
+  }
+
+  // Deliberately no backdrop-click dismiss and no close button — this one only closes once
+  // the export is confirmed to have actually worked (see confirmRetentionExport).
+  function renderRetentionGateModal() {
+    return (
+      <div className="admin-modal-overlay">
+        <div className="admin-modal" role="dialog" aria-modal="true" aria-label="Audit log storage warning">
+          <div className="admin-modal-header">
+            <div>
+              <span className="admin-eyebrow">STORAGE WARNING</span>
+              <h2>Audit log storage is almost full</h2>
+            </div>
+          </div>
+          <div className="admin-modal-body">
+            <p>
+              Audit logs are at {retentionStatus?.count} of {retentionStatus?.cap} rows.
+              Download a copy before older entries are automatically deleted.
+            </p>
+            {retentionExportState.error && (
+              <p className="admin-field-error">{retentionExportState.error}</p>
+            )}
+            <button
+              type="button"
+              className="admin-primary-button"
+              disabled={retentionExportState.loading}
+              onClick={confirmRetentionExport}
+            >
+              {retentionExportState.loading
+                ? 'Downloading…'
+                : retentionExportState.error
+                ? 'Retry download'
+                : 'Download audit logs'}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  function renderTemplatePreviewModal() {
+    const isPdf = previewTemplate.artworkMimeType === 'application/pdf';
+    return (
+      <div className="admin-modal-overlay" onClick={() => setPreviewTemplate(null)}>
+        <div className="admin-modal admin-template-preview-modal" role="dialog" aria-modal="true" aria-label={`${previewTemplate.name} artwork preview`} onClick={(event) => event.stopPropagation()}>
+          <div className="admin-modal-header">
+            <div>
+              <span className="admin-eyebrow">TEMPLATE ARTWORK</span>
+              <h2>{previewTemplate.name}</h2>
+            </div>
+            <button className="admin-mini-button" onClick={() => setPreviewTemplate(null)} aria-label="Close">
+              <Icon path={ICONS.close} />
+            </button>
+          </div>
+          <div className="admin-modal-body">
+            {isPdf ? (
+              <iframe src={previewTemplate.artworkUrl} title={`${previewTemplate.name} artwork`} className="admin-template-preview-frame" />
+            ) : (
+              <img src={previewTemplate.artworkUrl} alt={`${previewTemplate.name} artwork`} className="admin-template-preview-image" />
+            )}
+          </div>
+        </div>
+      </div>
+    );
   }
 
   function renderOnboardingMediaModal() {
@@ -4881,6 +5160,8 @@ function AdminPage() {
         {importResult && renderImportResultModal()}
         {showBulkCreateVendors && renderBulkCreateVendorsModal()}
         {bulkVendorResult && renderBulkVendorResultModal()}
+        {retentionStatus?.needsAcknowledgment && renderRetentionGateModal()}
+        {previewTemplate && renderTemplatePreviewModal()}
       </main>
     </div>
   );

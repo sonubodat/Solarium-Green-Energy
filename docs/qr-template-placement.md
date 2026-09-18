@@ -110,3 +110,18 @@ Production generation is a separate queued worker step. The worker must generate
 - [ ] The final PDF is stored privately.
 - [x] A failed database write does not leave an orphaned artwork object.
 - [x] A failed proof metadata write does not leave an orphaned proof object.
+
+## Deleting, archiving, and restoring a template
+
+A `QrPrintJob` holds a required foreign key to its `QrPrintTemplate` (no cascade), so a template that's been used for any real print job — batch or single-code — can never be safely hard-deleted; that job's own `templateSnapshot` (an immutable copy of the template's rendering fields, captured at creation time) is what actually renders its PDF/proof, never the live template row. Two admin actions reflect this directly instead of one action that behaves inconsistently: **Delete** only succeeds when zero `QrPrintJob` rows reference the template (verified inside a transaction, with the FK's own `P2003` as a backstop against a genuinely concurrent print-job creation); **Archive** sets `status: ARCHIVED` unconditionally and is always reversible via **Restore** (`status` back to `PUBLISHED`) — nothing about the template's artwork or history is touched either way.
+
+No QR code ever stores which template it was printed with — reprinting always means picking a template fresh from whichever ones are currently `PUBLISHED`, so removing a template (either way) can never break reprinting: the admin either picks a different currently-published template, or falls back to the template-less "blank QR" export (`GET /api/admin/qr/pdf`, `GET /api/admin/qr/print`), which has no dependency on templates at all.
+
+- [x] A template with zero print jobs can be deleted, and its uploaded artwork is removed from storage after the database delete commits (never before, and a storage-cleanup failure is logged, not reported as a failed delete).
+- [x] A template referenced by any print job cannot be deleted (`409 QR_TEMPLATE_HAS_PRINT_JOBS`) — archiving is offered instead.
+- [x] A template is archived or deleted, never both, and the admin sees which one actually happened.
+- [x] `GET /api/admin/qr/templates` reports each template's print-job usage count, so the admin can check before deciding.
+- [x] An archived template is rejected by `POST /api/admin/qr/print-batch` for new batches (this route enforces `PUBLISHED` with no environment-based exception).
+- [x] An archived template's own past print jobs keep generating correctly from their `templateSnapshot`, unaffected by the archive.
+- [x] Restoring an archived template makes it usable for new print jobs again, with no data loss.
+- [x] A concurrent delete-vs-print-job-creation race never leaves a `QrPrintJob` pointing at a deleted template.

@@ -446,3 +446,18 @@ model AuditLog {
   @@index([action, timestamp])
   @@map("audit_logs")
 }
+
+// Single-row tracker for the audit-log retention warning's "don't ask twice" behavior
+// (see backend/src/lib/audit-retention.js) — persisted server-side so the acknowledgment
+// survives across logins/devices, not just the current browser session.
+model AuditLogRetentionState {
+  id                    Int      @id @default(1)
+  cleanupCycle          Int      @default(0)
+  // Starts at -1 (not 0) so the very first time the table ever enters the warning zone,
+  // before any cleanup has run (cleanupCycle is still 0), lastAcknowledgedCycle(-1) < 0
+  // is still true and the admin gets prompted — starting both at 0 would silently skip it.
+  lastAcknowledgedCycle Int      @default(-1)
+  updatedAt             DateTime @updatedAt
+
+  @@map("audit_log_retention_state")
+}

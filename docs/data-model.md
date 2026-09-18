@@ -303,6 +303,8 @@ timestamp
 
 Index `entity + entity_id`, `actor_user_id + timestamp`, `timestamp`, and `action + timestamp`. Keep audit data in PostgreSQL initially and paginate reads.
 
+**Retention**: capped at 5000 rows — once exceeded, the oldest rows are deleted automatically (see `backend/src/lib/audit-retention.js`), checked on every `GET /api/admin/dashboard` and `GET /api/admin/audit-logs` request and immediately after the two operations that can burst many rows at once (bulk vendor create, lead CSV import). At 4000 rows (80% of the cap) the Admin portal blocks with a modal until the admin downloads a CSV copy (`GET /api/admin/audit-logs/export`) — tracked server-side via a single-row `AuditLogRetentionState` table so it survives across logins/devices and only re-prompts after a future cleanup actually runs. This retention mechanism manages the `audit_logs` table only — it is not a general database-size safeguard for the rest of the schema (leads, lead locations, vendors, QR codes, and payouts are deliberately left to grow unmanaged), and the CSV export is a manual download, not an automated backup/disaster-recovery system.
+
 ## Relationship Rules
 
 ```text

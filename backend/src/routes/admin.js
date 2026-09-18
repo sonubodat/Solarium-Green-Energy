@@ -17,6 +17,7 @@ import { env } from '../config/env.js';
 import { normalizePhone, customerHashFor, findExistingLeadByHash } from '../lib/customer-identity.js';
 import { geoTagFields, resolveGeoTag } from '../lib/geo-tag.js';
 import { billBands, solarSizeBands } from './public.js';
+import { checkAuditLogRetention, acknowledgeAuditLogRetentionWarning } from '../lib/audit-retention.js';
 
 export const adminRoutes = Router();
 
@@ -211,6 +212,8 @@ adminRoutes.get('/dashboard', requireAuth, requireAdmin, async (request, respons
 			prisma.payout.count({ where: { status: 'PAID' } }),
 		]);
 
+		const retention = await checkAuditLogRetention(prisma);
+
 		return response.json({
 			success: true,
 			totalVendors,
@@ -224,6 +227,7 @@ adminRoutes.get('/dashboard', requireAuth, requireAdmin, async (request, respons
 			convertedLeads,
 			pendingCommission,
 			paidCommission,
+			retention,
 		});
 	} catch (error) {
 		return next(error);
@@ -623,6 +627,10 @@ adminRoutes.post('/vendors/bulk-create', requireAuth, requireAdmin, async (reque
 					metadata: { batchSize: names.length },
 				})),
 			});
+			// A bulk create can burst thousands of audit rows in one request — check retention
+			// immediately rather than waiting for the next dashboard/audit-logs visit. Fire-and-
+			// forget-but-logged so a retention hiccup never fails this response.
+			checkAuditLogRetention(prisma).catch((error) => console.error('[AuditRetention] cleanup failed:', error));
 		}
 
 		const created = [];
@@ -744,10 +752,16 @@ adminRoutes.get('/qr/templates', requireAuth, requireAdmin, async (request, resp
 	try {
 		const templates = await prisma.qrPrintTemplate.findMany({
 			orderBy: { createdAt: 'desc' },
-			include: { createdBy: { select: { id: true, name: true, role: true } } },
+			include: {
+				createdBy: { select: { id: true, name: true, role: true } },
+				// Surfaced as printJobCount below so the admin can "check by template" before
+				// deciding whether Delete (safe, unused) or Archive (has history) applies.
+				_count: { select: { printJobs: true } },
+			},
 		});
-		const templatesWithArtwork = await Promise.all(templates.map(async (template) => ({
+		const templatesWithArtwork = await Promise.all(templates.map(async ({ _count, ...template }) => ({
 			...template,
+			printJobCount: _count.printJobs,
 			artworkUrl: await createQrArtworkUrl(template.artworkPath),
 		})));
 		return response.json({ success: true, templates: templatesWithArtwork });
@@ -805,6 +819,102 @@ adminRoutes.post('/qr/templates/:templateId/publish', requireAuth, requireAdmin,
 		const template = await prisma.qrPrintTemplate.update({
 			where: { id: request.params.templateId },
 			data: { status: 'PUBLISHED' },
+		});
+		return response.json({ success: true, template });
+	} catch (error) {
+		if (error.code === 'P2025') {
+			error.statusCode = 404;
+			error.code = 'QR_TEMPLATE_NOT_FOUND';
+			error.message = 'QR print template was not found.';
+		}
+		return next(error);
+	}
+});
+
+// Only safe to hard-delete when nothing references it — QrPrintJob.templateId is a required
+// FK with no cascade, and each job's own templateSnapshot (not the live template) is what
+// actually renders its PDF/proof, so deleting an unused template can never break history.
+// The usage check and the delete happen inside one transaction so a print job created by a
+// different concurrent request between the two can't slip through undetected; if it still
+// does (P2003 from the delete itself), that's caught below the same way.
+adminRoutes.post('/qr/templates/:templateId/delete', requireAuth, requireAdmin, async (request, response, next) => {
+	try {
+		let artworkPath = null;
+		await prisma.$transaction(async (transaction) => {
+			const template = await transaction.qrPrintTemplate.findUnique({ where: { id: request.params.templateId } });
+			if (!template) {
+				const error = new Error('QR print template was not found.');
+				error.statusCode = 404;
+				error.code = 'QR_TEMPLATE_NOT_FOUND';
+				throw error;
+			}
+			const printJobCount = await transaction.qrPrintJob.count({ where: { templateId: template.id } });
+			if (printJobCount > 0) {
+				const error = new Error(`This template is used by ${printJobCount} print job(s) and can't be deleted — archive it instead to remove it from future use.`);
+				error.statusCode = 409;
+				error.code = 'QR_TEMPLATE_HAS_PRINT_JOBS';
+				error.details = { printJobCount };
+				throw error;
+			}
+			artworkPath = template.artworkPath;
+			await transaction.qrPrintTemplate.delete({ where: { id: template.id } });
+			await writeAudit(transaction, request, 'QR_TEMPLATE_DELETED', 'QrPrintTemplate', template.id, { templateName: template.name, printJobCount: 0 });
+		});
+
+		// Only after the transaction has committed — a storage cleanup failure here must never
+		// be reported as a delete failure, since the database row really is gone at this point.
+		// Logged rather than silently swallowed, matching this session's established convention.
+		if (artworkPath) {
+			removeQrArtwork(artworkPath).catch((error) => console.error('[QrTemplate] artwork cleanup failed:', error));
+		}
+
+		return response.json({ success: true });
+	} catch (error) {
+		if (error.code === 'P2003') {
+			error.statusCode = 409;
+			error.code = 'QR_TEMPLATE_HAS_PRINT_JOBS';
+			error.message = "This template is used by a print job and can't be deleted — archive it instead to remove it from future use.";
+		}
+		return next(error);
+	}
+});
+
+// Archiving is reversible (see .../restore below) — the client may want an old design back in
+// rotation later, and neither its artwork nor its past print jobs' rendering data are touched.
+// Both /admin/qr/template-pdf and /admin/qr/print-batch already reject any non-PUBLISHED
+// template independently of the admin UI's picker filtering, so this alone is a real,
+// backend-enforced removal from future use, not just a UI-level hide.
+adminRoutes.post('/qr/templates/:templateId/archive', requireAuth, requireAdmin, async (request, response, next) => {
+	try {
+		const template = await prisma.$transaction(async (transaction) => {
+			const printJobCount = await transaction.qrPrintJob.count({ where: { templateId: request.params.templateId } });
+			const updated = await transaction.qrPrintTemplate.update({
+				where: { id: request.params.templateId },
+				data: { status: 'ARCHIVED' },
+			});
+			await writeAudit(transaction, request, 'QR_TEMPLATE_ARCHIVED', 'QrPrintTemplate', updated.id, { templateName: updated.name, printJobCount });
+			return updated;
+		});
+		return response.json({ success: true, template });
+	} catch (error) {
+		if (error.code === 'P2025') {
+			error.statusCode = 404;
+			error.code = 'QR_TEMPLATE_NOT_FOUND';
+			error.message = 'QR print template was not found.';
+		}
+		return next(error);
+	}
+});
+
+adminRoutes.post('/qr/templates/:templateId/restore', requireAuth, requireAdmin, async (request, response, next) => {
+	try {
+		const template = await prisma.$transaction(async (transaction) => {
+			const updated = await transaction.qrPrintTemplate.update({
+				where: { id: request.params.templateId },
+				data: { status: 'PUBLISHED' },
+			});
+			await writeAudit(transaction, request, 'QR_TEMPLATE_RESTORED', 'QrPrintTemplate', updated.id, { templateName: updated.name });
+			return updated;
 		});
 		return response.json({ success: true, template });
 	} catch (error) {
@@ -1596,6 +1706,13 @@ adminRoutes.post('/leads/import', requireAuth, requireAdmin, csvUpload.single('f
 			}
 		}
 
+		// A CSV import can burst up to MAX_IMPORT_ROWS audit rows in one request — check
+		// retention immediately rather than waiting for the next dashboard/audit-logs visit.
+		// Fire-and-forget-but-logged so a retention hiccup never fails this response.
+		if (imported > 0) {
+			checkAuditLogRetention(prisma).catch((error) => console.error('[AuditRetention] cleanup failed:', error));
+		}
+
 		return response.status(201).json({
 			success: true,
 			summary: { totalRows: records.length, imported, duplicates, invalid },
@@ -1643,12 +1760,44 @@ adminRoutes.get('/payouts', requireAuth, requireAdmin, async (request, response,
 
 adminRoutes.get('/audit-logs', requireAuth, requireAdmin, async (request, response, next) => {
 	try {
+		// Run retention first so, if it trims anything, the list/count below already
+		// reflects the post-cleanup state rather than momentarily showing stale rows.
+		const retention = await checkAuditLogRetention(prisma);
 		const { page, limit, skip } = pagination(request.query);
 		const [auditLogs, total] = await Promise.all([
 			prisma.auditLog.findMany({ orderBy: { timestamp: 'desc' }, skip, take: limit, include: { actor: { select: { name: true } } } }),
 			prisma.auditLog.count(),
 		]);
-		return response.json({ success: true, audit_logs: auditLogs, pagination: { page, limit, total } });
+		return response.json({ success: true, audit_logs: auditLogs, pagination: { page, limit, total }, retention });
+	} catch (error) {
+		return next(error);
+	}
+});
+
+adminRoutes.get('/audit-logs/export', requireAuth, requireAdmin, async (request, response, next) => {
+	try {
+		const logs = await prisma.auditLog.findMany({
+			orderBy: [{ timestamp: 'desc' }, { id: 'desc' }],
+			include: { actor: { select: { name: true } } },
+		});
+		const csv = toCsv(
+			['Timestamp', 'Action', 'Entity', 'Entity ID', 'Actor Name', 'Actor Role', 'Metadata'],
+			logs.map((log) => [
+				log.timestamp.toISOString(),
+				log.action,
+				log.entity,
+				log.entityId,
+				log.actor?.name,
+				log.actorRole,
+				log.metadata ? JSON.stringify(log.metadata) : '',
+			])
+		);
+		// The download itself is the acknowledgment — only after the CSV has actually
+		// been built, so a request that fails before this point never falsely acknowledges.
+		await acknowledgeAuditLogRetentionWarning(prisma);
+		response.setHeader('Content-Type', 'text/csv; charset=utf-8');
+		response.setHeader('Content-Disposition', 'attachment; filename="solarium-audit-logs.csv"');
+		return response.send(csv);
 	} catch (error) {
 		return next(error);
 	}
