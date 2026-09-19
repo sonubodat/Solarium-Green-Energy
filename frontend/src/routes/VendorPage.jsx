@@ -85,6 +85,7 @@ function VendorPage() {
   });
 
   const [portalData, setPortalData] = useState(null);
+  const [passwordBannerDismissed, setPasswordBannerDismissed] = useState(false);
   // Distinguishes "still checking whether a session cookie is valid" from "confirmed logged
   // out" — without this, the login form flashes on every page load/reload for an already
   // signed-in Vendor while restoreSession()'s request is in flight (worse the slower the
@@ -141,21 +142,6 @@ function VendorPage() {
     // pooler; that root cause was fixed separately — see prisma.js/env.js — and this codebase's
     // Admin dashboard was parallelized the same way once that fix landed.)
     const profile = await apiRequest('/vendor/profile');
-
-    // While the password is still temporary the backend refuses leads/payouts/bank-details
-    // (403 PASSWORD_CHANGE_REQUIRED), so only the profile is loaded and the portal shows the
-    // blocking "set your permanent password" screen. The full data loads after the change.
-    if (profile.vendor?.mustChangePassword) {
-      return {
-        account,
-        data: [
-          profile,
-          { leads: [], pagination: { page: 1, limit: 25, total: 0 } },
-          { payouts: [], pagination: { page: 1, limit: 25, total: 0 } },
-          { bank_details: null },
-        ],
-      };
-    }
 
     const [leads, payouts, bank] = await Promise.all([
       apiRequest('/vendor/leads'),
@@ -481,7 +467,7 @@ function VendorPage() {
   }
 
   function renderPasswordSetup(vendor) {
-    if (!vendor?.mustChangePassword) return null;
+    if (!vendor?.mustChangePassword || passwordBannerDismissed) return null;
 
     return (
       <div className="vendor-password-banner">
@@ -490,10 +476,9 @@ function VendorPage() {
         </div>
 
         <div className="vendor-password-banner-copy">
-          <strong>Set your permanent password</strong>
+          <strong>Your password is your phone number</strong>
           <span>
-            For security, please change the temporary password before
-            continuing.
+            You can keep it or set a new one below. This is optional.
           </span>
         </div>
 
@@ -507,7 +492,7 @@ function VendorPage() {
               required
               type="password"
               autoComplete="current-password"
-              placeholder="Current (temporary) password"
+              placeholder="Current password (your phone number)"
               value={currentPasswordInput}
               onChange={(event) => setCurrentPasswordInput(event.target.value)}
             />
@@ -527,6 +512,14 @@ function VendorPage() {
             disabled={loading}
           >
             {loading ? 'Updating...' : 'Set password'}
+          </button>
+
+          <button
+            type="button"
+            className="vendor-text-button"
+            onClick={() => setPasswordBannerDismissed(true)}
+          >
+            Keep phone number
           </button>
         </form>
       </div>
@@ -1052,7 +1045,7 @@ function VendorPage() {
         <main className="vendor-main">
           {renderPasswordSetup(vendor)}
 
-          {!vendor.mustChangePassword && (
+          {(
             <>
           <nav className="vendor-tabs" aria-label="Solar Mitra navigation">
             <button

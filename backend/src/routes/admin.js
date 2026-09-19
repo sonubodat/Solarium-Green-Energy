@@ -8,7 +8,7 @@ import { assignUnassignedQr, generateQrCodes, generateSpecificQrCodes, reassignQ
 import { generateQrPng, generateQrSvg } from '../services/qr-image.js';
 import PDFDocument from 'pdfkit';
 import { randomUUID } from 'node:crypto';
-import { hashPassword, normalizeLoginIdentifier, publicVendor, slugifyVendorName, autoPasswordFor } from '../services/auth.js';
+import { hashPassword, verifyPassword, normalizeLoginIdentifier, publicVendor, slugifyVendorName, autoPasswordFor } from '../services/auth.js';
 import { z } from 'zod';
 import { createQrArtworkUrl, createVendorDocumentUrl, removeQrArtwork, removeVendorDocument, uploadQrArtwork, uploadQrProof, uploadVendorPhoto, removeVendorPhoto, createVendorPhotoUrl } from '../services/vendor-documents.js';
 import { generateQrProof, generateQrTemplatePdf } from '../services/qr-proof.js';
@@ -271,7 +271,7 @@ adminRoutes.post('/vendors', requireAuth, requireAdmin, async (request, response
 					ownerName: input.owner_name,
 					loginIdentifier: normalizeLoginIdentifier(input.login_identifier),
 					mobileNumber,
-					passwordHash: input.password ? await hashPassword(input.password) : null,
+					passwordHash: await hashPassword(input.password?.trim() || mobileNumber),
 				},
 			});
 			if (geoTag) {
@@ -384,6 +384,15 @@ adminRoutes.patch('/vendors/:vendorId', requireAuth, requireAdmin, async (reques
 			if (!/^[6-9]\d{9}$/.test(data.mobileNumber)) return response.status(400).json({ success: false, error: { code: 'INVALID_MOBILE_NUMBER', message: 'Enter a valid Indian mobile number.' } });
 		}
 		if (input.password !== undefined) data.passwordHash = await hashPassword(input.password);
+		// A phone change only carries the password along while it is still the default (the old
+		// phone number). A password the vendor or admin chose is never touched here.
+		if (data.mobileNumber && input.password === undefined) {
+			const current = await prisma.vendor.findUnique({ where: { id: request.params.vendorId }, select: { mobileNumber: true, passwordHash: true } });
+			if (current && current.mobileNumber !== data.mobileNumber
+				&& (!current.passwordHash || await verifyPassword(current.mobileNumber, current.passwordHash))) {
+				data.passwordHash = await hashPassword(data.mobileNumber);
+			}
+		}
 		if (input.status !== undefined) data.status = input.status;
 		const vendor = await prisma.$transaction(async (transaction) => {
 			const updated = await transaction.vendor.update({ where: { id: request.params.vendorId }, data });

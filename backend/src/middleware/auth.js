@@ -99,19 +99,10 @@ export function requireVendor(request, response, next) {
   return requireRole('VENDOR')(request, response, next);
 }
 
-// A Vendor whose password is still temporary (must_change_password) can sign in, read their
-// profile and change the password, but every other vendor data route refuses until they do.
+// Changing the default (phone-number) password is optional, so a Vendor is "ready" as soon as
+// they are signed in. Kept as its own name so vendor data routes don't need to change.
 export function requireVendorReady(request, response, next) {
-  return requireRole('VENDOR')(request, response, (error) => {
-    if (error) return next(error);
-    if (request.auth.vendor.mustChangePassword) {
-      const blocked = new Error('Set a permanent password before continuing.');
-      blocked.statusCode = 403;
-      blocked.code = 'PASSWORD_CHANGE_REQUIRED';
-      return next(blocked);
-    }
-    return next();
-  });
+  return requireRole('VENDOR')(request, response, next);
 }
 
 export function requireAdminOrSales(request, response, next) {

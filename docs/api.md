@@ -172,7 +172,7 @@ Complete onboarding for an eligible registration.
 
 - Authentication: Sales
 - Request: approved vendor details and initial credential setup
-- Rules: authorize the vendor through Sales ownership; store only a password hash; set `must_change_password = true`; do not allow active QR reassignment; write an audit log (`VENDOR_CREATED`)
+- Rules: authorize the vendor through Sales ownership; `password` is optional (blank = the Vendor's phone number); store only a password hash; set `must_change_password = true`; do not allow active QR reassignment; write an audit log (`VENDOR_CREATED`)
 - Frontend sequence: use the returned Vendor identifier for the subsequent QR assignment request; do not reuse the registration identifier
 
 ### `POST /api/sales/vendors`
@@ -181,7 +181,7 @@ Create a Vendor directly — the third onboarding path, alongside self-registrat
 
 - Authentication: Sales
 - Request: `business_name`, `owner_name`, `login_identifier`, `mobile_number`, `password` (temporary — no OTP/mobile verification, matching the rest of this app's vendor-creation paths); optional `latitude`, `longitude`, `accuracy`, `captured_at` (the Solar Mitra's shop geo-tag — same validation as `POST /api/public/leads`'s location fields: both-or-neither, `400 INVALID_LOCATION` otherwise)
-- Rules: normalize identifiers, store only a password hash, set `must_change_password = true`, set ownership to the creating Sales user (`sales_user_id`), write an audit log (`VENDOR_CREATED`); a valid geo-tag creates a `VendorOnboardingMedia` row in the same transaction — never blocks creation if omitted
+- Rules: normalize identifiers, `password` optional (blank = the mobile number), store only a password hash, set `must_change_password = true`, set ownership to the creating Sales user (`sales_user_id`), write an audit log (`VENDOR_CREATED`); a valid geo-tag creates a `VendorOnboardingMedia` row in the same transaction — never blocks creation if omitted
 - Errors: a duplicate `login_identifier` or `mobile_number` returns `409 VENDOR_ALREADY_EXISTS`; an invalid mobile number returns `400 INVALID_MOBILE_NUMBER`
 
 ### `PATCH /api/sales/vendors/:vendorId/location`
@@ -201,6 +201,13 @@ Set or fix a Solar Mitra's shop geo-tag — Admin only. Unlike the Sales endpoin
 - Request: `latitude`, `longitude` (both required), optional `accuracy`, `captured_at`
 - Rules: upserts the `VendorOnboardingMedia` row's geo fields, leaving any existing photos untouched
 - Errors: `400 INVALID_LOCATION` if latitude/longitude are missing; `404 VENDOR_NOT_FOUND` if not found
+
+### `GET|PATCH /api/sales/vendors/:vendorId/bank-details` and `POST /api/sales/vendors/:vendorId/bank-details/:documentType`
+
+Sales fills bank details on a Solar Mitra's behalf (same fields as the Vendor's own form: `upi_number`, `upi_id`, `account_holder_name`, `account_number`, `ifsc_code`; `documentType` is `passbook` or `cheque`, PDF/JPG/PNG up to 200 KB).
+
+- Rules: same ownership as location/photos (`sales_user_id` is the caller or null); stored in the same `VendorBankDetails` row Admin and the Vendor see; the PATCH writes a `VENDOR_BANK_DETAILS_UPDATED` audit log
+- Errors: `404 VENDOR_NOT_FOUND`, `400 INVALID_DOCUMENT_TYPE`, `413 DOCUMENT_TOO_LARGE`
 
 ### `POST /api/sales/vendors/:vendorId/photos/:photoType` and `POST /api/admin/vendors/:vendorId/photos/:photoType`
 
@@ -582,8 +589,9 @@ List audit records.
 Authenticate using a login identifier or registered mobile number and password.
 
 - Authentication: public
-- Rules: create a server-managed Vendor session; enforce temporary-password change when `must_change_password = true`
-- While `must_change_password` is `true`, every Vendor data route (`GET /api/vendor/leads`, `GET /api/vendor/payouts`, and all `/api/vendor/bank-details` routes) returns `403 PASSWORD_CHANGE_REQUIRED`. Only login, logout, `GET /api/vendor/profile` and `POST /api/vendor/change-password` work until the password is changed (`requireVendorReady` in `backend/src/middleware/auth.js`).
+- Rules: create a server-managed Vendor session. A Vendor created without a password (Admin create, Sales create/onboard, or bulk rows with a blank password) signs in with their **phone number** as the password. A legacy Vendor with no stored password can also sign in with the phone number; it is hashed and stored on first use.
+- Changing the password is **optional**: `must_change_password = true` now only means "still on the default password" (used by the portal to show a dismissible hint). It no longer blocks any Vendor route, and `PASSWORD_CHANGE_REQUIRED` is no longer returned (`requireVendorReady` only checks the Vendor role).
+- When Admin edits a Vendor's mobile number without setting a password, the password follows the new number only if it is still the old phone number; a password the Vendor or Admin chose is never changed.
 - Security: requests are rate-limited per client IP and invalid credentials use a generic response
 
 ### `GET /api/vendor/profile`

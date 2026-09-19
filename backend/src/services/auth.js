@@ -51,6 +51,12 @@ export function autoPasswordFor(businessName) {
   return `${base}@123`;
 }
 
+// A Vendor created without a password signs in with their phone number until they choose one.
+// Accepts any pasted/prefixed form (+91/91/0091) and keeps the 10 national digits.
+export function defaultVendorPassword(phone) {
+  return String(phone ?? '').replace(/\D/g, '').slice(-10);
+}
+
 export function createSessionToken() {
   return randomBytes(32).toString('base64url');
 }

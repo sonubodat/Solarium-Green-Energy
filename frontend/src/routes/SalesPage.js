@@ -54,6 +54,106 @@ function Icon({ path, className = '' }) {
   );
 }
 
+// Bank details Sales fills in on the Solar Mitra's behalf (same fields/limits as the vendor's own form).
+const EMPTY_BANK = { upi_number: '', upi_id: '', account_holder_name: '', account_number: '', ifsc_code: '' };
+
+function SalesBankForm({ vendorId }) {
+  const [bank, setBank] = useState(EMPTY_BANK);
+  const [docs, setDocs] = useState({ passbook: '', cheque: '' });
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState({ text: '', error: false });
+
+  useEffect(() => {
+    setBank(EMPTY_BANK);
+    setDocs({ passbook: '', cheque: '' });
+    setNote({ text: '', error: false });
+    if (!vendorId) return undefined;
+    let active = true;
+    apiRequest(`/sales/vendors/${vendorId}/bank-details`, { forceRefresh: true })
+      .then((result) => {
+        const d = result.bank_details;
+        if (!active || !d) return;
+        setBank({
+          upi_number: d.upiNumber || '',
+          upi_id: d.upiId || '',
+          account_holder_name: d.accountHolderName || '',
+          account_number: d.accountNumber || '',
+          ifsc_code: d.ifscCode || '',
+        });
+        setDocs({ passbook: d.passbookFileName || '', cheque: d.chequeFileName || '' });
+      })
+      .catch(() => {});
+    return () => { active = false; };
+  }, [vendorId]);
+
+  async function save() {
+    setBusy(true);
+    try {
+      await apiRequest(`/sales/vendors/${vendorId}/bank-details`, { method: 'PATCH', body: JSON.stringify(bank) });
+      setNote({ text: 'Bank details saved.', error: false });
+    } catch (error) {
+      setNote({ text: error.message || 'Unable to save bank details.', error: true });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function upload(type, file) {
+    if (!file) return;
+    if (file.size > 200 * 1024) return setNote({ text: 'Documents must be 200 KB or smaller.', error: true });
+    if (!['application/pdf', 'image/jpeg', 'image/png'].includes(file.type)) return setNote({ text: 'Upload a PDF, JPG, or PNG document.', error: true });
+    const body = new FormData();
+    body.append('file', file);
+    setBusy(true);
+    try {
+      await apiRequest(`/sales/vendors/${vendorId}/bank-details/${type}`, { method: 'POST', body });
+      setDocs((current) => ({ ...current, [type]: file.name }));
+      setNote({ text: `${type === 'passbook' ? 'Passbook' : 'Cancelled cheque'} uploaded.`, error: false });
+    } catch (error) {
+      setNote({ text: error.message || 'Unable to upload document.', error: true });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const fields = [
+    ['upi_number', 'UPI number', ''],
+    ['upi_id', 'UPI ID', 'name@bank'],
+    ['account_holder_name', 'Account holder name', ''],
+    ['account_number', 'Account number', ''],
+    ['ifsc_code', 'IFSC code', ''],
+  ];
+
+  return (
+    <div className="sales-field-labeled">
+      <span>Bank details (optional)</span>
+      {fields.map(([key, label, placeholder]) => (
+        <div className="sales-field-input" key={key}>
+          <input
+            aria-label={label}
+            placeholder={placeholder || label}
+            disabled={!vendorId || busy}
+            value={bank[key]}
+            onChange={(event) => setBank({ ...bank, [key]: key === 'ifsc_code' ? event.target.value.toUpperCase() : event.target.value })}
+          />
+        </div>
+      ))}
+      <button type="button" className="sales-primary-button" disabled={!vendorId || busy} onClick={save}>
+        Save bank details
+      </button>
+      {[['passbook', 'Passbook'], ['cheque', 'Cancelled cheque']].map(([type, label]) => (
+        <label className="sales-field-labeled" key={type}>
+          <span>{label} (PDF/JPG/PNG, max 200 KB){docs[type] ? ` - uploaded: ${docs[type]}` : ''}</span>
+          <div className="sales-field-input">
+            <input type="file" accept="application/pdf,image/jpeg,image/png" disabled={!vendorId || busy} onChange={(event) => { upload(type, event.target.files?.[0]); event.target.value = ''; }} />
+          </div>
+        </label>
+      ))}
+      {note.text && <small className={note.error ? 'sales-field-error' : ''} role={note.error ? 'alert' : 'status'}>{note.text}</small>}
+    </div>
+  );
+}
+
 function SalesPage() {
   const [login, setLogin] = useState({
     identifier: '',
@@ -654,11 +754,10 @@ function SalesPage() {
                             <div className="sales-field">
                               <Icon path={ICONS.lock} className="sales-field-icon" />
                               <input
-                                required
                                 minLength="8"
                                 type="text"
                                 autoComplete="off"
-                                placeholder="Temporary password"
+                                placeholder="Password (blank = phone number)"
                                 value={temporaryPassword}
                                 onChange={(event) => setTemporaryPassword(event.target.value)}
                               />
@@ -954,17 +1053,16 @@ function SalesPage() {
                       <small>This is what the Solar Mitra will type to sign in — not their name or business name.</small>
                     </label>
                     <label className="sales-field-labeled">
-                      <span>Temporary password</span>
+                      <span>Password (optional)</span>
                       <div className="sales-field-input">
                         <Icon path={ICONS.lock} className="sales-field-icon" />
                         <input
                           id="sales-new-vendor-password"
                           name="vendor_password"
-                          required
                           minLength="8"
                           type="password"
                           autoComplete="new-password"
-                          placeholder="At least 8 characters"
+                          placeholder="Leave blank to use phone number"
                           value={newVendor.password}
                           onChange={(event) => setNewVendor({ ...newVendor, password: event.target.value })}
                         />
@@ -1115,6 +1213,8 @@ function SalesPage() {
                         </button>
                       )}
                     </label>
+
+                    <SalesBankForm vendorId={completeVendorId} />
 
                     <div className="sales-create-vendor-actions">
                       <button

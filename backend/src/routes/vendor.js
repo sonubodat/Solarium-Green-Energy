@@ -1,3 +1,4 @@
+import { createHash, timingSafeEqual } from 'node:crypto';
 import { Router } from 'express';
 import multer from 'multer';
 import { z } from 'zod';
@@ -7,6 +8,7 @@ import { authRateLimit } from '../middleware/rate-limit.js';
 import {
 	clearSessionCookie,
 	createVendorSession,
+	defaultVendorPassword,
 	hashPassword,
 	normalizeLoginIdentifier,
 	publicVendor,
@@ -56,8 +58,15 @@ vendorRoutes.post('/login', authRateLimit, async (request, response, next) => {
 			where: { OR: [{ loginIdentifier: identifier }, { mobileNumber: input.login_identifier.trim() }] },
 		});
 
-		if (!vendor || vendor.status !== 'ACTIVE' || !vendor.passwordHash || !(await verifyPassword(input.password, vendor.passwordHash))) {
-			return next(invalidCredentials());
+		if (!vendor || vendor.status !== 'ACTIVE') return next(invalidCredentials());
+		if (vendor.passwordHash) {
+			if (!(await verifyPassword(input.password, vendor.passwordHash))) return next(invalidCredentials());
+		} else {
+			// No password was ever set: the phone number is the password. Store it on first use.
+			const expected = createHash('sha256').update(defaultVendorPassword(vendor.mobileNumber)).digest();
+			const actual = createHash('sha256').update(input.password.trim()).digest();
+			if (!defaultVendorPassword(vendor.mobileNumber) || !timingSafeEqual(expected, actual)) return next(invalidCredentials());
+			await prisma.vendor.updateMany({ where: { id: vendor.id, passwordHash: null }, data: { passwordHash: await hashPassword(defaultVendorPassword(vendor.mobileNumber)) } });
 		}
 
 		const token = await createVendorSession(vendor.id);

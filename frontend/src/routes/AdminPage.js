@@ -1904,7 +1904,7 @@ function AdminPage() {
                   minLength="8"
                   type="password"
                   autoComplete="new-password"
-                  placeholder="Leave blank to set later via Reset Password"
+                  placeholder="Leave blank to use phone number as password"
                   value={newVendor.password}
                   onChange={(event) =>
                     setNewVendor({

@@ -3,16 +3,18 @@ import multer from 'multer';
 import { z } from 'zod';
 import { prisma } from '../lib/prisma.js';
 import { requireAuth, requireSales } from '../middleware/auth.js';
-import { hashPassword, normalizeLoginIdentifier, publicVendor } from '../services/auth.js';
+import { hashPassword, defaultVendorPassword, normalizeLoginIdentifier, publicVendor } from '../services/auth.js';
 import { assignUnassignedQr } from '../services/qr.js';
-import { uploadVendorPhoto, removeVendorPhoto } from '../services/vendor-documents.js';
+import { uploadVendorPhoto, removeVendorPhoto, uploadVendorDocument, removeVendorDocument, createVendorDocumentUrl } from '../services/vendor-documents.js';
 import { geoTagFields, resolveGeoTag } from '../lib/geo-tag.js';
 import { vendorSearchWhere, pickerPagination, PICKER_VENDOR_SELECT } from '../lib/vendor-search.js';
 
 export const salesRoutes = Router();
 
+// Blank/omitted password -> the vendor's phone number is their password until they change it.
+const optionalPassword = z.preprocess((value) => (typeof value === 'string' && value.trim() === '' ? undefined : value), z.string().trim().min(8).optional());
 const onboardingSchema = z.object({
-	password: z.string().min(8),
+	password: optionalPassword,
 });
 
 const qrAssignmentSchema = z.object({
@@ -25,7 +27,7 @@ const vendorCreateSchema = z.object({
 	owner_name: z.string().trim().min(2).max(120),
 	login_identifier: z.string().trim().min(3).max(120),
 	mobile_number: z.string().trim().min(10).max(20),
-	password: z.string().min(8),
+	password: optionalPassword,
 	...geoTagFields,
 });
 
@@ -163,7 +165,7 @@ salesRoutes.post('/vendors/:vendorId/onboard', requireAuth, requireSales, async 
 					ownerName: registration.ownerName,
 					loginIdentifier: registration.loginIdentifier,
 					mobileNumber: registration.mobileNumber,
-					passwordHash: await hashPassword(input.password),
+					passwordHash: await hashPassword(input.password || defaultVendorPassword(registration.mobileNumber)),
 					mustChangePassword: true,
 					salesUserId: request.auth.user.id,
 				},
@@ -208,7 +210,7 @@ salesRoutes.post('/vendors', requireAuth, requireSales, async (request, response
 					ownerName: input.owner_name,
 					loginIdentifier: normalizeLoginIdentifier(input.login_identifier),
 					mobileNumber,
-					passwordHash: await hashPassword(input.password),
+					passwordHash: await hashPassword(input.password || mobileNumber),
 					mustChangePassword: true,
 					salesUserId: request.auth.user.id,
 				},
@@ -304,3 +306,92 @@ salesRoutes.post('/vendors/:vendorId/photos/:photoType', requireAuth, requireSal
 });
 
 salesRoutes.use((_request, response) => response.status(501).json({ success: false, error: { code: 'NOT_IMPLEMENTED', message: 'Sales route is scaffolded but not implemented.' } }));
+
+// Sales fills bank details on the Solar Mitra's behalf (same fields and 200 KB documents as the
+// vendor's own form, stored in the same VendorBankDetails row). Same ownership rule as above.
+const bankDetailsSchema = z.object({
+	upi_number: z.string().trim().max(40).optional(),
+	upi_id: z.string().trim().max(120).optional(),
+	account_holder_name: z.string().trim().max(160).optional(),
+	account_number: z.string().trim().max(40).optional(),
+	ifsc_code: z.string().trim().max(20).optional(),
+});
+const documentUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 200 * 1024 } });
+
+async function ownedVendor(request) {
+	return prisma.vendor.findFirst({
+		where: { id: request.params.vendorId, OR: [{ salesUserId: request.auth.user.id }, { salesUserId: null }] },
+		select: { id: true },
+	});
+}
+
+function vendorNotFound(response) {
+	return response.status(404).json({ success: false, error: { code: 'VENDOR_NOT_FOUND', message: 'Vendor was not found.' } });
+}
+
+salesRoutes.get('/vendors/:vendorId/bank-details', requireAuth, requireSales, async (request, response, next) => {
+	try {
+		const vendor = await ownedVendor(request);
+		if (!vendor) return vendorNotFound(response);
+		const details = await prisma.vendorBankDetails.findUnique({ where: { vendorId: vendor.id } });
+		if (!details) return response.json({ success: true, bank_details: null });
+		const [passbookUrl, chequeUrl] = await Promise.all([
+			createVendorDocumentUrl(details.passbookObjectKey),
+			createVendorDocumentUrl(details.chequeObjectKey),
+		]);
+		return response.json({ success: true, bank_details: { ...details, passbookObjectKey: undefined, chequeObjectKey: undefined, passbookUrl, chequeUrl } });
+	} catch (error) {
+		return next(error);
+	}
+});
+
+salesRoutes.patch('/vendors/:vendorId/bank-details', requireAuth, requireSales, async (request, response, next) => {
+	try {
+		const input = bankDetailsSchema.parse(request.body);
+		const vendor = await ownedVendor(request);
+		if (!vendor) return vendorNotFound(response);
+		const fields = { upiNumber: input.upi_number, upiId: input.upi_id, accountHolderName: input.account_holder_name, accountNumber: input.account_number, ifscCode: input.ifsc_code };
+		const details = await prisma.$transaction(async (transaction) => {
+			const saved = await transaction.vendorBankDetails.upsert({ where: { vendorId: vendor.id }, create: { vendorId: vendor.id, ...fields }, update: fields });
+			await writeAudit(transaction, request, 'VENDOR_BANK_DETAILS_UPDATED', 'Vendor', vendor.id, { source: 'SALES' });
+			return saved;
+		});
+		return response.json({ success: true, bank_details: { ...details, passbookObjectKey: undefined, chequeObjectKey: undefined } });
+	} catch (error) {
+		return next(error);
+	}
+});
+
+salesRoutes.post('/vendors/:vendorId/bank-details/:documentType', requireAuth, requireSales, documentUpload.single('file'), async (request, response, next) => {
+	try {
+		const type = request.params.documentType;
+		if (!['passbook', 'cheque'].includes(type)) {
+			const error = new Error('Document type must be passbook or cheque.');
+			error.statusCode = 400;
+			error.code = 'INVALID_DOCUMENT_TYPE';
+			throw error;
+		}
+		const vendor = await ownedVendor(request);
+		if (!vendor) return vendorNotFound(response);
+		const uploaded = await uploadVendorDocument(vendor.id, type, request.file);
+		try {
+			const existing = await prisma.vendorBankDetails.findUnique({ where: { vendorId: vendor.id } });
+			const data = type === 'passbook'
+				? { passbookObjectKey: uploaded.objectKey, passbookFileName: uploaded.fileName, passbookFileSize: uploaded.fileSize, passbookContentType: uploaded.contentType }
+				: { chequeObjectKey: uploaded.objectKey, chequeFileName: uploaded.fileName, chequeFileSize: uploaded.fileSize, chequeContentType: uploaded.contentType };
+			await prisma.vendorBankDetails.upsert({ where: { vendorId: vendor.id }, create: { vendorId: vendor.id, ...data }, update: data });
+			await removeVendorDocument(type === 'passbook' ? existing?.passbookObjectKey : existing?.chequeObjectKey);
+		} catch (dbError) {
+			await removeVendorDocument(uploaded.objectKey);
+			throw dbError;
+		}
+		return response.json({ success: true, document: { type, fileName: uploaded.fileName, fileSize: uploaded.fileSize } });
+	} catch (error) {
+		if (error instanceof multer.MulterError && error.code === 'LIMIT_FILE_SIZE') {
+			error.statusCode = 413;
+			error.code = 'DOCUMENT_TOO_LARGE';
+			error.message = 'Documents must be 200 KB or smaller.';
+		}
+		return next(error);
+	}
+});
