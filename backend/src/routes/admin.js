@@ -1331,7 +1331,14 @@ adminRoutes.post('/qr/print-batch', requireAuth, requireAdmin, async (request, r
 			return response.status(409).json({ success: false, error: { code: 'QR_TEMPLATE_NOT_PUBLISHED', message: 'Only published templates can be used to batch print QR codes.' } });
 		}
 
-		const range = parseQrRange(input.range_start, input.range_end);
+		let range;
+		try {
+			range = parseQrRange(normalizeQrCode(input.range_start), normalizeQrCode(input.range_end));
+		} catch (error) {
+			error.statusCode = 400;
+			error.code = 'QR_RANGE_INVALID';
+			return next(error);
+		}
 		const codes = buildQrCodeSequence(range.start, range.end);
 		const foundQrCodes = await prisma.qrCode.findMany({
 			where: { code: { in: codes } },
@@ -1341,15 +1348,7 @@ adminRoutes.post('/qr/print-batch', requireAuth, requireAdmin, async (request, r
 		const foundByCode = new Map(foundQrCodes.map((qr) => [qr.code, qr]));
 		const missing = codes.filter((code) => !foundByCode.has(code));
 		if (missing.length) {
-			if (env.nodeEnv !== 'development') {
-				return response.status(409).json({ success: false, error: { code: 'QR_RANGE_MISSING_CODES', message: `The selected QR range is missing valid codes: ${missing.slice(0, 10).join(', ')}` } });
-			}
-			await prisma.qrCode.createMany({ data: missing.map((code) => ({ code })), skipDuplicates: true });
-			const provisionedQrCodes = await prisma.qrCode.findMany({
-				where: { code: { in: missing } },
-				select: { id: true, code: true },
-			});
-			provisionedQrCodes.forEach((qr) => foundByCode.set(qr.code, qr));
+			return response.status(409).json({ success: false, error: { code: 'QR_RANGE_MISSING_CODES', message: `The selected QR range is missing valid codes: ${missing.slice(0, 10).join(', ')}` } });
 		}
 
 		const idempotencyKey = (input.idempotency_key || `qr-print-${randomUUID()}`).trim();
@@ -1771,6 +1770,8 @@ const qrPrintFilterSchema = z.object({
 	// Downloading a single named code (e.g. "V-0023") for the "just give me this one QR"
 	// case — no need to page through or filter the whole batch to find one code.
 	code: z.string().trim().min(1).optional(),
+	range_start: z.string().trim().min(1).optional(),
+	range_end: z.string().trim().min(1).optional(),
 });
 
 function qrAssignmentWhere(assignment) {
@@ -1869,11 +1870,15 @@ adminRoutes.get('/qr/print', requireAuth, requireAdmin, async (request, response
 
 adminRoutes.get('/qr/pdf', requireAuth, requireAdmin, async (request, response, next) => {
 	try {
-		const filters = qrPrintFilterSchema.parse({ status: request.query.status, vendor_id: request.query.vendor_id, assignment: request.query.assignment, code: request.query.code });
+		const filters = qrPrintFilterSchema.parse({ status: request.query.status, vendor_id: request.query.vendor_id, assignment: request.query.assignment, code: request.query.code, range_start: request.query.range_start, range_end: request.query.range_end });
 		filters.code = filters.code ? normalizeQrCode(filters.code) : filters.code;
+		const rangeCodes = filters.range_start || filters.range_end
+			? buildQrCodeSequence(filters.range_start, filters.range_end)
+			: null;
 
 		const where = {
 			...(filters.code ? { code: filters.code } : {}),
+			...(rangeCodes ? { code: { in: rangeCodes } } : {}),
 			...(filters.status ? { status: filters.status } : {}),
 			...(filters.vendor_id ? { assignments: { some: { vendorId: filters.vendor_id, unassignedAt: null } } } : {}),
 			...qrAssignmentWhere(filters.assignment),
@@ -1896,7 +1901,7 @@ adminRoutes.get('/qr/pdf', requireAuth, requireAdmin, async (request, response, 
 		response.setHeader('Content-Type', 'application/pdf');
 		response.setHeader(
 			'Content-Disposition',
-			`attachment; filename="${filters.code ? safeFilenameSegment(filters.code) : 'solarium-qr-codes'}.pdf"`
+			`attachment; filename="${filters.code ? safeFilenameSegment(filters.code) : rangeCodes ? `${safeFilenameSegment(filters.range_start)}-to-${safeFilenameSegment(filters.range_end)}` : 'solarium-qr-codes'}.pdf"`
 		);
 
 		// Only the QR image itself goes on the page — no vendor name, status, or code text —

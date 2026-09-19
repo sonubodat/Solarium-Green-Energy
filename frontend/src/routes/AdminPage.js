@@ -4,7 +4,6 @@ import { Fragment, useEffect, useRef, useState } from 'react';
 import { parse as parseCsv } from 'csv-parse/browser/esm/sync';
 import { apiRequest, API_BASE_URL } from '../api/client';
 import { SkeletonBlock } from '../components/Skeleton';
-import QrScanner from '../components/QrScanner';
 import VendorPicker from '../components/VendorPicker';
 import './AdminPage.css';
 
@@ -140,6 +139,8 @@ const NAV_ITEMS = [
   ['dashboard', 'Dashboard'],
   ['vendors', 'Solar Mitras'],
   ['qr', 'QR Management'],
+  ['print-qr', 'Print QR Codes'],
+  ['templates', 'Templates'],
   ['print-history', 'Print History'],
   ['leads', 'Leads'],
   ['scans', 'Scans'],
@@ -174,6 +175,11 @@ function AdminPage() {
   // data was still in flight, which looked like a bug rather than a load in progress.
   const [resourceLoading, setResourceLoading] = useState(false);
   const [adminPage, setAdminPage] = useState(1);
+  const [printWizardStep, setPrintWizardStep] = useState(1);
+  const [printWizardMode, setPrintWizardMode] = useState('range');
+  const [printWizardDraft, setPrintWizardDraft] = useState({ range_start: '', range_end: '', code: '', template_id: '' });
+  const [printWizardJob, setPrintWizardJob] = useState(null);
+  const [printWizardBusy, setPrintWizardBusy] = useState(false);
 
 
   // Separate state per table: one shared box is how a query typed in one view leaks into another.
@@ -190,11 +196,9 @@ function AdminPage() {
   const [bulkVendorNamesText, setBulkVendorNamesText] = useState('');
   const [bulkVendorAutoPassword, setBulkVendorAutoPassword] = useState(false);
   const [bulkVendorResult, setBulkVendorResult] = useState(null);
-  const [showGenerateQr, setShowGenerateQr] = useState(false);
   const [showImportLeads, setShowImportLeads] = useState(false);
   const [importFile, setImportFile] = useState(null);
   const [importResult, setImportResult] = useState(null);
-  const [outputMode, setOutputMode] = useState(null);
   const [showTemplateForm, setShowTemplateForm] = useState(false);
   const [showCreateStaff, setShowCreateStaff] = useState(false);
 
@@ -223,7 +227,6 @@ function AdminPage() {
     role: 'SALES',
   });
 
-  const [qrQuantity, setQrQuantity] = useState('20');
   const [qrTemplates, setQrTemplates] = useState([]);
   const [templateDraft, setTemplateDraft] = useState({
     name: 'Solar Mitra Sticker A4',
@@ -242,24 +245,14 @@ function AdminPage() {
   const [templateArtwork, setTemplateArtwork] = useState(null);
   const [templateArtworkPreview, setTemplateArtworkPreview] = useState('');
   const [templateInteraction, setTemplateInteraction] = useState(null);
-  const [printBatchDraft, setPrintBatchDraft] = useState({ template_id: '', range_start: '', range_end: '' });
-  const [lastPrintJob, setLastPrintJob] = useState(null);
-  const [confirmApprovePrintProof, setConfirmApprovePrintProof] = useState(false);
-  const [templateSingleDraft, setTemplateSingleDraft] = useState({ template_id: '', code: '' });
   const [confirmDeleteTemplateId, setConfirmDeleteTemplateId] = useState(null);
   const [confirmArchiveTemplateId, setConfirmArchiveTemplateId] = useState(null);
   const [previewTemplate, setPreviewTemplate] = useState(null);
   const [reassignVendorInputs, setReassignVendorInputs] = useState({});
-  const [confirmDeleteQrId, setConfirmDeleteQrId] = useState(null);
   const [confirmPurgeQrId, setConfirmPurgeQrId] = useState(null);
   const [purgeQrConfirmText, setPurgeQrConfirmText] = useState('');
   const [confirmAssignQrId, setConfirmAssignQrId] = useState(null);
 
-  const [showScanAssign, setShowScanAssign] = useState(false);
-  const [singleQrCode, setSingleQrCode] = useState('');
-  const [scannedQr, setScannedQr] = useState(null);
-  const [scanVendorId, setScanVendorId] = useState('');
-  const [confirmAssignScannedQr, setConfirmAssignScannedQr] = useState(false);
   const [paidReferenceInputs, setPaidReferenceInputs] = useState({});
   const [confirmPayoutStatusKey, setConfirmPayoutStatusKey] = useState(null);
   const [selectedVendorIds, setSelectedVendorIds] = useState([]);
@@ -541,6 +534,22 @@ function AdminPage() {
         setExpandedPrintJob(null);
         setQrTemplates(templates.templates || []);
         setPortalData((current) => ({ ...current, data }));
+        return;
+      }
+
+      if (nextResource === 'templates') {
+        const data = await apiRequest('/admin/qr/templates', { forceRefresh });
+        if (!mountedRef.current || seq !== adminLoadSeq.current) return;
+        setQrTemplates(data.templates || []);
+        setPortalData((current) => ({ ...current, data }));
+        return;
+      }
+
+      if (nextResource === 'print-qr') {
+        const data = await apiRequest('/admin/qr/templates', { forceRefresh });
+        if (!mountedRef.current || seq !== adminLoadSeq.current) return;
+        setQrTemplates(data.templates || []);
+        setPortalData((current) => ({ ...current, data: current?.data || {} }));
         return;
       }
 
@@ -922,41 +931,6 @@ function AdminPage() {
     }
   }
 
-  async function generateQrBatch(event) {
-    event.preventDefault();
-
-    const quantity = Number.parseInt(qrQuantity, 10);
-
-    if (!Number.isInteger(quantity) || quantity < 1) {
-      setMessage('Enter a valid quantity.');
-      setMessageType('error');
-      return;
-    }
-
-    setLoading(true);
-
-    try {
-      const result = await apiRequest('/admin/qr/generate', {
-        method: 'POST',
-        body: JSON.stringify({
-          quantity,
-        }),
-      });
-
-      setShowGenerateQr(false);
-
-      await loadAdminResource('qr', adminPage);
-
-      setMessage(`Generated ${result.count} QR codes.`);
-      setMessageType('success');
-    } catch (error) {
-      setMessage(error.message);
-      setMessageType('error');
-    } finally {
-      setLoading(false);
-    }
-  }
-
   async function createQrTemplate(event) {
     event.preventDefault();
     setLoading(true);
@@ -1098,73 +1072,6 @@ function AdminPage() {
     }
   }
 
-  async function createPrintBatch(event) {
-    event.preventDefault();
-    const { template_id, range_start, range_end } = printBatchDraft;
-    if (!template_id || !range_start || !range_end) {
-      setMessage('Select a template and add a QR range before creating a batch.');
-      setMessageType('error');
-      return;
-    }
-
-    setLoading(true);
-    try {
-      const result = await apiRequest('/admin/qr/print-batch', {
-        method: 'POST',
-        body: JSON.stringify({
-          template_id: template_id,
-          range_start: range_start.trim(),
-          range_end: range_end.trim(),
-          idempotency_key: `qr-print-${Date.now()}`,
-        }),
-      });
-
-      setPrintBatchDraft({ template_id: '', range_start: '', range_end: '' });
-      setLastPrintJob(result.job);
-      setMessage(`Print batch created: ${result.job.rangeStart} → ${result.job.rangeEnd}.`);
-      setMessageType('success');
-      await loadAdminResource('qr', adminPage);
-    } catch (error) {
-      setMessage(error.message);
-      setMessageType('error');
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function generatePrintProof(job) {
-    if (!job?.id) return;
-    setLoading(true);
-    try {
-      const result = await apiRequest(`/admin/qr/print-batch/${encodeURIComponent(job.id)}/proof`, { method: 'POST' });
-      setLastPrintJob(result.job);
-      setMessage('Proof generated and every representative QR was verified.');
-      setMessageType('success');
-    } catch (error) {
-      setMessage(error.message);
-      setMessageType('error');
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function approvePrintProof(job) {
-    if (!job?.id) return;
-    setLoading(true);
-    try {
-      const result = await apiRequest(`/admin/qr/print-batch/${encodeURIComponent(job.id)}/approve`, { method: 'POST' });
-      setLastPrintJob(result.job);
-      setMessage('Proof approved. The designed template PDF is ready to download.');
-      setMessageType('success');
-    } catch (error) {
-      setMessage(error.message);
-      setMessageType('error');
-    } finally {
-      setLoading(false);
-      setConfirmApprovePrintProof(false);
-    }
-  }
-
   async function viewPrintProof(job) {
     try {
       const result = await apiRequest(`/admin/qr/print-batch/${encodeURIComponent(job.id)}/proof`, { forceRefresh: true });
@@ -1197,22 +1104,6 @@ function AdminPage() {
   function downloadTemplatePdf(job) {
     if (!job?.id) return;
     window.location.href = `${API_BASE_URL}/admin/qr/print-batch/${encodeURIComponent(job.id)}/pdf`;
-  }
-
-  function printTemplatePdf(job) {
-    if (!job?.id) return;
-    window.open(`${API_BASE_URL}/admin/qr/print-batch/${encodeURIComponent(job.id)}/pdf?inline=true`, '_blank', 'noopener,noreferrer');
-  }
-
-  function downloadSingleTemplatePdf(inline = false) {
-    const { template_id: templateId, code } = templateSingleDraft;
-    if (!templateId || !code.trim()) {
-      setMessage('Select a published template and enter a QR code first.');
-      setMessageType('error');
-      return;
-    }
-    const params = new URLSearchParams({ template_id: templateId, code: code.trim(), ...(inline ? { inline: 'true' } : {}) });
-    window.open(`${API_BASE_URL}/admin/qr/template-pdf?${params.toString()}`, '_blank', 'noopener,noreferrer');
   }
 
   async function assignQr(qr, reassign = false) {
@@ -1272,26 +1163,6 @@ function AdminPage() {
     setConfirmAssignQrId(qr.id);
   }
 
-  // Delete is a two-click inline confirm (Delete -> Confirm/Cancel in the same row), not a
-  // window.confirm() popup — clicking Delete just arms confirmDeleteQrId; this only runs once
-  // that armed Confirm button is actually clicked.
-  async function deleteQr(qr) {
-    setLoading(true);
-
-    try {
-      await apiRequest(`/admin/qr/${qr.id}/delete`, { method: 'POST' });
-      await loadAdminResource('qr', adminPage);
-      setMessage('QR code deleted.');
-      setMessageType('success');
-    } catch (error) {
-      setMessage(error.message);
-      setMessageType('error');
-    } finally {
-      setLoading(false);
-      setConfirmDeleteQrId(null);
-    }
-  }
-
   async function purgeQr(qr) {
     if (purgeQrConfirmText.trim() !== qr.code) return;
     setLoading(true);
@@ -1328,69 +1199,6 @@ function AdminPage() {
     } finally {
       setLoading(false);
       setConfirmBulkDeleteVendors(false);
-    }
-  }
-
-  async function lookupScannedQr(code) {
-    setLoading(true);
-    setMessage('');
-    setMessageType('');
-
-    try {
-      const result = await apiRequest(
-        `/admin/qr/lookup/${encodeURIComponent(code.trim())}`
-      );
-      setScannedQr(result.qr);
-      setScanVendorId('');
-    } catch (error) {
-      setScannedQr(null);
-      setMessage(error.message);
-      setMessageType('error');
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  function handleScanAssignDetected(code) {
-    setShowScanAssign(false);
-    lookupScannedQr(code);
-  }
-
-  async function assignScannedQr() {
-    if (!scannedQr || !scanVendorId) return;
-
-    const isReassign = scannedQr.status === 'ACTIVE';
-
-    setLoading(true);
-
-    try {
-      await apiRequest(
-        `/admin/qr/${scannedQr.id}/${
-          isReassign ? 'reassign' : 'assign'
-        }`,
-        {
-          method: 'POST',
-          body: JSON.stringify({ vendor_id: scanVendorId }),
-        }
-      );
-
-      setScannedQr(null);
-      setScanVendorId('');
-
-      await loadAdminResource('qr', adminPage);
-
-      setMessage(
-        isReassign
-          ? 'QR reassigned successfully.'
-          : 'QR assigned successfully.'
-      );
-      setMessageType('success');
-    } catch (error) {
-      setMessage(error.message);
-      setMessageType('error');
-    } finally {
-      setLoading(false);
-      setConfirmAssignScannedQr(false);
     }
   }
 
@@ -1655,61 +1463,6 @@ function AdminPage() {
     } finally {
       setLoading(false);
       setConfirmDeactivateStaffId(null);
-    }
-  }
-
-  function openQrPrintSheet() {
-    // Was missing the /api prefix entirely — that opened this app's own client-side "/admin/qr/print"
-    // route (which doesn't exist) instead of the backend endpoint, and silently fell through to the
-    // catch-all redirect to the public customer page. Also reuses whatever status filter is currently
-    // applied to the QR list, so what's on screen is what gets printed.
-    // "ASSIGNED"/"DEACTIVATED" are options in the status filter dropdown but aren't real
-    // QrStatus values the backend accepts here (only UNASSIGNED/ACTIVE/INACTIVE/RETIRED) —
-    // passing either through would 400. Only forward status when it's one of those.
-    const validPrintStatuses = ['UNASSIGNED', 'ACTIVE', 'INACTIVE', 'RETIRED'];
-    const params = new URLSearchParams();
-    if (validPrintStatuses.includes(qrStatus)) params.set('status', qrStatus);
-    if (qrAssignment) params.set('assignment', qrAssignment);
-    const query = params.toString();
-    // Same-window navigation (not a new tab) so the request shows up in this tab's own
-    // Network tab for debugging — the print sheet is server-rendered HTML outside the SPA,
-    // so this does leave the Admin app; use the browser's back button to return.
-    window.location.href = `${API_BASE_URL}/admin/qr/print${query ? `?${query}` : ''}`;
-  }
-
-  function downloadQrPdf() {
-    // Same status/assignment filters as the print sheet and the QR list. The endpoint sends
-    // Content-Disposition: attachment, so the browser downloads the file in place without
-    // navigating away from the app.
-    const validPrintStatuses = ['UNASSIGNED', 'ACTIVE', 'INACTIVE', 'RETIRED'];
-    const params = new URLSearchParams();
-    if (validPrintStatuses.includes(qrStatus)) params.set('status', qrStatus);
-    if (qrAssignment) params.set('assignment', qrAssignment);
-    const query = params.toString();
-    window.location.href = `${API_BASE_URL}/admin/qr/pdf${query ? `?${query}` : ''}`;
-  }
-
-  async function downloadSingleQrPdf(event) {
-    event.preventDefault();
-    const code = singleQrCode.trim();
-    if (!code) return;
-
-    setMessage('');
-    setMessageType('');
-
-    try {
-      // Confirm the code exists before navigating — a bare window.location.href to a 404
-      // takes over the whole page with the raw API JSON instead of staying in the app, since
-      // that's a full-page navigation, not a fetch this UI can catch and show nicely.
-      await apiRequest(`/admin/qr/lookup/${encodeURIComponent(code)}`);
-      window.location.href = `${API_BASE_URL}/admin/qr/pdf?code=${encodeURIComponent(code)}`;
-    } catch (error) {
-      setMessage(
-        error.code === 'QR_NOT_FOUND'
-          ? `No QR code matching "${code}" was found. Check the code and try again.`
-          : error.message
-      );
-      setMessageType('error');
     }
   }
 
@@ -2684,7 +2437,159 @@ function AdminPage() {
     );
   }
 
+  function openPrintWizard() {
+    setPrintWizardStep(1);
+    setPrintWizardMode('range');
+    setPrintWizardDraft({ range_start: '', range_end: '', code: '', template_id: '' });
+    setPrintWizardJob(null);
+    setResource('print-qr');
+    setAdminPage(1);
+    setMobileNavOpen(false);
+    loadAdminResource('print-qr', 1);
+  }
+
+  function qrStatusLabel(status) {
+    return status === 'PUBLISHED' ? 'Ready to print' : status.charAt(0) + status.slice(1).toLowerCase();
+  }
+
+  function printCountLabel(template) {
+    const counts = template.printJobCounts || { batch: 0, single: 0 };
+    if (!template.printJobCount) return 'Not used yet';
+    return `${counts.batch} batch${counts.batch === 1 ? '' : 'es'} · ${counts.single} single print${counts.single === 1 ? '' : 's'}`;
+  }
+
+  function startTemplateVersion(template) {
+    setTemplateDraft({
+      name: `${template.name} - New version`,
+      page_width_mm: String(template.pageWidthMm),
+      page_height_mm: String(template.pageHeightMm),
+      dpi: String(template.dpi),
+      qr_x: String(template.qrX),
+      qr_y: String(template.qrY),
+      qr_width: String(template.qrWidth),
+      qr_height: String(template.qrHeight),
+      label_enabled: Boolean(template.labelEnabled),
+      label_text_x: String(template.labelTextX || 0),
+      label_text_y: String(template.labelTextY || 0),
+      label_font_size: String(template.labelFontSize || 12),
+    });
+    setTemplateArtwork(null);
+    setShowTemplateForm(true);
+  }
+
+  function renderQrInventory() {
+    const qrs = portalData?.data?.data || [];
+    const qrTotal = portalData?.data?.pagination?.total || 0;
+    return (
+      <div className="admin-resource">
+        <div className="admin-resource-heading">
+          <div>
+            <span className="admin-eyebrow">QR INVENTORY</span>
+            <h2>QR Management</h2>
+            <p>See which QR codes exist, who holds them, and what was printed most recently.</p>
+          </div>
+          <button className="admin-primary-button" onClick={openPrintWizard}>
+            <Icon path={ICONS.qr} />
+            Print QR Codes
+          </button>
+        </div>
+        <div className="admin-qr-overview">
+          <div className="admin-qr-overview-intro"><span className="admin-eyebrow">INVENTORY CONTROL</span><strong>{qrTotal.toLocaleString()} QR codes</strong><small>Assignment and print status at a glance.</small></div>
+          <div className="admin-qr-overview-stat"><span>Loaded page</span><strong>{qrs.length}</strong></div>
+          <div className="admin-qr-overview-stat warning"><span>Unassigned</span><strong>{qrs.filter((qr) => !qr.assignments?.[0]).length}</strong></div>
+          <div className="admin-qr-overview-stat success"><span>Assigned</span><strong>{qrs.filter((qr) => qr.assignments?.[0]).length}</strong></div>
+        </div>
+        <div className="admin-filter-bar">
+          <div className="admin-filter"><Icon path={ICONS.filter} /><select value={qrStatus} onChange={(event) => { setQrStatus(event.target.value); loadAdminResource('qr', 1, event.target.value, qrAssignment); }}><option value="">All statuses</option><option value="ACTIVE">Active</option><option value="UNASSIGNED">Unassigned</option></select></div>
+          <div className="admin-filter"><Icon path={ICONS.store} /><select value={qrAssignment} onChange={(event) => { setQrAssignment(event.target.value); loadAdminResource('qr', 1, qrStatus, event.target.value); }}><option value="">All assignments</option><option value="ASSIGNED">Assigned</option><option value="UNASSIGNED">Unassigned</option></select></div>
+          <button className="admin-outline-button" disabled={loading} onClick={() => loadAdminResource('qr', adminPage, undefined, undefined, true)}><Icon path={ICONS.refresh} /> Refresh</button>
+        </div>
+        <div className="admin-table-wrap"><table className="admin-table"><thead><tr><th>QR code</th><th>Current Solar Mitra</th><th>Latest design</th><th>Status</th><th>Assigned</th><th>Actions</th></tr></thead><tbody>
+          {qrs.length ? qrs.map((qr) => {
+            const currentVendor = qr.assignments?.[0]?.vendor;
+            const displayStatus = currentVendor ? qr.status : 'UNASSIGNED';
+            return <tr key={qr.id}>
+              <td><span className="admin-qr-code"><Icon path={ICONS.qr} />{qr.code}</span></td>
+              <td>{currentVendor?.businessName || 'Unassigned'}</td>
+              <td>{qr.latestPrint ? <div className="admin-primary-cell"><strong>{qr.latestPrint.templateName}</strong><small>{new Date(qr.latestPrint.printedAt).toLocaleDateString()} · {qr.latestPrint.kind === 'SINGLE' ? 'single' : 'batch'}</small><button type="button" className="admin-mini-button" onClick={() => openQrPrintHistory(qr)}>History</button></div> : <span className="admin-muted-text">Not printed</span>}</td>
+              <td><span className={`admin-status ${displayStatus === 'UNASSIGNED' ? 'warning' : displayStatus === 'ACTIVE' ? 'active' : 'inactive'}`}>{displayStatus}</span></td>
+              <td>{qr.assignments?.[0]?.assignedAt ? new Date(qr.assignments[0].assignedAt).toLocaleDateString() : '—'}</td>
+              <td><div className="admin-qr-action"><VendorPicker fetchPage={fetchAssignableVendors} value={reassignVendorInputs[qr.id] || ''} onChange={(id) => setReassignVendorInputs({ ...reassignVendorInputs, [qr.id]: id })} ariaLabel={`Solar Mitra for ${qr.code}`} />{confirmAssignQrId === qr.id ? <span className="admin-inline-confirm"><button className="admin-mini-button primary solid" disabled={loading} onClick={() => assignQr(qr, Boolean(currentVendor))}>Confirm</button><button className="admin-mini-button admin-inline-confirm-cancel" disabled={loading} onClick={() => setConfirmAssignQrId(null)} aria-label="Cancel assignment"><Icon path={ICONS.close} /></button></span> : <button className="admin-mini-button" disabled={loading} onClick={() => armAssignQr(qr)}>{currentVendor ? 'Reassign' : 'Assign'}</button>}</div></td>
+            </tr>;
+          }) : <tr><td colSpan="6" className="admin-empty">No QR codes found.</td></tr>}
+        </tbody></table></div>
+        {renderPagination()}
+      </div>
+    );
+  }
+
+  function renderTemplates() {
+    return (
+      <div className="admin-resource">
+        <div className="admin-resource-heading"><div><span className="admin-eyebrow">PRINT DESIGNS</span><h2>Templates</h2><p>Reusable designs for printing QR codes.</p></div><button className="admin-primary-button" onClick={() => setShowTemplateForm(true)}><Icon path={ICONS.plus} /> Create Template</button></div>
+        {showTemplateForm && renderTemplateEditor()}
+        <div className="admin-template-cards">
+          {(qrTemplates || []).length ? qrTemplates.map((template) => <div className="admin-template-card" key={template.id}>
+            <button type="button" className="admin-template-thumb" onClick={() => template.artworkUrl && previewQrTemplateArtwork(template)} aria-label={`Preview ${template.name}`}>
+              {template.artworkUrl ? <img src={template.artworkUrl} alt="" /> : <span>Blank page</span>}
+              <span className="admin-template-thumb-qr">QR</span>
+            </button>
+            <div className="admin-template-card-body"><div className="admin-template-card-heading"><div><strong>{template.name}</strong><span>{qrStatusLabel(template.status)}</span></div><small>v{template.version}</small></div><p>{template.pageWidthMm} × {template.pageHeightMm} mm · {template.dpi} DPI</p><small className="admin-muted-text">{printCountLabel(template)}</small><div className="admin-template-card-actions"><button type="button" className="admin-mini-button" onClick={() => template.artworkUrl && previewQrTemplateArtwork(template)}>Preview</button>{template.status !== 'ARCHIVED' && <button type="button" className="admin-mini-button" onClick={() => startTemplateVersion(template)}>New version</button>}{template.status === 'ARCHIVED' ? <button type="button" className="admin-mini-button" onClick={() => restoreQrTemplate(template.id)}>Restore</button> : <button type="button" className="admin-mini-button" onClick={() => template.printJobCount ? setConfirmArchiveTemplateId(template.id) : setConfirmDeleteTemplateId(template.id)}>{template.printJobCount ? 'Archive' : 'Delete'}</button>}{template.status === 'DRAFT' && <button type="button" className="admin-mini-button primary" onClick={() => publishQrTemplate(template.id)}>Publish</button>}</div></div>
+          </div>) : <div className="admin-empty admin-empty-block">No templates yet. Create the first reusable print design.</div>}
+        </div>
+        {confirmArchiveTemplateId && <div className="admin-template-inline-notice"><span>This template has print history. Archive it to remove it from future printing.</span><button className="admin-mini-button primary solid" onClick={() => archiveQrTemplate(confirmArchiveTemplateId)}>Confirm archive</button><button className="admin-mini-button" onClick={() => setConfirmArchiveTemplateId(null)}>Cancel</button></div>}
+        {confirmDeleteTemplateId && <div className="admin-template-inline-notice"><span>This unused template can be deleted permanently.</span><button className="admin-mini-button danger solid" onClick={() => deleteQrTemplate(confirmDeleteTemplateId)}>Confirm delete</button><button className="admin-mini-button" onClick={() => setConfirmDeleteTemplateId(null)}>Cancel</button></div>}
+      </div>
+    );
+  }
+
+  function renderTemplateEditor() {
+    return <form onSubmit={createQrTemplate} className="admin-template-editor-shell">
+      <div className="admin-template-editor-title"><div><span className="admin-eyebrow">CREATE TEMPLATE</span><h3>Build a reusable print design</h3><p>Upload the artwork, place the QR, review the page, then publish it for printing.</p></div><button type="button" className="admin-outline-button" onClick={() => setShowTemplateForm(false)}>Cancel</button></div>
+      <div className="admin-template-editor-layout"><div><div className="admin-template-preview-heading"><div><strong>QR placement preview</strong><small>Drag the square QR marker or resize it from the corner.</small></div><span>QR size: {Number(templateDraft.qr_width || 0).toFixed(1)} × {Number(templateDraft.qr_height || 0).toFixed(1)} mm</span></div><div className="admin-template-preview" data-qr-template-editor style={{ aspectRatio: `${Number(templateDraft.page_width_mm) || 210} / ${Number(templateDraft.page_height_mm) || 297}` }}>{templateArtworkPreview && templateArtwork?.type === 'application/pdf' && <iframe src={`${templateArtworkPreview}#toolbar=0&navpanes=0&scrollbar=0&view=Fit`} title="Uploaded artwork preview" />}{templateArtworkPreview && templateArtwork?.type !== 'application/pdf' && <img src={templateArtworkPreview} alt="Uploaded artwork" />}{!templateArtworkPreview && <div className="admin-template-preview-empty">Upload artwork to see the physical page.</div>}<div className="admin-qr-placeholder" style={{ left: `${(Number(templateDraft.qr_x) / (Number(templateDraft.page_width_mm) || 210)) * 100}%`, top: `${(Number(templateDraft.qr_y) / (Number(templateDraft.page_height_mm) || 297)) * 100}%`, width: `${(Number(templateDraft.qr_width) / (Number(templateDraft.page_width_mm) || 210)) * 100}%`, height: `${(Number(templateDraft.qr_height) / (Number(templateDraft.page_height_mm) || 297)) * 100}%` }} onPointerDown={(event) => beginTemplateInteraction(event, 'drag')}><span>QR</span><button type="button" aria-label="Resize QR placeholder" onPointerDown={(event) => beginTemplateInteraction(event, 'resize')} /></div></div></div><div className="admin-template-editor-note"><span className="admin-eyebrow">PHYSICAL PLACEMENT</span><strong>What you see here is what will print.</strong><p>PNG, JPG or single-page PDF · Maximum 8 MB</p></div></div>
+      <div className="admin-template-editor-fields"><label>Template name<input required value={templateDraft.name} onChange={(event) => setTemplateDraft({ ...templateDraft, name: event.target.value })} /></label><label>Artwork upload<input required={false} type="file" accept="image/png,image/jpeg,application/pdf" onChange={handleTemplateArtworkSelect} /><small>{templateArtwork ? templateArtwork.name : 'PNG, JPG or single-page PDF · Maximum 8 MB'}</small></label><label>Page width (mm)<input type="number" value={templateDraft.page_width_mm} onChange={(event) => setTemplateDraft({ ...templateDraft, page_width_mm: event.target.value })} /></label><label>Page height (mm)<input type="number" value={templateDraft.page_height_mm} onChange={(event) => setTemplateDraft({ ...templateDraft, page_height_mm: event.target.value })} /></label><label>DPI<input type="number" value={templateDraft.dpi} onChange={(event) => setTemplateDraft({ ...templateDraft, dpi: event.target.value })} /></label></div>
+      <details className="admin-advanced-placement"><summary>Advanced placement</summary><div className="admin-template-editor-fields"><label>QR X<input type="number" value={templateDraft.qr_x} onChange={(event) => setTemplateDraft({ ...templateDraft, qr_x: event.target.value })} /></label><label>QR Y<input type="number" value={templateDraft.qr_y} onChange={(event) => setTemplateDraft({ ...templateDraft, qr_y: event.target.value })} /></label><label>QR size<input type="number" value={templateDraft.qr_width} onChange={(event) => setTemplateDraft({ ...templateDraft, qr_width: event.target.value, qr_height: event.target.value })} /></label></div></details>
+      <label className="admin-toggle-row"><input type="checkbox" checked={templateDraft.label_enabled} onChange={(event) => setTemplateDraft({ ...templateDraft, label_enabled: event.target.checked })} /> Add QR text label</label>
+      {templateDraft.label_enabled && <div className="admin-template-editor-fields"><label>Label X<input type="number" value={templateDraft.label_text_x} onChange={(event) => setTemplateDraft({ ...templateDraft, label_text_x: event.target.value })} /></label><label>Label Y<input type="number" value={templateDraft.label_text_y} onChange={(event) => setTemplateDraft({ ...templateDraft, label_text_y: event.target.value })} /></label><label>Font size<input type="number" value={templateDraft.label_font_size} onChange={(event) => setTemplateDraft({ ...templateDraft, label_font_size: event.target.value })} /></label></div>}
+      <div className="admin-form-actions"><button type="button" className="admin-outline-button" onClick={() => setShowTemplateForm(false)}>Save draft later</button><button className="admin-primary-button" disabled={loading}>{loading ? 'Saving...' : 'Save template'}</button></div>
+    </form>;
+  }
+
+  function renderPrintWizard() {
+    const selectedTemplate = qrTemplates.find((template) => template.id === printWizardDraft.template_id);
+    function normalizeWizardCode(value) {
+      const normalized = String(value || '').trim().toUpperCase();
+      const match = normalized.match(/^V-(\d+)$/);
+      return match ? `V-${match[1].padStart(4, '0')}` : normalized;
+    }
+    const rangeStart = printWizardMode === 'range' ? normalizeWizardCode(printWizardDraft.range_start) : normalizeWizardCode(printWizardDraft.code);
+    const rangeEnd = printWizardMode === 'range' ? normalizeWizardCode(printWizardDraft.range_end) : normalizeWizardCode(printWizardDraft.code);
+    const validCodes = /^V-\d{4,}$/.test(rangeStart) && /^V-\d{4,}$/.test(rangeEnd);
+    const rangeOrderValid = printWizardMode !== 'range' || (validCodes && Number(rangeStart.replace(/\D/g, '')) <= Number(rangeEnd.replace(/\D/g, '')));
+    const selectedCount = printWizardMode === 'range' && rangeOrderValid ? Number(rangeEnd.replace(/\D/g, '')) - Number(rangeStart.replace(/\D/g, '')) + 1 : printWizardMode === 'individual' && validCodes ? 1 : 0;
+    const canContinue = printWizardStep === 1 ? validCodes && rangeOrderValid : true;
+    function downloadWizardIndividual() {
+      const params = new URLSearchParams({ template_id: printWizardDraft.template_id, code: rangeStart });
+      window.open(`${API_BASE_URL}/admin/qr/template-pdf?${params.toString()}`, '_blank', 'noopener,noreferrer');
+    }
+    async function createWizardJob() {
+      if (printWizardMode === 'individual' || !printWizardDraft.template_id) { setPrintWizardStep(3); return; }
+      setPrintWizardBusy(true);
+      try { const result = await apiRequest('/admin/qr/print-batch', { method: 'POST', body: JSON.stringify({ template_id: printWizardDraft.template_id, range_start: rangeStart, range_end: rangeEnd, idempotency_key: `qr-print-${Date.now()}` }) }); setPrintWizardJob(result.job); setPrintWizardStep(3); } catch (error) { setMessage(error.message); setMessageType('error'); } finally { setPrintWizardBusy(false); }
+    }
+    async function approveWizardJob() { if (!printWizardJob) return; setPrintWizardBusy(true); try { const result = await apiRequest(`/admin/qr/print-batch/${encodeURIComponent(printWizardJob.id)}/approve`, { method: 'POST' }); setPrintWizardJob(result.job); setPrintWizardStep(4); } catch (error) { setMessage(error.message); setMessageType('error'); } finally { setPrintWizardBusy(false); } }
+    async function generateWizardProof() { if (!printWizardJob) return; setPrintWizardBusy(true); try { const result = await apiRequest(`/admin/qr/print-batch/${encodeURIComponent(printWizardJob.id)}/proof`, { method: 'POST' }); setPrintWizardJob(result.job); setPrintWizardStep(4); } catch (error) { setMessage(error.message); setMessageType('error'); } finally { setPrintWizardBusy(false); } }
+    return <div className="admin-resource admin-print-wizard"><div className="admin-resource-heading"><div><span className="admin-eyebrow">PRINT WORKFLOW</span><h2>Print QR Codes</h2><p>Select the codes, choose a design, review the proof, then print.</p></div><button className="admin-outline-button" onClick={() => setResource('qr')}>Back to QR Management</button></div><div className="admin-qr-wizard-steps">{['Select QR codes', 'Choose design', 'Review proof', 'Approve & print'].map((label, index) => <span key={label} className={printWizardStep === index + 1 ? 'active' : ''}><b>{index + 1}</b>{label}</span>)}</div>
+      {printWizardStep === 1 && <section className="admin-wizard-panel"><span className="admin-eyebrow">STEP 1</span><h3>What do you want to print?</h3><div className="admin-wizard-choice-grid"><button type="button" className={printWizardMode === 'range' ? 'selected' : ''} onClick={() => setPrintWizardMode('range')}><strong>QR range</strong><small>Print a continuous range of QR codes</small></button><button type="button" className={printWizardMode === 'individual' ? 'selected' : ''} onClick={() => setPrintWizardMode('individual')}><strong>Specific QR code</strong><small>Print one QR code</small></button></div>{printWizardMode === 'range' ? <div className="admin-wizard-fields"><label>Range start<input placeholder="V-0001" value={printWizardDraft.range_start} onChange={(event) => setPrintWizardDraft({ ...printWizardDraft, range_start: event.target.value })} /></label><label>Range end<input placeholder="V-0100" value={printWizardDraft.range_end} onChange={(event) => setPrintWizardDraft({ ...printWizardDraft, range_end: event.target.value })} /></label></div> : <label className="admin-wizard-field-wide">QR code<input placeholder="V-0042" value={printWizardDraft.code} onChange={(event) => setPrintWizardDraft({ ...printWizardDraft, code: event.target.value })} /></label>}<div className="admin-wizard-count">{selectedCount ? `${selectedCount.toLocaleString()} QR code${selectedCount === 1 ? '' : 's'} selected` : 'Use a code such as V-0001, or enter a start and end range.'}</div><div className="admin-form-actions"><button type="button" className="admin-primary-button" disabled={!canContinue} onClick={() => setPrintWizardStep(2)}>Choose design <Icon path={ICONS.arrow} /></button></div></section>}
+      {printWizardStep === 2 && <section className="admin-wizard-panel"><span className="admin-eyebrow">STEP 2</span><h3>Choose a design</h3><p className="admin-wizard-helper">Pick a published template or print simple QR codes without artwork.</p><div className="admin-design-grid"><button type="button" className={`admin-design-card ${!printWizardDraft.template_id ? 'selected' : ''}`} onClick={() => setPrintWizardDraft({ ...printWizardDraft, template_id: '' })}><div className="admin-design-thumb blank">QR</div><strong>Blank QR</strong><small>Print QR codes without artwork</small></button>{qrTemplates.filter((template) => template.status === 'PUBLISHED').map((template) => <button type="button" key={template.id} className={`admin-design-card ${printWizardDraft.template_id === template.id ? 'selected' : ''}`} onClick={() => setPrintWizardDraft({ ...printWizardDraft, template_id: template.id })}><div className="admin-design-thumb">{template.artworkUrl && <img src={template.artworkUrl} alt="" />}<span>QR</span></div><strong>{template.name}</strong><small>{template.pageWidthMm} × {template.pageHeightMm} mm</small></button>)}</div><div className="admin-form-actions"><button className="admin-outline-button" onClick={() => setPrintWizardStep(1)}>Back</button><button className="admin-primary-button" onClick={createWizardJob}>Review placement <Icon path={ICONS.arrow} /></button></div></section>}
+      {printWizardStep === 3 && <section className="admin-wizard-panel"><span className="admin-eyebrow">STEP 3</span><h3>Review placement</h3>{selectedTemplate ? <div className="admin-wizard-review"><div className="admin-template-preview"><img src={selectedTemplate.artworkUrl} alt={`${selectedTemplate.name} artwork`} /><div className="admin-qr-placeholder" style={{ left: `${(selectedTemplate.qrX / selectedTemplate.pageWidthMm) * 100}%`, top: `${(selectedTemplate.qrY / selectedTemplate.pageHeightMm) * 100}%`, width: `${(selectedTemplate.qrWidth / selectedTemplate.pageWidthMm) * 100}%`, height: `${(selectedTemplate.qrHeight / selectedTemplate.pageHeightMm) * 100}%` }}><span>QR</span></div></div><div className="admin-wizard-summary"><strong>{selectedTemplate.name}</strong><span>QR: {rangeStart}{rangeEnd !== rangeStart ? ` → ${rangeEnd}` : ''}</span><span>QR size: {selectedTemplate.qrWidth} × {selectedTemplate.qrHeight} mm</span><span>Page: {selectedTemplate.pageWidthMm} × {selectedTemplate.pageHeightMm} mm</span></div></div> : <div className="admin-wizard-blank-preview"><Icon path={ICONS.qr} /><strong>Blank QR</strong><span>The QR codes will print without artwork.</span></div>}<div className="admin-form-actions"><button className="admin-outline-button" onClick={() => setPrintWizardStep(2)}>Back</button><button className="admin-primary-button" disabled={printWizardBusy} onClick={selectedTemplate ? (printWizardMode === 'individual' ? () => setPrintWizardStep(4) : generateWizardProof) : () => setPrintWizardStep(4)}>{printWizardBusy ? 'Generating proof...' : selectedTemplate && printWizardMode !== 'individual' ? 'Generate Proof' : 'Continue'}</button></div></section>}
+      {printWizardStep === 4 && <section className="admin-wizard-panel"><span className="admin-eyebrow">STEP 4</span><h3>{printWizardJob?.status === 'APPROVED' ? 'Proof approved' : 'Approve & print'}</h3><div className="admin-wizard-final-summary"><strong>{selectedCount.toLocaleString()} QR codes ready</strong><span>QR: {rangeStart}{rangeEnd !== rangeStart ? ` → ${rangeEnd}` : ''}</span><span>Design: {selectedTemplate?.name || 'Blank QR'}</span><span>Status: {printWizardJob?.status === 'APPROVED' ? 'Proof approved' : 'Ready for review'}</span></div>{selectedTemplate ? <p className="admin-wizard-helper">Review the proof before printing. The final PDF will use this exact design and QR placement.</p> : <p className="admin-wizard-helper">The blank QR PDF will contain the selected codes without artwork.</p>}<div className="admin-form-actions"><button className="admin-outline-button" onClick={() => setPrintWizardStep(3)}>Back</button>{printWizardJob?.proofCheckedAt && <button className="admin-outline-button" onClick={() => viewPrintProof(printWizardJob)}>Preview Proof</button>}{selectedTemplate ? printWizardMode === 'individual' ? <button className="admin-primary-button" onClick={downloadWizardIndividual}>Generate Print PDF</button> : printWizardJob?.status === 'APPROVED' ? <button className="admin-primary-button" onClick={() => downloadTemplatePdf(printWizardJob)}>Generate Print PDF</button> : <button className="admin-primary-button" disabled={!printWizardJob?.proofCheckedAt || printWizardBusy} onClick={approveWizardJob}>{printWizardJob?.proofCheckedAt ? 'Approve & Generate PDF' : 'Generate Proof First'}</button> : <button className="admin-primary-button" onClick={() => { const params = new URLSearchParams(printWizardMode === 'individual' ? { code: rangeStart } : { range_start: rangeStart, range_end: rangeEnd }); window.location.href = `${API_BASE_URL}/admin/qr/pdf?${params.toString()}`; }}>Generate Print PDF</button>}</div></section>}
+    </div>;
+  }
+
   function renderQr() {
+    return renderQrInventory();
+    /*
     // The backend returns the QR list under `data` (see GET /api/admin/qr), not `qr`.
     const qrs = portalData?.data?.data || [];
     const qrTotal = portalData?.data?.pagination?.total || 0;
@@ -3489,6 +3394,10 @@ function AdminPage() {
         {renderPagination()}
       </div>
     );
+  }
+
+  */
+
   }
 
   function renderLeads() {
@@ -5345,6 +5254,14 @@ function AdminPage() {
 
     if (resource === 'qr') {
       return renderQr();
+    }
+
+    if (resource === 'print-qr') {
+      return renderPrintWizard();
+    }
+
+    if (resource === 'templates') {
+      return renderTemplates();
     }
 
     if (resource === 'print-history') {
