@@ -1549,33 +1549,51 @@ adminRoutes.get('/qr/print-batch/:jobId/proof', requireAuth, requireAdmin, async
 adminRoutes.post('/qr/:qrId/delete', requireAuth, requireAdmin, async (request, response, next) => {
 	try {
 		const qrId = request.params.qrId;
-		const qr = await prisma.qrCode.findUnique({ where: { id: qrId } });
-		if (!qr) {
-			return response.status(404).json({ success: false, error: { code: 'QR_NOT_FOUND', message: 'QR code was not found.' } });
-		}
-		if (qr.status !== 'UNASSIGNED') {
-			return response.status(409).json({
-				success: false,
-				error: { code: 'QR_NOT_UNASSIGNED', message: 'Only an unassigned QR code can be deleted.' },
-			});
-		}
-		// Even an UNASSIGNED QR can carry assignment history (e.g. it was manually reset after
-		// an earlier assignment was closed) — a hard delete here would either fail on the
-		// QrAssignment foreign key or, worse, cascade away real historical attribution that
-		// leads/scans/payouts still reference. Only ever delete a QR that was truly never used.
-		const assignmentCount = await prisma.qrAssignment.count({ where: { qrCodeId: qrId } });
-		if (assignmentCount) {
-			return response.status(409).json({
-				success: false,
-				error: { code: 'QR_HAS_HISTORY', message: 'This QR code has assignment history and cannot be deleted.' },
-			});
-		}
 		await prisma.$transaction(async (transaction) => {
+			const qr = await transaction.qrCode.findUnique({ where: { id: qrId } });
+			if (!qr) {
+				const error = new Error('QR code was not found.');
+				error.statusCode = 404;
+				error.code = 'QR_NOT_FOUND';
+				throw error;
+			}
+			if (qr.status !== 'UNASSIGNED') {
+				const error = new Error('Only an unassigned QR code can be deleted.');
+				error.statusCode = 409;
+				error.code = 'QR_NOT_UNASSIGNED';
+				throw error;
+			}
+
+			// An unassigned QR can still be referenced by closed assignments, scans, leads,
+			// or designed print history. Preserve those records instead of attempting a
+			// delete that would either destroy attribution or fail on a foreign key.
+			const [assignmentCount, scanCount, leadCount, printJobItemCount] = await Promise.all([
+				transaction.qrAssignment.count({ where: { qrCodeId: qrId } }),
+				transaction.scan.count({ where: { qrId } }),
+				transaction.lead.count({ where: { qrId } }),
+				transaction.qrPrintJobItem.count({ where: { qrCodeId: qrId } }),
+			]);
+			const history = { assignmentCount, scanCount, leadCount, printJobItemCount };
+			if (Object.values(history).some((count) => count > 0)) {
+				const error = new Error('This QR code has history and cannot be deleted.');
+				error.statusCode = 409;
+				error.code = 'QR_HAS_HISTORY';
+				error.details = history;
+				throw error;
+			}
+
 			await transaction.qrCode.delete({ where: { id: qrId } });
 			await writeAudit(transaction, request, 'QR_DELETED', 'QrCode', qrId, { qrCode: qr.code });
 		});
 		return response.json({ success: true });
 	} catch (error) {
+		// The checks above make this unlikely, but keep a concurrent insert or a
+		// production schema mismatch from leaking as a generic 500.
+		if (error.code === 'P2003') {
+			error.statusCode = 409;
+			error.code = 'QR_HAS_HISTORY';
+			error.message = 'This QR code has history and cannot be deleted.';
+		}
 		return next(error);
 	}
 });
