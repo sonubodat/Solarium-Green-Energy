@@ -3,8 +3,25 @@
 import { useEffect, useRef, useState } from 'react';
 import { apiRequest } from '../api/client';
 import QrScanner from '../components/QrScanner';
+import VendorPicker from '../components/VendorPicker';
 import { SkeletonBlock } from '../components/Skeleton';
 import './SalesPage.css';
+
+// Server-side, paginated Solar Mitra lookup for the Sales pickers. Uncached (forceRefresh) so a
+// Solar Mitra onboarded or assigned a moment ago is current. includeAssigned is asked for only
+// by "Complete onboarding": photos and the geo-tag are added after the QR is assigned, while the
+// QR-assign picker keeps excluding anyone who already holds one. This only narrows what is
+// OFFERED — the ownership checks on the assign/location/photo endpoints stay authoritative.
+function salesVendorFetcher(includeAssigned) {
+  return (search, page, limit) => {
+    const params = new URLSearchParams({ page: String(page), limit: String(limit) });
+    if (search) params.set('search', search);
+    if (includeAssigned) params.set('include_assigned', 'true');
+    return apiRequest(`/sales/vendors?${params.toString()}`, { forceRefresh: true });
+  };
+}
+const fetchAssignableVendors = salesVendorFetcher(false);
+const fetchOnboardingVendors = salesVendorFetcher(true);
 
 const ICONS = {
   user: 'M12 12a4.5 4.5 0 1 0 0-9 4.5 4.5 0 0 0 0 9Zm0 2c-4.2 0-7.5 2.1-7.5 4.7V21h15v-2.3c0-2.6-3.3-4.7-7.5-4.7Z',
@@ -51,6 +68,7 @@ function SalesPage() {
   // dashboard. Shows a skeleton instead of that flash.
   const [sessionChecked, setSessionChecked] = useState(false);
   const [selectedVendorId, setSelectedVendorId] = useState('');
+  const [selectedVendorLabel, setSelectedVendorLabel] = useState('');
   const [assignmentCode, setAssignmentCode] = useState('');
   const [qrStatus, setQrStatus] = useState(null);
   const [showScanner, setShowScanner] = useState(false);
@@ -65,7 +83,6 @@ function SalesPage() {
   const [qrPlacementPhotoPreview, setQrPlacementPhotoPreview] = useState('');
   const [showCompleteOnboarding, setShowCompleteOnboarding] = useState(false);
   const [completeVendorId, setCompleteVendorId] = useState('');
-  const [salesVendorOptions, setSalesVendorOptions] = useState([]);
   const [message, setMessage] = useState('');
   const [messageType, setMessageType] = useState('');
   // Full-screen animated checkmark instead of the bottom banner for success only — errors
@@ -131,8 +148,6 @@ function SalesPage() {
         account: session.account,
         data: null,
       });
-
-      loadSalesVendors();
     } catch (error) {
       // No active Sales session.
     } finally {
@@ -159,18 +174,6 @@ function SalesPage() {
     }
   }
 
-  async function loadSalesVendors() {
-    try {
-      const result = await apiRequest('/sales/vendors');
-
-      if (!mountedRef.current) return;
-
-      setSalesVendorOptions(result.vendors || []);
-    } catch (error) {
-      // Background refresh only.
-    }
-  }
-
   async function signIn(event) {
     event.preventDefault();
 
@@ -193,8 +196,6 @@ function SalesPage() {
         account: result.user,
         data: null,
       });
-
-      loadSalesVendors();
 
       setMessage('Signed in successfully.');
       setMessageType('success');
@@ -312,8 +313,7 @@ function SalesPage() {
       resetOnboardingCapture();
       setShowCreateVendor(false);
       setSelectedVendorId(vendorId);
-
-      await loadSalesVendors();
+      setSelectedVendorLabel(newVendor.business_name);
 
       if (photoFailures.length) {
         const labels = { shop: 'shop', 'qr-placement': 'QR placement' };
@@ -433,6 +433,7 @@ function SalesPage() {
       setQrStatus(null);
       setAssignmentCode('');
       setSelectedVendorId('');
+      setSelectedVendorLabel('');
     } catch (error) {
       setMessage(error.message);
       setMessageType('error');
@@ -825,35 +826,18 @@ function SalesPage() {
                     onSubmit={assignQr}
                     className="sales-assign-form"
                   >
-                    <label
-                      htmlFor="sales-vendor-picker"
-                      className="sales-input-label"
-                    >
-                      Assign to Solar Mitra
-                    </label>
+                    <span className="sales-input-label">Assign to Solar Mitra</span>
 
-                    <select
-                      id="sales-vendor-picker"
-                      required
+                    <VendorPicker
+                      fetchPage={fetchAssignableVendors}
                       value={selectedVendorId}
-                      onChange={(event) =>
-                        setSelectedVendorId(event.target.value)
-                      }
-                    >
-                      <option value="">
-                        Select Solar Mitra
-                      </option>
-
-                      {salesVendorOptions.map((vendor) => (
-                        <option
-                          key={vendor.id}
-                          value={vendor.id}
-                        >
-                          {vendor.businessName} (
-                          {vendor.loginIdentifier})
-                        </option>
-                      ))}
-                    </select>
+                      valueLabel={selectedVendorLabel}
+                      onChange={(id, vendor) => {
+                        setSelectedVendorId(id);
+                        setSelectedVendorLabel(vendor?.businessName || '');
+                      }}
+                      ariaLabel="Solar Mitra to assign this QR to"
+                    />
 
                     <button
                       type="submit"
@@ -1072,20 +1056,18 @@ function SalesPage() {
                   </button>
                 ) : (
                   <div className="sales-work-form">
-                    <label className="sales-field-labeled">
+                    <div className="sales-field-labeled">
                       <span>Solar Mitra</span>
                       <div className="sales-field-input">
                         <Icon path={ICONS.store} className="sales-field-icon" />
-                        <select value={completeVendorId} onChange={(event) => setCompleteVendorId(event.target.value)}>
-                          <option value="">Select Solar Mitra</option>
-                          {salesVendorOptions.map((vendor) => (
-                            <option key={vendor.id} value={vendor.id}>
-                              {vendor.businessName} ({vendor.loginIdentifier})
-                            </option>
-                          ))}
-                        </select>
+                        <VendorPicker
+                          fetchPage={fetchOnboardingVendors}
+                          value={completeVendorId}
+                          onChange={(id) => setCompleteVendorId(id)}
+                          ariaLabel="Solar Mitra to complete onboarding for"
+                        />
                       </div>
-                    </label>
+                    </div>
 
                     <div className="sales-field-labeled">
                       <span>Shop location</span>

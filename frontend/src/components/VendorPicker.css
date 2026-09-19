@@ -1,0 +1,181 @@
+/* Self-contained tokens: the popover is portalled to <body>, outside the Admin/Sales page
+   scopes that define their own variables. Values match the shared palette. */
+.vendor-picker {
+  --vp-navy: #102f4a;
+  --vp-text: #173247;
+  --vp-muted: #71818c;
+  --vp-border: #dce5ea;
+  --vp-bg: #f5f8fa;
+  --vp-accent: #006fae;
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.vendor-picker-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 170px;
+  max-width: 100%;
+  padding: 9px 12px;
+  border: 1px solid var(--vp-border);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--vp-muted);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.vendor-picker-button.has-value {
+  color: var(--vp-text);
+  font-weight: 600;
+}
+
+.vendor-picker-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.vendor-picker-button:focus-visible,
+.vendor-picker-search:focus-visible {
+  outline: 2px solid var(--vp-accent);
+  outline-offset: 1px;
+}
+
+.vendor-picker-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vendor-picker-clear {
+  border: 0;
+  background: transparent;
+  color: var(--vp-muted);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.vendor-picker-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1990;
+  background: transparent;
+}
+
+.vendor-picker-popover {
+  --vp-navy: #102f4a;
+  --vp-text: #173247;
+  --vp-muted: #71818c;
+  --vp-border: #dce5ea;
+  --vp-bg: #f5f8fa;
+  --vp-accent: #006fae;
+  position: fixed;
+  z-index: 2000;
+  box-sizing: border-box;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--vp-border);
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: 0 14px 34px rgba(16, 47, 74, 0.18);
+  color: var(--vp-text);
+  font-size: 13px;
+}
+
+.vendor-picker-search {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 9px 10px;
+  border: 1px solid var(--vp-border);
+  border-radius: 8px;
+  font: inherit;
+}
+
+.vendor-picker-list {
+  display: grid;
+  gap: 2px;
+  max-height: 280px;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.vendor-picker-option {
+  display: grid;
+  gap: 1px;
+  padding: 8px 10px;
+  border-radius: 7px;
+  cursor: pointer;
+}
+
+.vendor-picker-option small {
+  overflow: hidden;
+  color: var(--vp-muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vendor-picker-option.active { background: var(--vp-bg); }
+.vendor-picker-option.selected { box-shadow: inset 3px 0 0 var(--vp-accent); }
+
+.vendor-picker-message {
+  padding: 14px 10px;
+  color: var(--vp-muted);
+  text-align: center;
+}
+
+.vendor-picker-link {
+  border: 0;
+  background: transparent;
+  color: var(--vp-accent);
+  font: inherit;
+  font-weight: 700;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.vendor-picker-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--vp-muted);
+  font-size: 11px;
+}
+
+.vendor-picker-pager { display: inline-flex; gap: 6px; }
+
+.vendor-picker-pager button {
+  padding: 5px 10px;
+  border: 1px solid var(--vp-border);
+  border-radius: 6px;
+  background: #fff;
+  color: var(--vp-text);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.vendor-picker-pager button:disabled { cursor: not-allowed; opacity: 0.45; }
+
+/* Small windows keep the same compact popup, anchored to its button, with no dimmed backdrop
+   over the page. It shrinks to the space available instead of turning into a full-width sheet. */
+@media (max-width: 720px) {
+  .vendor-picker-popover { padding: 8px; gap: 6px; }
+  .vendor-picker-list { max-height: 210px; }
+}

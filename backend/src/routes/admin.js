@@ -14,6 +14,7 @@ import { createQrArtworkUrl, createVendorDocumentUrl, removeQrArtwork, removeVen
 import { generateQrProof, generateQrTemplatePdf } from '../services/qr-proof.js';
 import { QR_ARTWORK_MAX_BYTES } from '../lib/qr-artwork-limits.js';
 import { artworkSizeWarning } from '../services/qr-artwork.js';
+import { vendorSearchWhere, normalizeSearchInput, pickerPagination, PICKER_VENDOR_SELECT } from '../lib/vendor-search.js';
 import { buildQrCodeSequence, normalizeQrCode, parseQrRange } from '../services/qr-print.js';
 import { env } from '../config/env.js';
 import { normalizePhone, customerHashFor, findExistingLeadByHash } from '../lib/customer-identity.js';
@@ -1634,15 +1635,20 @@ adminRoutes.get('/vendors/bulk-import-template', requireAuth, requireAdmin, (req
 
 adminRoutes.get('/vendors/lookup', requireAuth, requireAdmin, async (request, response, next) => {
 	try {
-		const vendors = await prisma.vendor.findMany({
-			// A Vendor already holding an active QR is excluded — the picker is for choosing
-			// a vendor to assign/reassign an active QR to, and one active QR per Vendor is enforced here.
-			where: { status: 'ACTIVE', assignments: { none: { unassignedAt: null } } },
-			orderBy: { businessName: 'asc' },
-			take: 200,
-			select: { id: true, businessName: true, loginIdentifier: true },
-		});
-		return response.json({ success: true, vendors });
+		const { page, limit, skip } = pickerPagination(request.query);
+		const search = vendorSearchWhere(request.query.search);
+		// A Vendor already holding an active QR is excluded — the picker is for choosing a
+		// vendor to assign/reassign an active QR to, and one active QR per Vendor is enforced here.
+		const where = {
+			status: 'ACTIVE',
+			assignments: { none: { unassignedAt: null } },
+			...(search ? { AND: [search] } : {}),
+		};
+		const [vendors, total] = await Promise.all([
+			prisma.vendor.findMany({ where, orderBy: [{ businessName: 'asc' }, { id: 'asc' }], skip, take: limit, select: PICKER_VENDOR_SELECT }),
+			prisma.vendor.count({ where }),
+		]);
+		return response.json({ success: true, vendors, pagination: { page, limit, total } });
 	} catch (error) {
 		return next(error);
 	}
@@ -1827,11 +1833,17 @@ adminRoutes.get('/qr/pdf', requireAuth, requireAdmin, async (request, response, 
 adminRoutes.get('/vendors', requireAuth, requireAdmin, async (request, response, next) => {
 	try {
 		const { page, limit, skip } = pagination(request.query);
-		const where = { status: { not: 'DELETED' } };
+		const search = vendorSearchWhere(request.query.search);
+		// An exact vendor id also matches, so an id copied from Print History or an audit log
+		// still finds its Solar Mitra (the previous client-side filter matched ids too).
+		const where = {
+			status: { not: 'DELETED' },
+			...(search ? { AND: [{ OR: [...search.OR, { id: normalizeSearchInput(request.query.search) }] }] } : {}),
+		};
 		const [vendors, total] = await Promise.all([
 			prisma.vendor.findMany({
 				where,
-				orderBy: { createdAt: 'desc' },
+				orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
 				skip,
 				take: limit,
 				select: {

@@ -357,11 +357,16 @@ curl -i -b admin.cookies "$BASE/admin/qr?status=UNASSIGNED&limit=50"   # every r
 curl -i -b admin.cookies "$BASE/admin/qr?status=ACTIVE&limit=50"       # every row's status is ACTIVE
 curl -i -b admin.cookies "$BASE/admin/qr?status=NOT_A_STATUS"          # -> 400
 
-curl -i -b admin.cookies "$BASE/admin/vendors/lookup"
-# -> 200, {"success":true,"vendors":[...]} — a Vendor that already holds an active QR must NOT appear here;
-# assign/reassign a QR to a Vendor, re-run this, confirm that Vendor drops out of the list
-curl -i -b sales.cookies "$BASE/sales/vendors"
-# same exclusion rule, additionally scoped to this Sales user's own vendors only
+curl -i -b admin.cookies "$BASE/admin/vendors/lookup?search=store&page=1&limit=10"
+# -> 200, {"success":true,"vendors":[...],"pagination":{"page":1,"limit":10,"total":N}} — a Vendor that already holds an
+# active QR must NOT appear here; assign/reassign a QR to a Vendor, re-run this, confirm that Vendor drops out of the list.
+# Search is a substring match over name, owner, login ID and mobile (case-insensitive); try "%" and "_" (matched literally)
+# and "+91 98765 43210" vs "9876543210" (both find the same Solar Mitra). Page through everything: no gaps, no duplicates.
+curl -i -b sales.cookies "$BASE/sales/vendors?search=store"
+# same exclusion rule, additionally scoped to this Sales user's own (or unowned) vendors only;
+# add &include_assigned=true (the "Complete onboarding" picker) to also include vendors that already hold a QR
+curl -i -b admin.cookies "$BASE/admin/vendors?search=store&page=1&limit=50"
+# the Solar Mitras list searches on the server, so a vendor on any page is found from page 1
 
 QR_ID="<id-of-V-0001-from-above-or-vendors-list>"
 curl -i -b admin.cookies -X POST $BASE/admin/qr/$QR_ID/reassign -H "Content-Type: application/json" \

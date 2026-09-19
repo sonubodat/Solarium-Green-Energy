@@ -5,6 +5,7 @@ import { parse as parseCsv } from 'csv-parse/browser/esm/sync';
 import { apiRequest, API_BASE_URL } from '../api/client';
 import { SkeletonBlock } from '../components/Skeleton';
 import QrScanner from '../components/QrScanner';
+import VendorPicker from '../components/VendorPicker';
 import './AdminPage.css';
 
 const ICONS = {
@@ -67,6 +68,14 @@ function parseBulkVendorNames(text) {
 // Keep in sync with backend/src/lib/qr-artwork-limits.js (the backend stays authoritative).
 const QR_ARTWORK_MAX_MB = 8;
 const QR_ARTWORK_TYPES = ['image/png', 'image/jpeg', 'application/pdf'];
+
+// Server-side, paginated Solar Mitra lookup for the assign/reassign pickers. forceRefresh
+// keeps it uncached, so a Solar Mitra created or assigned a moment ago is always current.
+function fetchAssignableVendors(search, page, limit) {
+  const params = new URLSearchParams({ page: String(page), limit: String(limit) });
+  if (search) params.set('search', search);
+  return apiRequest(`/admin/vendors/lookup?${params.toString()}`, { forceRefresh: true });
+}
 
 const BULK_VENDOR_NAME_HEADERS = ['name', 'business_name', 'business name', 'solar mitra', 'solar mitra name'];
 
@@ -160,9 +169,13 @@ function AdminPage() {
   const [resourceLoading, setResourceLoading] = useState(false);
   const [adminPage, setAdminPage] = useState(1);
 
-  const [vendorLookup, setVendorLookup] = useState([]);
 
-  const [search, setSearch] = useState('');
+  // Separate state per table: one shared box is how a query typed in one view leaks into another.
+  const [vendorSearch, setVendorSearch] = useState('');
+  const [leadSearch, setLeadSearch] = useState('');
+  const vendorSearchRef = useRef('');
+  const vendorSearchMounted = useRef(false);
+  const adminLoadSeq = useRef(0);
   const [qrStatus, setQrStatus] = useState('');
   const [qrAssignment, setQrAssignment] = useState('');
 
@@ -462,6 +475,11 @@ function AdminPage() {
       return;
     }
 
+    // Only the most recent load may write its result: a slow earlier response (an older
+    // search, page, or a resource the admin has since left) must never overwrite a newer one.
+    const seq = adminLoadSeq.current + 1;
+    adminLoadSeq.current = seq;
+
     setLoading(true);
     if (nextResource === 'vendors') setSelectedVendorIds([]);
     setMessage('');
@@ -479,7 +497,7 @@ function AdminPage() {
       if (nextResource === 'dashboard') {
         const data = await apiRequest('/admin/dashboard', { forceRefresh });
 
-        if (!mountedRef.current) return;
+        if (!mountedRef.current || seq !== adminLoadSeq.current) return;
 
         setAdminPage(1);
         setPortalData((current) => ({
@@ -510,7 +528,7 @@ function AdminPage() {
           apiRequest(`/admin/qr/print-jobs${query}${filterQuery ? `&${filterQuery}` : ''}`, { forceRefresh }),
           apiRequest('/admin/qr/templates', { forceRefresh }),
         ]);
-        if (!mountedRef.current) return;
+        if (!mountedRef.current || seq !== adminLoadSeq.current) return;
         setAdminPage(page);
         setExpandedPrintJob(null);
         setQrTemplates(templates.templates || []);
@@ -518,9 +536,15 @@ function AdminPage() {
         return;
       }
 
+      // The Solar Mitras list searches on the server, so a match on page 7 is found from page 1
+      // (the previous client-side filter only ever saw the 50 rows already loaded).
+      if (nextResource === 'vendors' && vendorSearchRef.current.trim()) {
+        query += `&search=${encodeURIComponent(vendorSearchRef.current.trim())}`;
+      }
+
       const data = await apiRequest(`/admin/${nextResource}${query}`, { forceRefresh });
 
-      if (!mountedRef.current) return;
+      if (!mountedRef.current || seq !== adminLoadSeq.current) return;
 
       setAdminPage(page);
 
@@ -531,28 +555,44 @@ function AdminPage() {
       if (data.retention) setRetentionStatus(data.retention);
 
       if (nextResource === 'qr') {
-        const [lookup, templates] = await Promise.all([
-          apiRequest('/admin/vendors/lookup', { forceRefresh }),
-          apiRequest('/admin/qr/templates', { forceRefresh }),
-        ]);
+        // Solar Mitras are no longer preloaded for the QR table: each picker searches the
+        // server when it is opened, so this page no longer fetches the whole vendor list.
+        const templates = await apiRequest('/admin/qr/templates', { forceRefresh });
 
         if (mountedRef.current) {
-          setVendorLookup(lookup.vendors || []);
           setQrTemplates(templates.templates || []);
         }
       }
     } catch (error) {
-      setMessage(error.message);
-      setMessageType('error');
+      if (seq === adminLoadSeq.current) {
+        setMessage(error.message);
+        setMessageType('error');
+      }
     } finally {
-      setLoading(false);
+      if (seq === adminLoadSeq.current) setLoading(false);
     }
   }
+
+  // Debounced server-side reload when the Solar Mitra search changes. A new query always goes
+  // back to page 1. The ref is updated first so loadAdminResource (and the Prev/Next/Refresh
+  // buttons that also call it) all see the same current query.
+  useEffect(() => {
+    vendorSearchRef.current = vendorSearch;
+    if (!vendorSearchMounted.current) {
+      vendorSearchMounted.current = true;
+      return undefined;
+    }
+    if (resource !== 'vendors') return undefined;
+    const timer = setTimeout(() => loadAdminResource('vendors', 1), 300);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [vendorSearch]);
 
   function navigate(nextResource) {
     setResource(nextResource);
     setAdminPage(1);
-    setSearch('');
+    setVendorSearch('');
+    setLeadSearch('');
     setSelectedVendorIds([]);
     setMobileNavOpen(false);
     setResourceLoading(true);
@@ -1842,25 +1882,8 @@ function AdminPage() {
     const vendors =
       portalData?.data?.vendors || [];
 
-    const filtered = vendors.filter((vendor) => {
-      if (!search.trim()) return true;
-
-      const query = search.toLowerCase();
-
-      return [
-        vendor.businessName,
-        vendor.ownerName,
-        vendor.loginIdentifier,
-        vendor.mobileNumber,
-        vendor.id,
-      ]
-        .filter(Boolean)
-        .some((value) =>
-          String(value)
-            .toLowerCase()
-            .includes(query)
-        );
-    });
+    // Filtering happens on the server now (see loadAdminResource); this is just the current page.
+    const filtered = vendors;
     const allVisibleVendorsSelected = filtered.length > 0 && filtered.every((vendor) => selectedVendorIds.includes(vendor.id));
 
     return (
@@ -2073,9 +2096,9 @@ function AdminPage() {
               id="vendor-search"
               name="vendor_search"
               placeholder="Search Solar Mitras..."
-              value={search}
+              value={vendorSearch}
               onChange={(event) =>
-                setSearch(event.target.value)
+                setVendorSearch(event.target.value)
               }
             />
           </div>
@@ -2450,7 +2473,7 @@ function AdminPage() {
                     colSpan="7"
                     className="admin-empty"
                   >
-                    No Solar Mitras found.
+                    {vendorSearch.trim() ? `No Solar Mitras match "${vendorSearch.trim()}".` : 'No Solar Mitras found.'}
                   </td>
                 </tr>
               )}
@@ -2752,17 +2775,12 @@ function AdminPage() {
 
             {(scannedQr.status === 'UNASSIGNED' || scannedQr.status === 'ACTIVE') ? (
               <div className="admin-scan-assign-actions">
-                <select
+                <VendorPicker
+                  fetchPage={fetchAssignableVendors}
                   value={scanVendorId}
-                  onChange={(event) => setScanVendorId(event.target.value)}
-                >
-                  <option value="">Select a Solar Mitra...</option>
-                  {vendorLookup.map((vendor) => (
-                    <option key={vendor.id} value={vendor.id}>
-                      {vendor.businessName}
-                    </option>
-                  ))}
-                </select>
+                  onChange={(id) => setScanVendorId(id)}
+                  ariaLabel="Solar Mitra to assign this QR to"
+                />
 
                 {confirmAssignScannedQr ? (
                   <span className="admin-inline-confirm">
@@ -3334,37 +3352,17 @@ function AdminPage() {
 
                       <td>
                         <div className="admin-qr-action">
-                          <select
-                            value={
-                              reassignVendorInputs[
-                                qr.id
-                              ] || ''
-                            }
-                            onChange={(event) =>
+                          <VendorPicker
+                            fetchPage={fetchAssignableVendors}
+                            value={reassignVendorInputs[qr.id] || ''}
+                            onChange={(id) =>
                               setReassignVendorInputs({
                                 ...reassignVendorInputs,
-                                [qr.id]:
-                                  event.target.value,
+                                [qr.id]: id,
                               })
                             }
-                          >
-                            <option value="">
-                              Select Solar Mitra
-                            </option>
-
-                            {vendorLookup.map(
-                              (vendor) => (
-                                <option
-                                  key={vendor.id}
-                                  value={vendor.id}
-                                >
-                                  {
-                                    vendor.businessName
-                                  }
-                                </option>
-                              )
-                            )}
-                          </select>
+                            ariaLabel={`Solar Mitra for ${qr.code}`}
+                          />
 
                           {confirmAssignQrId === qr.id ? (
                             <span className="admin-inline-confirm">
@@ -3550,9 +3548,9 @@ function AdminPage() {
             <Icon path={ICONS.search} />
             <input
               placeholder="Search leads..."
-              value={search}
+              value={leadSearch}
               onChange={(event) =>
-                setSearch(event.target.value)
+                setLeadSearch(event.target.value)
               }
             />
           </div>
@@ -3578,7 +3576,7 @@ function AdminPage() {
   }
 
   function renderLeadsByVendor(leads) {
-    const query = search.trim().toLowerCase();
+    const query = leadSearch.trim().toLowerCase();
 
     const filtered = leads.filter((lead) => {
       if (!query) return true;

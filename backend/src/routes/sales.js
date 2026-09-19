@@ -7,6 +7,7 @@ import { hashPassword, normalizeLoginIdentifier, publicVendor } from '../service
 import { assignUnassignedQr } from '../services/qr.js';
 import { uploadVendorPhoto, removeVendorPhoto } from '../services/vendor-documents.js';
 import { geoTagFields, resolveGeoTag } from '../lib/geo-tag.js';
+import { vendorSearchWhere, pickerPagination, PICKER_VENDOR_SELECT } from '../lib/vendor-search.js';
 
 export const salesRoutes = Router();
 
@@ -92,24 +93,31 @@ salesRoutes.post('/qr/assign', requireAuth, requireSales, async (request, respon
 
 salesRoutes.get('/vendors', requireAuth, requireSales, async (request, response, next) => {
 	try {
-		const vendors = await prisma.vendor.findMany({
-			// A Vendor with no salesUserId (e.g. created directly by Admin, not through any Sales
-			// rep's onboarding flow) isn't owned by anyone — matches the same OR-with-null pattern
-			// GET /sales/registrations already uses so an unclaimed resource is visible to every
-			// Sales user, not invisible to all of them. Was strictly `salesUserId: <this user>`
-			// with no null fallback, which silently hid every vendor a Sales rep didn't personally
-			// onboard themselves — including ones Admin created directly — from the QR-assign picker.
-			// Excludes a Vendor already holding an active QR — one active QR per Vendor is enforced here.
-			where: {
-				OR: [{ salesUserId: request.auth.user.id }, { salesUserId: null }],
-				status: 'ACTIVE',
-				assignments: { none: { unassignedAt: null } },
-			},
-			orderBy: { businessName: 'asc' },
-			take: 100,
-			select: { id: true, businessName: true, loginIdentifier: true },
-		});
-		return response.json({ success: true, vendors });
+		const { page, limit, skip } = pickerPagination(request.query);
+		const search = vendorSearchWhere(request.query.search);
+		// Only the "Complete onboarding" picker asks for vendors that already hold a QR (shop
+		// photos and the geo-tag are added after the QR is assigned); the QR-assign picker never
+		// does, so one active QR per Vendor is still enforced there.
+		const includeAssigned = request.query.include_assigned === 'true';
+		// A Vendor with no salesUserId (e.g. created directly by Admin, not through any Sales
+		// rep's onboarding flow) isn't owned by anyone — matches the same OR-with-null pattern
+		// GET /sales/registrations uses, so an unclaimed resource is visible to every Sales user.
+		// This is only what the picker OFFERS: the ownership checks on POST /sales/qr/assign and
+		// the location/photo routes stay the real authorization boundary, because a caller can
+		// always skip the picker and hit those endpoints directly.
+		const where = {
+			AND: [
+				{ OR: [{ salesUserId: request.auth.user.id }, { salesUserId: null }] },
+				{ status: 'ACTIVE' },
+				...(includeAssigned ? [] : [{ assignments: { none: { unassignedAt: null } } }]),
+				...(search ? [search] : []),
+			],
+		};
+		const [vendors, total] = await Promise.all([
+			prisma.vendor.findMany({ where, orderBy: [{ businessName: 'asc' }, { id: 'asc' }], skip, take: limit, select: PICKER_VENDOR_SELECT }),
+			prisma.vendor.count({ where }),
+		]);
+		return response.json({ success: true, vendors, pagination: { page, limit, total } });
 	} catch (error) {
 		return next(error);
 	}

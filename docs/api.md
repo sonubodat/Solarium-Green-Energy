@@ -157,11 +157,14 @@ List registrations visible to the authenticated Sales user.
 
 ### `GET /api/sales/vendors`
 
-List vendors operationally available to the authenticated Sales user, for the QR-assignment picker.
+Search and page through Solar Mitras available to the authenticated Sales user. Backs both Sales pickers ("Assign QR" and "Complete onboarding").
 
 - Authentication: Sales
-- Response: bounded to 100, name-sorted — a capped picker list (like `GET /api/admin/vendors/lookup`), not page-based pagination; this doc previously overclaimed "pagination" here
-- Rules: scope results by Sales ownership or assignment; excludes any Vendor already holding an active QR assignment
+- Query: `search` (optional), `page` (default 1), `limit` (default 10, capped at 50), `include_assigned` (`true` only for the "Complete onboarding" picker)
+- Search: substring, case-insensitive, over business name, owner name, login ID and mobile number; a phone-shaped query (`+91 98765 43210`, `98765-43210`, `919876543210`) is normalized to digits first. See `backend/src/lib/vendor-search.js` for the exact rules — `%` and `_` are matched literally, and a bare `91` is an ordinary substring, never "every Indian number"
+- Response: `vendors: [{ id, businessName, ownerName, loginIdentifier, mobileNumber }]` name-sorted, plus `pagination: { page, limit, total }`. The old hard cap of 100 is gone: every eligible Solar Mitra is reachable by paging or searching
+- Rules: scope results by Sales ownership (owned by this user, or by nobody), ACTIVE only; excludes any Vendor already holding an active QR assignment unless `include_assigned=true`, so one active QR per Solar Mitra is still enforced at the assign picker
+- **This only narrows what the UI offers.** The ownership checks on `POST /api/sales/qr/assign`, `PATCH /api/sales/vendors/:vendorId/location` and the photo endpoints remain the real authorization boundary and are unchanged
 
 ### `POST /api/sales/vendors/:vendorId/onboard`
 
@@ -238,10 +241,11 @@ Sales has no endpoint for directly reassigning an active QR, reading payouts, re
 
 ### `GET /api/admin/vendors`
 
-List all vendors.
+List all vendors (excluding soft-deleted).
 
 - Authentication: Admin
-- Query: bounded pagination and indexed filters
+- Query: bounded pagination, plus `search` (optional) — server-side, so a match on any page is found from page 1. Same rules as `GET /api/sales/vendors` (substring over name, owner, login ID, mobile; phone normalization; literal `%`/`_`), and an exact vendor `id` also matches, so an id copied from Print History or an audit log still finds its Solar Mitra
+- INACTIVE vendors are included (the list is where they are managed); DELETED are not
 
 ### `POST /api/admin/vendors`
 
@@ -355,11 +359,12 @@ Reassign an active QR.
 
 ### `GET /api/admin/vendors/lookup`
 
-List active vendors for a quick-pick UI (Admin's vendor-assignment dropdown for QR assign/reassign).
+Search and page through Solar Mitras that can be assigned a QR (the Admin QR-table picker and the scan-to-assign panel).
 
 - Authentication: Admin
-- Response: `vendors: [{ id, businessName, loginIdentifier }]`, bounded to 200, name-sorted
-- Rules: read-only, no audit log; excludes any Vendor already holding an active QR assignment — one active QR per Vendor is enforced at this picker, not just in the reassignment logic
+- Query: `search` (optional), `page` (default 1), `limit` (default 10, capped at 50)
+- Response: `vendors: [{ id, businessName, ownerName, loginIdentifier, mobileNumber }]` name-sorted, plus `pagination: { page, limit, total }`. The old hard cap of 200 is gone: with hundreds of bulk-created Solar Mitras, everything past the 200th was previously impossible to choose
+- Rules: read-only, no audit log; ACTIVE vendors only; excludes any Vendor already holding an active QR assignment — one active QR per Vendor is enforced at this picker, not just in the reassignment logic. The pickers are fetched when opened (never preloaded), so opening the QR page no longer requests this endpoint
 
 ### `GET /api/admin/qr/:qrId/image`
 

@@ -11,7 +11,9 @@ module.exports = function setupProxy(app) {
   app.use(
     '/api',
     createProxyMiddleware({
-      target: 'http://localhost:4000',
+      // Dev-only: API_PROXY_TARGET lets a second dev server point at a different backend
+      // (e.g. a temporary test instance) without touching the one on :4000.
+      target: process.env.API_PROXY_TARGET || 'http://localhost:4000',
       changeOrigin: true,
     })
   );
