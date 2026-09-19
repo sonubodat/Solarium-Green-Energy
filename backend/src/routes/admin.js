@@ -437,7 +437,7 @@ adminRoutes.post('/vendors/:vendorId/delete', requireAuth, requireAdmin, async (
 				success: false,
 				error: {
 					code: 'VENDOR_HAS_HISTORY',
-					message: 'This Vendor has historical leads, scans, payouts, or QR assignment records and cannot be deleted. Deactivate it instead.',
+					message: 'This Vendor has historical leads, scans, payouts, or QR assignment records and cannot use normal Delete. Deactivate it to preserve history, or use Hard delete history if the financial-history safeguard allows it.',
 				},
 			});
 		}

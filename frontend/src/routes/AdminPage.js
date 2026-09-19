@@ -249,6 +249,7 @@ function AdminPage() {
   const [confirmArchiveTemplateId, setConfirmArchiveTemplateId] = useState(null);
   const [previewTemplate, setPreviewTemplate] = useState(null);
   const [reassignVendorInputs, setReassignVendorInputs] = useState({});
+  const [confirmDeleteQrId, setConfirmDeleteQrId] = useState(null);
   const [confirmPurgeQrId, setConfirmPurgeQrId] = useState(null);
   const [purgeQrConfirmText, setPurgeQrConfirmText] = useState('');
   const [confirmAssignQrId, setConfirmAssignQrId] = useState(null);
@@ -1161,6 +1162,22 @@ function AdminPage() {
       return;
     }
     setConfirmAssignQrId(qr.id);
+  }
+
+  async function deleteQr(qr) {
+    setLoading(true);
+    try {
+      await apiRequest(`/admin/qr/${qr.id}/delete`, { method: 'POST' });
+      await loadAdminResource('qr', adminPage, undefined, undefined, true);
+      setMessage('Unused QR code deleted.');
+      setMessageType('success');
+    } catch (error) {
+      setMessage(error.message);
+      setMessageType('error');
+    } finally {
+      setLoading(false);
+      setConfirmDeleteQrId(null);
+    }
   }
 
   async function purgeQr(qr) {
@@ -2202,7 +2219,7 @@ function AdminPage() {
                                   type="text"
                                   className="admin-inline-confirm-input"
                                   placeholder={`Type "${vendor.businessName}" to confirm`}
-                                  title={`Permanent cleanup will remove ${vendor.businessName}, assignments, scans, sessions, registration, and bank documents. Leads will remain as Deleted Solar Mitra records. This cannot be undone.`}
+                                  title={`Hard delete ${vendor.businessName}: removes assignments, scans, sessions, registration, and bank documents. Leads remain as Deleted Solar Mitra records. Vendors with payout history cannot be hard-deleted. This cannot be undone.`}
                                   value={purgeConfirmText}
                                   disabled={loading}
                                   onChange={(event) => setPurgeConfirmText(event.target.value)}
@@ -2236,7 +2253,7 @@ function AdminPage() {
                                   setPurgeConfirmText('');
                                 }}
                               >
-                                Purge history
+                                Hard delete history
                               </button>
                             ))}
                             <button
@@ -2514,7 +2531,7 @@ function AdminPage() {
               <td>{qr.latestPrint ? <div className="admin-primary-cell"><strong>{qr.latestPrint.templateName}</strong><small>{new Date(qr.latestPrint.printedAt).toLocaleDateString()} · {qr.latestPrint.kind === 'SINGLE' ? 'single' : 'batch'}</small><button type="button" className="admin-mini-button" onClick={() => openQrPrintHistory(qr)}>History</button></div> : <span className="admin-muted-text">Not printed</span>}</td>
               <td><span className={`admin-status ${displayStatus === 'UNASSIGNED' ? 'warning' : displayStatus === 'ACTIVE' ? 'active' : 'inactive'}`}>{displayStatus}</span></td>
               <td>{qr.assignments?.[0]?.assignedAt ? new Date(qr.assignments[0].assignedAt).toLocaleDateString() : '—'}</td>
-              <td><div className="admin-qr-action"><VendorPicker fetchPage={fetchAssignableVendors} value={reassignVendorInputs[qr.id] || ''} onChange={(id) => setReassignVendorInputs({ ...reassignVendorInputs, [qr.id]: id })} ariaLabel={`Solar Mitra for ${qr.code}`} />{confirmAssignQrId === qr.id ? <span className="admin-inline-confirm"><button className="admin-mini-button primary solid" disabled={loading} onClick={() => assignQr(qr, Boolean(currentVendor))}>Confirm</button><button className="admin-mini-button admin-inline-confirm-cancel" disabled={loading} onClick={() => setConfirmAssignQrId(null)} aria-label="Cancel assignment"><Icon path={ICONS.close} /></button></span> : <button className="admin-mini-button" disabled={loading} onClick={() => armAssignQr(qr)}>{currentVendor ? 'Reassign' : 'Assign'}</button>}</div></td>
+              <td><div className="admin-qr-action"><VendorPicker fetchPage={fetchAssignableVendors} value={reassignVendorInputs[qr.id] || ''} onChange={(id) => setReassignVendorInputs({ ...reassignVendorInputs, [qr.id]: id })} ariaLabel={`Solar Mitra for ${qr.code}`} />{confirmAssignQrId === qr.id ? <span className="admin-inline-confirm"><button className="admin-mini-button primary solid" disabled={loading} onClick={() => assignQr(qr, Boolean(currentVendor))}>Confirm</button><button className="admin-mini-button admin-inline-confirm-cancel" disabled={loading} onClick={() => setConfirmAssignQrId(null)} aria-label="Cancel assignment"><Icon path={ICONS.close} /></button></span> : <button className="admin-mini-button" disabled={loading} onClick={() => armAssignQr(qr)}>{currentVendor ? 'Reassign' : 'Assign'}</button>}{!currentVendor && (confirmDeleteQrId === qr.id ? <span className="admin-inline-confirm"><button className="admin-mini-button danger solid" disabled={loading} onClick={() => deleteQr(qr)}>Confirm delete</button><button className="admin-mini-button admin-inline-confirm-cancel" disabled={loading} onClick={() => setConfirmDeleteQrId(null)} aria-label="Cancel delete"><Icon path={ICONS.close} /></button></span> : <button className="admin-mini-button danger" disabled={loading} title="Delete only if this QR has never been used" onClick={() => setConfirmDeleteQrId(qr.id)}>Delete</button>)}<button className="admin-mini-button danger" disabled={loading} title="Permanently remove this QR and all linked history" onClick={() => { setConfirmPurgeQrId(qr.id); setPurgeQrConfirmText(''); }}>Purge history</button></div></td>
             </tr>;
           }) : <tr><td colSpan="6" className="admin-empty">No QR codes found.</td></tr>}
         </tbody></table></div>
