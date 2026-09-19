@@ -1094,6 +1094,33 @@
   border-radius: 11px;
 }
 
+.admin-qr-generate-form {
+  display: grid;
+  gap: 10px;
+}
+
+.admin-qr-generate-form label {
+  display: grid;
+  gap: 4px;
+  max-width: 220px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--admin-navy);
+}
+
+.admin-qr-generate-form input {
+  padding: 9px 10px;
+  border: 1px solid var(--admin-border);
+  border-radius: 8px;
+  font: inherit;
+}
+
+.admin-qr-generate-form small {
+  color: var(--admin-muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
 .admin-form-title {
   color: var(--admin-navy);
   font-size: 13px;
@@ -2098,6 +2125,21 @@
 
 .admin-wizard-panel h3 { margin: 7px 0 5px; color: var(--admin-navy); font-size: 20px; }
 .admin-wizard-helper { color: var(--admin-muted); font-size: 11px; line-height: 1.5; }
+
+.admin-wizard-gap-notice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 8px 0;
+  padding: 10px 12px;
+  border: 1px solid var(--admin-border);
+  border-radius: 8px;
+  background: #fff8ee;
+  color: var(--admin-navy);
+  font-size: 12px;
+}
 
 .admin-wizard-choice-grid,
 .admin-design-grid {

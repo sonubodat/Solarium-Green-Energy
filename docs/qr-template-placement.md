@@ -84,6 +84,8 @@ A print batch must:
 - decode every QR on every proof page and compare it with the expected `/v/V-####` URL;
 - require explicit Admin approval before final generation.
 
+**"Never create missing QR records" describes the print-batch route itself, not the admin's overall ability to print.** The Print QR Codes wizard's Step 1 checks the selected range against inventory (`GET /api/admin/qr/range-check`) before the admin can continue, and offers a **separate, explicit, audited** "Generate N missing QR codes" action (`POST /api/admin/qr/generate-range`) when there's a gap. That action is its own deliberate inventory event — the same `QR_GENERATED` audit action the sequential generator writes, distinguished by `mode: 'range'` in its metadata — not something print-batch does as a side effect of printing. `POST /api/admin/qr/print-batch` is unmodified and still refuses a range with any missing code.
+
 Production generation is a separate queued worker step. The worker must generate the complete PDF, record progress, retry a failed job safely, and store the final PDF privately in `qr-artifacts`. A retry must resume or replace only the same idempotent job; it must never create a second production batch.
 
 ## Artwork formats and the two composers

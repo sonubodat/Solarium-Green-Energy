@@ -4,7 +4,7 @@ import { parse as parseCsv } from 'csv-parse/sync';
 import { requireAuth, requireAdmin } from '../middleware/auth.js';
 import { prisma } from '../lib/prisma.js';
 import { createPasswordResetToken, resetTokenResponse } from '../services/password-reset.js';
-import { assignUnassignedQr, generateQrCodes, reassignQr } from '../services/qr.js';
+import { assignUnassignedQr, generateQrCodes, generateSpecificQrCodes, reassignQr } from '../services/qr.js';
 import { generateQrPng, generateQrSvg } from '../services/qr-image.js';
 import PDFDocument from 'pdfkit';
 import { randomUUID } from 'node:crypto';
@@ -840,6 +840,33 @@ const qrTemplateSchema = z.object({
 	}
 });
 
+const qrRangeCheckSchema = z.object({
+	range_start: z.string().trim().min(1),
+	range_end: z.string().trim().min(1),
+});
+// A dropdown-typo-proof ceiling on a single range request (mirrors generateQrSchema's own
+// quantity cap) — applied before any database query, so a request like V-0001 to V-9999999
+// never even attempts to enumerate or count that many codes.
+const QR_RANGE_MAX_SPAN = 5000;
+
+function resolveRangeCodes(input) {
+	let range;
+	try {
+		range = parseQrRange(normalizeQrCode(input.range_start), normalizeQrCode(input.range_end));
+	} catch (error) {
+		error.statusCode = 400;
+		error.code = 'QR_RANGE_INVALID';
+		throw error;
+	}
+	if (range.endNumber - range.startNumber + 1 > QR_RANGE_MAX_SPAN) {
+		const error = new Error(`Narrow the range — at most ${QR_RANGE_MAX_SPAN} QR codes can be checked or generated at once.`);
+		error.statusCode = 400;
+		error.code = 'QR_RANGE_TOO_LARGE';
+		throw error;
+	}
+	return { range, codes: buildQrCodeSequence(range.start, range.end) };
+}
+
 const qrBatchSchema = z.object({
 	template_id: z.string().trim().min(1),
 	range_start: z.string().trim().min(1),
@@ -1320,6 +1347,56 @@ adminRoutes.get('/qr/:qrId/print-history', requireAuth, requireAdmin, async (req
 	}
 });
 
+// Read-only: lets the Print QR Codes wizard show existing-vs-missing counts for a range or a
+// single code (range_start === range_end) before the admin commits to anything. print-batch
+// itself is unchanged and still refuses a range with any missing code — generation stays a
+// separate, explicit, audited step (see POST /qr/generate-range below), never a side effect of
+// printing, per docs/qr-template-placement.md's "never create missing QR records" rule.
+adminRoutes.get('/qr/range-check', requireAuth, requireAdmin, async (request, response, next) => {
+	try {
+		const input = qrRangeCheckSchema.parse({ range_start: request.query.range_start, range_end: request.query.range_end });
+		const { codes } = resolveRangeCodes(input);
+		const existing = await prisma.qrCode.findMany({ where: { code: { in: codes } }, select: { code: true } });
+		const existingSet = new Set(existing.map((qr) => qr.code));
+		const missing = codes.filter((code) => !existingSet.has(code));
+		return response.json({
+			success: true,
+			total: codes.length,
+			existingCount: existingSet.size,
+			missingCount: missing.length,
+			missing: missing.slice(0, 200),
+		});
+	} catch (error) {
+		return next(error);
+	}
+});
+
+// Generates only the codes in the given range that don't already exist — never appends
+// sequentially past the current max like POST /qr/generate does, since a range can be (and
+// usually is) gapped against existing inventory. A range with nothing missing is a harmless
+// no-op (created: 0), so the wizard can call this unconditionally once the admin confirms.
+adminRoutes.post('/qr/generate-range', requireAuth, requireAdmin, async (request, response, next) => {
+	try {
+		const input = qrRangeCheckSchema.parse(request.body);
+		const { range, codes } = resolveRangeCodes(input);
+		const existing = await prisma.qrCode.findMany({ where: { code: { in: codes } }, select: { code: true } });
+		const existingSet = new Set(existing.map((qr) => qr.code));
+		const missing = codes.filter((code) => !existingSet.has(code));
+		if (!missing.length) {
+			return response.status(201).json({ success: true, created: 0, codes: [] });
+		}
+		const result = await generateSpecificQrCodes(missing, request.auth.user.id, { rangeStart: range.start, rangeEnd: range.end });
+		return response.status(201).json({ success: true, created: result.count, codes: missing });
+	} catch (error) {
+		if (error.code === 'P2002') {
+			error.statusCode = 409;
+			error.code = 'QR_BATCH_CONFLICT';
+			error.message = 'Another QR batch was generated at the same moment. Please try again.';
+		}
+		return next(error);
+	}
+});
+
 adminRoutes.post('/qr/print-batch', requireAuth, requireAdmin, async (request, response, next) => {
 	try {
 		const input = qrBatchSchema.parse(request.body);
@@ -1579,53 +1656,75 @@ adminRoutes.get('/qr/print-batch/:jobId/proof', requireAuth, requireAdmin, async
 	}
 });
 
+// A QR is only ever deletable when nothing real depends on it. Closed assignment rows with no
+// scans, leads or print records are the one exception: a QR can be manually reset to UNASSIGNED
+// after an earlier assignment was closed, leaving a row nothing else references, and blocking
+// delete for that alone was overly strict (that used to count ANY assignment row, active or
+// closed, as "history" and refuse the delete). Real customer attribution (scans, leads) and
+// print records are never destroyed — those always block the delete.
+async function qrHistoryCounts(client, qrId) {
+	const [scans, leads, printJobItems, activeAssignment] = await Promise.all([
+		client.scan.count({ where: { qrId } }),
+		client.lead.count({ where: { qrId } }),
+		client.qrPrintJobItem.count({ where: { qrCodeId: qrId } }),
+		client.qrAssignment.findFirst({ where: { qrCodeId: qrId, unassignedAt: null }, select: { id: true } }),
+	]);
+	return { scans, leads, printJobItems, hasActiveAssignment: Boolean(activeAssignment) };
+}
+
+function qrHasHistoryError(counts) {
+	const parts = [];
+	if (counts.printJobItems) parts.push(`printed ${counts.printJobItems} time${counts.printJobItems === 1 ? '' : 's'}`);
+	if (counts.scans) parts.push(`${counts.scans} scan${counts.scans === 1 ? '' : 's'}`);
+	if (counts.leads) parts.push(`${counts.leads} lead${counts.leads === 1 ? '' : 's'}`);
+	const error = new Error(`This QR code has history — ${parts.join(', ')} — and can't be deleted.`);
+	error.statusCode = 409;
+	error.code = 'QR_HAS_HISTORY';
+	return error;
+}
+
 adminRoutes.post('/qr/:qrId/delete', requireAuth, requireAdmin, async (request, response, next) => {
 	try {
 		const qrId = request.params.qrId;
+		const qr = await prisma.qrCode.findUnique({ where: { id: qrId } });
+		if (!qr) {
+			return response.status(404).json({ success: false, error: { code: 'QR_NOT_FOUND', message: 'QR code was not found.' } });
+		}
+		if (qr.status !== 'UNASSIGNED') {
+			return response.status(409).json({
+				success: false,
+				error: { code: 'QR_NOT_UNASSIGNED', message: 'Only an unassigned QR code can be deleted.' },
+			});
+		}
+		const counts = await qrHistoryCounts(prisma, qrId);
+		if (counts.scans || counts.leads || counts.printJobItems) {
+			return next(qrHasHistoryError(counts));
+		}
+		if (counts.hasActiveAssignment) {
+			// UNASSIGNED status with a still-open assignment row is an inconsistent state, not the
+			// normal "never used" case — surface it distinctly rather than silently deleting through it.
+			return response.status(409).json({
+				success: false,
+				error: { code: 'QR_STILL_ASSIGNED', message: 'This QR code still has an open assignment and cannot be deleted.' },
+			});
+		}
 		await prisma.$transaction(async (transaction) => {
-			const qr = await transaction.qrCode.findUnique({ where: { id: qrId } });
-			if (!qr) {
-				const error = new Error('QR code was not found.');
-				error.statusCode = 404;
-				error.code = 'QR_NOT_FOUND';
-				throw error;
-			}
-			if (qr.status !== 'UNASSIGNED') {
-				const error = new Error('Only an unassigned QR code can be deleted.');
-				error.statusCode = 409;
-				error.code = 'QR_NOT_UNASSIGNED';
-				throw error;
-			}
-
-			// An unassigned QR can still be referenced by closed assignments, scans, leads,
-			// or designed print history. Preserve those records instead of attempting a
-			// delete that would either destroy attribution or fail on a foreign key.
-			const [assignmentCount, scanCount, leadCount, printJobItemCount] = await Promise.all([
-				transaction.qrAssignment.count({ where: { qrCodeId: qrId } }),
-				transaction.scan.count({ where: { qrId } }),
-				transaction.lead.count({ where: { qrId } }),
-				transaction.qrPrintJobItem.count({ where: { qrCodeId: qrId } }),
-			]);
-			const history = { assignmentCount, scanCount, leadCount, printJobItemCount };
-			if (Object.values(history).some((count) => count > 0)) {
-				const error = new Error('This QR code has history and cannot be deleted.');
-				error.statusCode = 409;
-				error.code = 'QR_HAS_HISTORY';
-				error.details = history;
-				throw error;
-			}
-
+			// Re-check inside the transaction: a scan, lead or print could have been recorded in
+			// the moment between the count above and this write.
+			const fresh = await qrHistoryCounts(transaction, qrId);
+			if (fresh.scans || fresh.leads || fresh.printJobItems) throw qrHasHistoryError(fresh);
+			const removed = await transaction.qrAssignment.deleteMany({ where: { qrCodeId: qrId } });
 			await transaction.qrCode.delete({ where: { id: qrId } });
-			await writeAudit(transaction, request, 'QR_DELETED', 'QrCode', qrId, { qrCode: qr.code });
+			await writeAudit(transaction, request, 'QR_DELETED', 'QrCode', qrId, { qrCode: qr.code, removedAssignments: removed.count });
 		});
 		return response.json({ success: true });
 	} catch (error) {
-		// The checks above make this unlikely, but keep a concurrent insert or a
-		// production schema mismatch from leaking as a generic 500.
 		if (error.code === 'P2003') {
-			error.statusCode = 409;
-			error.code = 'QR_HAS_HISTORY';
-			error.message = 'This QR code has history and cannot be deleted.';
+			// Safety net: some dependent row (a race, or any future table referencing qr_codes)
+			// blocked the delete at the database level. Never surface this as a raw 500 — report
+			// it the same way as a detected history conflict. request.params.qrId (not the const
+			// declared inside the try block) is used here since it's the only copy in scope.
+			return next(qrHasHistoryError(await qrHistoryCounts(prisma, request.params.qrId)));
 		}
 		return next(error);
 	}

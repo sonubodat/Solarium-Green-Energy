@@ -38,6 +38,30 @@ export async function generateQrCodes(quantity, actorUserId) {
   });
 }
 
+// Fills an explicit, possibly gapped, set of codes (e.g. the missing codes inside a print
+// range) rather than appending sequentially — generateQrCodes() always continues from the
+// current max and cannot fill a gap. skipDuplicates guards a concurrent generate-range call
+// racing for the same codes; the audit metadata's `mode: 'range'` distinguishes this from a
+// sequential batch's `{ quantity }`-only metadata in the same 'QR_GENERATED' audit action.
+export async function generateSpecificQrCodes(codes, actorUserId, { rangeStart, rangeEnd } = {}) {
+  return prisma.$transaction(async (transaction) => {
+    const created = await transaction.qrCode.createMany({ data: codes.map((code) => ({ code })), skipDuplicates: true });
+    if (created.count) {
+      await transaction.auditLog.create({
+        data: {
+          actorUserId,
+          actorRole: 'ADMIN',
+          action: 'QR_GENERATED',
+          entity: 'QrCode',
+          entityId: 'range',
+          metadata: { mode: 'range', rangeStart, rangeEnd, quantity: created.count },
+        },
+      });
+    }
+    return { count: created.count, codes };
+  });
+}
+
 export async function assignUnassignedQr({ code, vendorId, assignedById, assignedByRole }) {
   return prisma.$transaction(async (transaction) => {
     const qr = await transaction.qrCode.findUnique({ where: { code } });

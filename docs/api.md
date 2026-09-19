@@ -334,11 +334,32 @@ List QR inventory and current assignment summary.
 
 ### `POST /api/admin/qr/generate`
 
-Generate a batch of unique QR inventory records.
+Generate a batch of unique QR inventory records, continuing sequentially from the highest existing `V-####` code.
 
 - Authentication: Admin
-- Request: quantity and approved generation options
+- Request: `{ quantity }` (1–5000)
 - Rules: enforce unique codes in the database and audit the batch
+- Response: `201 { success: true, count, codes }`
+- Exposed directly in QR Management's "Generate QR codes" panel (build up inventory — e.g. 100–200 codes — before printing), with a "Print these codes" shortcut that pre-fills the Print QR Codes wizard's Step 1 with the just-generated range
+
+### `GET /api/admin/qr/range-check`
+
+Read-only existence check for a QR range or a single code (`range_start === range_end`), used by the Print QR Codes wizard's Step 1 before it lets the admin continue.
+
+- Authentication: Admin
+- Query: `range_start`, `range_end`
+- Response: `{ total, existingCount, missingCount, missing: [...] }` — `missing` is capped to 200 codes for display; the counts are always exact
+- Errors: `400 QR_RANGE_INVALID` (malformed codes or start after end); `400 QR_RANGE_TOO_LARGE` if the span exceeds 5000 codes, checked before any database query
+
+### `POST /api/admin/qr/generate-range`
+
+Generates only the codes within a range that don't already exist — unlike `POST /api/admin/qr/generate`, which always appends sequentially after the current max and cannot fill a gap. This is a deliberate, separate, audited action the Print QR Codes wizard offers when Step 1's range-check finds missing codes; `POST /api/admin/qr/print-batch` itself still refuses to print a range with any missing code and never creates one as a side effect (see `qr-template-placement.md`).
+
+- Authentication: Admin
+- Request: `range_start`, `range_end` (same validation/cap as `range-check`)
+- Rules: a range with nothing missing is a harmless no-op (`created: 0`); writes one `QR_GENERATED` audit row per call with `metadata: { mode: 'range', rangeStart, rangeEnd, quantity }`, distinguishing it from the sequential generator's `{ quantity }`-only metadata under the same audit action
+- Response: `201 { success: true, created, codes }`
+- Errors: same as `range-check`; `409 QR_BATCH_CONFLICT` on a genuine concurrent-generate race
 
 ### `POST /api/admin/qr/:qrId/assign`
 
@@ -356,6 +377,21 @@ Reassign an active QR.
 - Authentication: Admin
 - Request: new vendor reference
 - Rules: close the old assignment, create the new assignment, preserve all historical attribution, and audit in one transaction
+
+### `POST /api/admin/qr/:qrId/delete`
+
+Delete a QR code that has never been meaningfully used. A soft-delete equivalent to the vendor "delete vs deactivate" pattern: history is always preserved, never silently destroyed.
+
+- Authentication: Admin
+- Rules: only `UNASSIGNED` codes are eligible. Deletable when the code has **no scans, no leads, and no print records** — closed assignment rows (no scans/leads/prints attached) are the one exception and are removed along with the QR, since nothing else references them; this can happen when a code is manually reset to `UNASSIGNED` after an earlier assignment was closed. Deleting writes a `QR_DELETED` audit row recording `{ qrCode, removedAssignments }`.
+- Errors:
+
+| Code | Status | Cause |
+|---|---|---|
+| `QR_NOT_FOUND` | 404 | Unknown id |
+| `QR_NOT_UNASSIGNED` | 409 | Status is not `UNASSIGNED` |
+| `QR_HAS_HISTORY` | 409 | Scans, leads, or print records exist — message names which (e.g. "printed 1 time, 3 scans, 2 leads") |
+| `QR_STILL_ASSIGNED` | 409 | `UNASSIGNED` status but an assignment row is still open — an inconsistent state, reported distinctly rather than silently deleted through |
 
 ### `GET /api/admin/vendors/lookup`
 
