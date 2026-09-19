@@ -182,3 +182,7 @@ No QR code ever stores which template it was printed with — reprinting always 
 - [x] An archived template's own past print jobs keep generating correctly from their `templateSnapshot`, unaffected by the archive.
 - [x] Restoring an archived template makes it usable for new print jobs again, with no data loss.
 - [x] A concurrent delete-vs-print-job-creation race never leaves a `QrPrintJob` pointing at a deleted template.
+
+## Proof preview and the Content-Security-Policy
+
+Step 3 of the print wizard embeds the proof PDF in an `<iframe>` whose `src` is a signed Supabase Storage URL (`GET /api/admin/qr/print-batch/:jobId/proof` → `proof_url`). `frontend/vercel.json`'s CSP must therefore list `https://*.supabase.co` in `frame-src` (alongside `'self' blob:`); without it the browser blocks the frame ("Framing ... violates ... frame-src") and the proof appears blank even though the `POST .../proof` returned `201`. Keep `frame-src`, `img-src` and `connect-src` in sync when changing storage hosts.

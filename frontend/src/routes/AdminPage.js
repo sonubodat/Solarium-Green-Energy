@@ -1115,6 +1115,8 @@ function AdminPage() {
     } catch (error) {
       setMessage(error.message);
       setMessageType('error');
+      // Already gone (deleted in another tab/session): refresh so the stale row disappears.
+      if (error.code === 'QR_TEMPLATE_NOT_FOUND') await loadAdminResource('qr', adminPage).catch(() => {});
     } finally {
       setLoading(false);
       setConfirmDeleteTemplateId(null);
