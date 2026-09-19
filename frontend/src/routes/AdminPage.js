@@ -65,6 +65,12 @@ function parseBulkVendorNames(text) {
   return names;
 }
 
+const PROTECTED_DIRECT_VENDOR_LOGINS = new Set(['company-import', 'public-general']);
+
+function isProtectedDirectVendor(vendor) {
+  return PROTECTED_DIRECT_VENDOR_LOGINS.has(vendor.loginIdentifier);
+}
+
 // Keep in sync with backend/src/lib/qr-artwork-limits.js (the backend stays authoritative).
 const QR_ARTWORK_MAX_MB = 8;
 const QR_ARTWORK_TYPES = ['image/png', 'image/jpeg', 'application/pdf'];
@@ -245,6 +251,8 @@ function AdminPage() {
   const [previewTemplate, setPreviewTemplate] = useState(null);
   const [reassignVendorInputs, setReassignVendorInputs] = useState({});
   const [confirmDeleteQrId, setConfirmDeleteQrId] = useState(null);
+  const [confirmPurgeQrId, setConfirmPurgeQrId] = useState(null);
+  const [purgeQrConfirmText, setPurgeQrConfirmText] = useState('');
   const [confirmAssignQrId, setConfirmAssignQrId] = useState(null);
 
   const [showScanAssign, setShowScanAssign] = useState(false);
@@ -1284,6 +1292,28 @@ function AdminPage() {
     }
   }
 
+  async function purgeQr(qr) {
+    if (purgeQrConfirmText.trim() !== qr.code) return;
+    setLoading(true);
+
+    try {
+      await apiRequest(`/admin/qr/${qr.id}/purge`, {
+        method: 'POST',
+        body: JSON.stringify({ confirm_qr_code: purgeQrConfirmText.trim() }),
+      });
+      await loadAdminResource('qr', adminPage, undefined, undefined, true);
+      setMessage('QR code and all of its business history were permanently deleted. Only the audit record was retained.');
+      setMessageType('success');
+    } catch (error) {
+      setMessage(error.message);
+      setMessageType('error');
+    } finally {
+      setLoading(false);
+      setConfirmPurgeQrId(null);
+      setPurgeQrConfirmText('');
+    }
+  }
+
   async function bulkDeleteVendors() {
     if (!selectedVendorIds.length) return;
     setLoading(true);
@@ -1884,7 +1914,8 @@ function AdminPage() {
 
     // Filtering happens on the server now (see loadAdminResource); this is just the current page.
     const filtered = vendors;
-    const allVisibleVendorsSelected = filtered.length > 0 && filtered.every((vendor) => selectedVendorIds.includes(vendor.id));
+    const selectableVendors = filtered.filter((vendor) => !isProtectedDirectVendor(vendor));
+    const allVisibleVendorsSelected = selectableVendors.length > 0 && selectableVendors.every((vendor) => selectedVendorIds.includes(vendor.id));
 
     return (
       <div className="admin-resource">
@@ -2123,7 +2154,7 @@ function AdminPage() {
 
         <div className="admin-selection-toolbar">
           <label className="admin-select-all">
-            <input type="checkbox" checked={allVisibleVendorsSelected} onChange={(event) => setSelectedVendorIds(event.target.checked ? filtered.map((vendor) => vendor.id) : [])} />
+            <input type="checkbox" checked={allVisibleVendorsSelected} onChange={(event) => setSelectedVendorIds(event.target.checked ? selectableVendors.map((vendor) => vendor.id) : [])} />
             Select current page
           </label>
           <span>{selectedVendorIds.length} selected</span>
@@ -2158,7 +2189,7 @@ function AdminPage() {
                 filtered.map((vendor) => (
                   <tr key={vendor.id}>
                     <td className="admin-check-cell">
-                      <input type="checkbox" checked={selectedVendorIds.includes(vendor.id)} onChange={(event) => setSelectedVendorIds((current) => event.target.checked ? [...new Set([...current, vendor.id])] : current.filter((id) => id !== vendor.id))} aria-label={`Select ${vendor.businessName}`} />
+                      <input type="checkbox" disabled={isProtectedDirectVendor(vendor)} checked={selectedVendorIds.includes(vendor.id)} onChange={(event) => setSelectedVendorIds((current) => event.target.checked ? [...new Set([...current, vendor.id])] : current.filter((id) => id !== vendor.id))} aria-label={`Select ${vendor.businessName}`} />
                     </td>
                     <td>
                       {editingVendorId === vendor.id ? (
@@ -2380,7 +2411,7 @@ function AdminPage() {
                               </button>
                             )}
 
-                            {confirmDeleteVendorId === vendor.id ? (
+                            {!isProtectedDirectVendor(vendor) && (confirmDeleteVendorId === vendor.id ? (
                               <span className="admin-inline-confirm">
                                 <button
                                   className="admin-mini-button danger solid"
@@ -2411,8 +2442,8 @@ function AdminPage() {
                               >
                                 Delete
                               </button>
-                            )}
-                            {confirmPurgeVendorId === vendor.id ? (
+                            ))}
+                            {!isProtectedDirectVendor(vendor) && (confirmPurgeVendorId === vendor.id ? (
                               <span className="admin-inline-confirm">
                                 <input
                                   type="text"
@@ -2454,7 +2485,7 @@ function AdminPage() {
                               >
                                 Purge history
                               </button>
-                            )}
+                            ))}
                             <button
                               className="admin-mini-button"
                               onClick={() => viewVendorOnboardingMedia(vendor)}
@@ -3395,34 +3426,47 @@ function AdminPage() {
                           )}
 
                           {qr.status === 'UNASSIGNED' && (
-                            confirmDeleteQrId === qr.id ? (
-                              <span className="admin-inline-confirm">
+                            <>
+                              {confirmDeleteQrId === qr.id ? (
+                                <span className="admin-inline-confirm">
+                                  <button
+                                    className="admin-mini-button danger solid"
+                                    disabled={loading}
+                                    onClick={() => deleteQr(qr)}
+                                  >
+                                    Confirm
+                                  </button>
+                                  <button
+                                    className="admin-mini-button admin-inline-confirm-cancel"
+                                    disabled={loading}
+                                    onClick={() => setConfirmDeleteQrId(null)}
+                                    aria-label="Cancel delete"
+                                  >
+                                    <Icon path={ICONS.close} />
+                                  </button>
+                                </span>
+                              ) : (
                                 <button
-                                  className="admin-mini-button danger solid"
+                                  className="admin-mini-button danger"
                                   disabled={loading}
-                                  onClick={() => deleteQr(qr)}
+                                  onClick={() => setConfirmDeleteQrId(qr.id)}
                                 >
-                                  Confirm
+                                  Delete
                                 </button>
-                                <button
-                                  className="admin-mini-button admin-inline-confirm-cancel"
-                                  disabled={loading}
-                                  onClick={() => setConfirmDeleteQrId(null)}
-                                  aria-label="Cancel delete"
-                                >
-                                  <Icon path={ICONS.close} />
-                                </button>
-                              </span>
-                            ) : (
-                              <button
-                                className="admin-mini-button danger"
-                                disabled={loading}
-                                onClick={() => setConfirmDeleteQrId(qr.id)}
-                              >
-                                Delete
-                              </button>
-                            )
+                              )}
+                            </>
                           )}
+                          <button
+                            className="admin-mini-button danger"
+                            disabled={loading}
+                            title="Open permanent QR deletion confirmation"
+                            onClick={() => {
+                              setConfirmPurgeQrId(qr.id);
+                              setPurgeQrConfirmText('');
+                            }}
+                          >
+                            Purge history
+                          </button>
                         </div>
                       </td>
                     </tr>
@@ -4873,6 +4917,77 @@ function AdminPage() {
     );
   }
 
+  function renderQrPurgeModal() {
+    const qr = (portalData?.data?.data || []).find((item) => item.id === confirmPurgeQrId);
+    if (!qr) return null;
+
+    return (
+      <div className="admin-modal-overlay" onClick={() => {
+        setConfirmPurgeQrId(null);
+        setPurgeQrConfirmText('');
+      }}>
+        <div className="admin-modal admin-deletion-modal" role="dialog" aria-modal="true" aria-labelledby="qr-purge-title" onClick={(event) => event.stopPropagation()}>
+          <div className="admin-modal-header">
+            <div>
+              <span className="admin-eyebrow">PERMANENT QR DELETION</span>
+              <h2 id="qr-purge-title">Delete {qr.code} permanently?</h2>
+            </div>
+            <button
+              className="admin-mini-button"
+              onClick={() => {
+                setConfirmPurgeQrId(null);
+                setPurgeQrConfirmText('');
+              }}
+              aria-label="Close"
+            >
+              <Icon path={ICONS.close} />
+            </button>
+          </div>
+          <div className="admin-modal-body">
+            <div className="admin-purge-warning">
+              <strong>Nothing will be left except the audit record.</strong>
+              <span>This permanently removes the QR, assignments, scans, leads, payouts, and print history. This cannot be undone.</span>
+            </div>
+            <label className="admin-form-field" htmlFor="qr-purge-confirmation">
+              <span>Type <strong>{qr.code}</strong> to confirm</span>
+              <input
+                id="qr-purge-confirmation"
+                className="admin-table-input admin-purge-confirm-input"
+                type="text"
+                autoFocus
+                autoComplete="off"
+                value={purgeQrConfirmText}
+                disabled={loading}
+                onChange={(event) => setPurgeQrConfirmText(event.target.value)}
+              />
+            </label>
+            <div className="admin-form-actions">
+              <button
+                type="button"
+                className="admin-outline-button"
+                disabled={loading}
+                onClick={() => {
+                  setConfirmPurgeQrId(null);
+                  setPurgeQrConfirmText('');
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="admin-primary-button danger"
+                disabled={loading || purgeQrConfirmText.trim() !== qr.code}
+                onClick={() => purgeQr(qr)}
+              >
+                {loading ? 'Deleting...' : 'Permanently delete'}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   function renderDeletionResultModal() {
     if (!deletionResult) return null;
     const blocked = deletionResult.blocked || [];
@@ -5583,6 +5698,7 @@ function AdminPage() {
         {bulkVendorResult && renderBulkVendorResultModal()}
         {retentionStatus?.needsAcknowledgment && renderRetentionGateModal()}
         {previewTemplate && renderTemplatePreviewModal()}
+        {confirmPurgeQrId && renderQrPurgeModal()}
       </main>
     </div>
   );

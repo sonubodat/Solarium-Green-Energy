@@ -83,6 +83,12 @@ const LEAD_STATUS_VALUES = ['NEW', 'CONTACTED', 'QUALIFIED', 'CONVERTED', 'LOST'
 const MAX_IMPORT_ROWS = 2000;
 const COMPANY_IMPORT_QR_CODE = 'COMPANY-IMPORT';
 const COMPANY_IMPORT_VENDOR_LOGIN = 'company-import';
+const GENERAL_VENDOR_LOGIN = 'public-general';
+const PROTECTED_DIRECT_VENDOR_LOGINS = new Set([COMPANY_IMPORT_VENDOR_LOGIN, GENERAL_VENDOR_LOGIN]);
+
+function isProtectedDirectVendor(vendor) {
+	return PROTECTED_DIRECT_VENDOR_LOGINS.has(vendor.loginIdentifier);
+}
 
 function pagination(query) {
 	const page = Math.max(Number.parseInt(query.page, 10) || 1, 1);
@@ -415,6 +421,11 @@ adminRoutes.post('/vendors/:vendorId/deactivate', requireAuth, requireAdmin, asy
 adminRoutes.post('/vendors/:vendorId/delete', requireAuth, requireAdmin, async (request, response, next) => {
 	try {
 		const vendorId = request.params.vendorId;
+		const protectedCheck = await prisma.vendor.findUnique({ where: { id: vendorId }, select: { id: true, loginIdentifier: true } });
+		if (!protectedCheck) return response.status(404).json({ success: false, error: { code: 'VENDOR_NOT_FOUND', message: 'Vendor was not found.' } });
+		if (isProtectedDirectVendor(protectedCheck)) {
+			return response.status(409).json({ success: false, error: { code: 'VENDOR_PROTECTED', message: 'Company Uploaded Leads and Solarium Direct are protected direct sources and cannot be deleted.' } });
+		}
 		const [leadCount, scanCount, payoutCount, assignmentCount] = await Promise.all([
 			prisma.lead.count({ where: { vendorId } }),
 			prisma.scan.count({ where: { vendorId } }),
@@ -456,6 +467,7 @@ adminRoutes.post('/vendors/:vendorId/purge', requireAuth, requireAdmin, async (r
 			include: { bankDetails: true, onboardingMedia: true },
 		});
 		if (!vendor) return response.status(404).json({ success: false, error: { code: 'VENDOR_NOT_FOUND', message: 'Vendor was not found.' } });
+		if (isProtectedDirectVendor(vendor)) return response.status(409).json({ success: false, error: { code: 'VENDOR_PROTECTED', message: 'Company Uploaded Leads and Solarium Direct are protected direct sources and cannot be deleted.' } });
 		if (confirmation !== vendor.businessName) {
 			return response.status(409).json({ success: false, error: { code: 'VENDOR_PURGE_CONFIRMATION_MISMATCH', message: 'Type the exact Vendor business name to confirm permanent cleanup.' } });
 		}
@@ -529,6 +541,7 @@ adminRoutes.post('/vendors/bulk-delete', requireAuth, requireAdmin, async (reque
 			select: {
 				id: true,
 				businessName: true,
+				loginIdentifier: true,
 				_count: { select: { leads: true, scans: true, payouts: true, assignments: true } },
 				assignments: { where: { unassignedAt: null }, select: { id: true }, take: 1 },
 			},
@@ -536,11 +549,12 @@ adminRoutes.post('/vendors/bulk-delete', requireAuth, requireAdmin, async (reque
 		const byId = new Map(vendors.map((vendor) => [vendor.id, vendor]));
 		const blocked = vendorIds.filter((id) => {
 			const vendor = byId.get(id);
-			return !vendor || vendor._count.leads > 0 || vendor._count.scans > 0 || vendor._count.payouts > 0 || vendor._count.assignments > 0;
+			return !vendor || isProtectedDirectVendor(vendor) || vendor._count.leads > 0 || vendor._count.scans > 0 || vendor._count.payouts > 0 || vendor._count.assignments > 0;
 		}).map((id) => {
 			const vendor = byId.get(id);
 			if (!vendor) return { id, name: id, reasons: ['VENDOR_NOT_FOUND'], message: 'Vendor was not found.' };
 			const reasons = [];
+			if (isProtectedDirectVendor(vendor)) reasons.push('PROTECTED_DIRECT_SOURCE');
 			if (vendor.assignments.length) reasons.push('ACTIVE_QR_ASSIGNMENT');
 			if (vendor._count.assignments) reasons.push('ASSIGNMENT_HISTORY');
 			if (vendor._count.leads) reasons.push('LEAD_HISTORY');
@@ -1593,6 +1607,56 @@ adminRoutes.post('/qr/:qrId/delete', requireAuth, requireAdmin, async (request, 
 			error.statusCode = 409;
 			error.code = 'QR_HAS_HISTORY';
 			error.message = 'This QR code has history and cannot be deleted.';
+		}
+		return next(error);
+	}
+});
+
+adminRoutes.post('/qr/:qrId/purge', requireAuth, requireAdmin, async (request, response, next) => {
+	try {
+		const qrId = request.params.qrId;
+		const confirmation = String(request.body?.confirm_qr_code || '').trim();
+		await prisma.$transaction(async (transaction) => {
+			const qr = await transaction.qrCode.findUnique({ where: { id: qrId } });
+			if (!qr) {
+				const error = new Error('QR code was not found.');
+				error.statusCode = 404;
+				error.code = 'QR_NOT_FOUND';
+				throw error;
+			}
+			if (confirmation !== qr.code) {
+				const error = new Error(`Type ${qr.code} exactly to permanently delete this QR code and all of its history.`);
+				error.statusCode = 400;
+				error.code = 'QR_PURGE_CONFIRMATION_REQUIRED';
+				throw error;
+			}
+			const leads = await transaction.lead.findMany({
+				where: { qrId },
+				select: { id: true },
+			});
+			const leadIds = leads.map((lead) => lead.id);
+
+			if (leadIds.length) {
+				await transaction.leadLocation.deleteMany({ where: { leadId: { in: leadIds } } });
+				await transaction.payout.deleteMany({ where: { leadId: { in: leadIds } } });
+				await transaction.lead.deleteMany({ where: { id: { in: leadIds } } });
+			}
+
+			await transaction.scan.deleteMany({ where: { qrId } });
+			await transaction.qrAssignment.deleteMany({ where: { qrCodeId: qrId } });
+			await transaction.qrPrintJobItem.deleteMany({ where: { qrCodeId: qrId } });
+			await transaction.qrCode.delete({ where: { id: qrId } });
+			await writeAudit(transaction, request, 'QR_PURGED', 'QrCode', qrId, {
+				qrCode: qr.code,
+				leadsPurged: leadIds.length,
+			});
+		});
+		return response.json({ success: true, qr_id: qrId });
+	} catch (error) {
+		if (error.code === 'P2003') {
+			error.statusCode = 409;
+			error.code = 'QR_PURGE_RELATIONSHIP_BLOCKED';
+			error.message = 'QR history could not be fully purged. No changes were committed.';
 		}
 		return next(error);
 	}

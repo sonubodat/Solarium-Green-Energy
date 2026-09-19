@@ -1025,6 +1025,29 @@
   line-height: 1.6;
 }
 
+.admin-purge-warning {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 18px;
+  padding: 13px;
+  border: 1px solid #f0c7b6;
+  border-radius: 8px;
+  background: #fff6f1;
+  color: #7d3928;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.admin-purge-warning strong {
+  font-size: 12px;
+}
+
+.admin-purge-confirm-input {
+  width: 100%;
+  min-height: 38px;
+  font-size: 13px;
+}
+
 .admin-deletion-blocked-list {
   display: grid;
   gap: 8px;
