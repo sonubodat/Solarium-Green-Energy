@@ -491,8 +491,22 @@ adminRoutes.post('/vendors/:vendorId/purge', requireAuth, requireAdmin, async (r
 				where: { vendorId: vendor.id },
 				data: { vendorNameSnapshot: vendor.businessName, vendorId: null, qrAssignmentId: null, scanId: null },
 			});
+			const assignedQrIds = await transaction.qrAssignment.findMany({
+				where: { vendorId: vendor.id, unassignedAt: null },
+				select: { qrCodeId: true },
+			});
 			await transaction.scan.deleteMany({ where: { vendorId: vendor.id } });
 			await transaction.qrAssignment.deleteMany({ where: { vendorId: vendor.id } });
+			if (assignedQrIds.length) {
+				await transaction.qrCode.updateMany({
+					where: {
+						id: { in: assignedQrIds.map(({ qrCodeId }) => qrCodeId) },
+						status: 'ACTIVE',
+						assignments: { none: { unassignedAt: null } },
+					},
+					data: { status: 'UNASSIGNED' },
+				});
+			}
 			await transaction.vendorRegistration.deleteMany({ where: { vendorId: vendor.id } });
 			await transaction.session.deleteMany({ where: { vendorId: vendor.id } });
 			await transaction.passwordResetToken.deleteMany({ where: { vendorId: vendor.id } });
@@ -839,6 +853,12 @@ const qrArtworkUpload = multer({ storage: multer.memoryStorage(), limits: { file
 
 adminRoutes.get('/qr', requireAuth, requireAdmin, async (request, response, next) => {
 	try {
+		// A vendor purge can remove the final assignment; repair any legacy ACTIVE rows
+		// before applying filters so inventory status matches the current relationship state.
+		await prisma.qrCode.updateMany({
+			where: { status: 'ACTIVE', assignments: { none: { unassignedAt: null } } },
+			data: { status: 'UNASSIGNED' },
+		});
 		const { status, assignment } = qrListFilterSchema.parse({
 			status: request.query.status || undefined,
 			assignment: request.query.assignment || undefined,
