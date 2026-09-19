@@ -2,7 +2,7 @@ import { Router } from 'express';
 import multer from 'multer';
 import { z } from 'zod';
 import { prisma } from '../lib/prisma.js';
-import { requireAuth, requireVendor } from '../middleware/auth.js';
+import { requireAuth, requireVendor, requireVendorReady } from '../middleware/auth.js';
 import { authRateLimit } from '../middleware/rate-limit.js';
 import {
 	clearSessionCookie,
@@ -112,7 +112,7 @@ vendorRoutes.get('/profile', requireAuth, requireVendor, async (request, respons
 	}
 });
 
-vendorRoutes.get('/bank-details', requireAuth, requireVendor, async (request, response, next) => {
+vendorRoutes.get('/bank-details', requireAuth, requireVendorReady, async (request, response, next) => {
 	try {
 		const details = await prisma.vendorBankDetails.findUnique({ where: { vendorId: request.auth.vendor.id } });
 		if (!details) return response.json({ success: true, bank_details: null });
@@ -126,7 +126,7 @@ vendorRoutes.get('/bank-details', requireAuth, requireVendor, async (request, re
 	}
 });
 
-vendorRoutes.patch('/bank-details', requireAuth, requireVendor, async (request, response, next) => {
+vendorRoutes.patch('/bank-details', requireAuth, requireVendorReady, async (request, response, next) => {
 	try {
 		const input = bankDetailsSchema.parse(request.body);
 		const details = await prisma.vendorBankDetails.upsert({
@@ -140,7 +140,7 @@ vendorRoutes.patch('/bank-details', requireAuth, requireVendor, async (request, 
 	}
 });
 
-vendorRoutes.post('/bank-details/:documentType', requireAuth, requireVendor, documentUpload.single('file'), async (request, response, next) => {
+vendorRoutes.post('/bank-details/:documentType', requireAuth, requireVendorReady, documentUpload.single('file'), async (request, response, next) => {
 	try {
 		const type = request.params.documentType;
 		if (!['passbook', 'cheque'].includes(type)) {
@@ -173,7 +173,7 @@ vendorRoutes.post('/bank-details/:documentType', requireAuth, requireVendor, doc
 	}
 });
 
-vendorRoutes.get('/leads', requireAuth, requireVendor, async (request, response, next) => {
+vendorRoutes.get('/leads', requireAuth, requireVendorReady, async (request, response, next) => {
 	try {
 		const { page, limit, skip } = pagination(request.query);
 		const vendorId = request.auth.vendor.id;
@@ -193,7 +193,7 @@ vendorRoutes.get('/leads', requireAuth, requireVendor, async (request, response,
 	}
 });
 
-vendorRoutes.get('/payouts', requireAuth, requireVendor, async (request, response, next) => {
+vendorRoutes.get('/payouts', requireAuth, requireVendorReady, async (request, response, next) => {
 	try {
 		const { page, limit, skip } = pagination(request.query);
 		const vendorId = request.auth.vendor.id;

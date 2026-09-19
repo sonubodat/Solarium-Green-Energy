@@ -295,12 +295,23 @@ Soft-delete multiple Vendors from the current Admin selection.
 
 ### `POST /api/admin/vendors/bulk-create`
 
-Create up to 500 Vendors at once from a plain list of business names (pasted or read from an uploaded file client-side — this endpoint only ever receives plain names, never a file).
+Create up to 500 Solar Mitras at once. Two mutually exclusive request shapes (sending both or neither returns `400`).
 
 - Authentication: Admin
-- Request: `{ "names": ["Ram Store", "A1 Solar Co."], "auto_password": false }` — 1 to 500 names (2-160 chars each, same bound as `business_name` on the single-vendor form)
-- Rules: for each name, `owner_name` defaults to the business name; `login_identifier` is a slugified version of the name (lowercase, non-alphanumeric collapsed to `-`) with a `-2`/`-3` suffix appended on collision (checked both within the request and against existing Vendors); `mobile_number` gets a clearly-fake sequential placeholder from a reserved band (`9000010001` upward) the Admin edits later per Vendor — this field has no uniqueness constraint at the database level. When `auto_password` is `true`, every created Vendor's password is `<slug-without-hyphens>@123` (e.g. "Ram Store" → `ramstore@123`, padded to stay above the 8-character minimum for very short names); when `false` (default), `password_hash` is left `null`, identical to omitting `password` on the single-vendor form. Rows are processed one at a time, not as a single all-or-nothing batch — a `login_identifier` collision on one row is reported and skipped rather than failing the whole request. One `VENDOR_BULK_CREATED` audit entry is written per created Vendor.
+- **Rows mode (real phone numbers).** `{ "rows": [{ "name": "Ram Store", "phone": "9876543210", "password": "" }] }` — 1 to 500 rows; `phone` and `password` optional in the schema but enforced per row below. Built for the CSV upload/paste in the Admin UI (columns `name, phone, password`; template at `GET /api/admin/vendors/bulk-import-template`).
+  - Per row, in order: the phone is normalized (`+91`/`91`/`0091`/spaces handled) and must be a valid Indian mobile (`MOBILE_REQUIRED`, `INVALID_MOBILE_NUMBER`); the password is the trimmed `password`, or the normalized phone when blank, and must be at least 8 characters (`PASSWORD_TOO_SHORT`); a phone repeated later in the same batch, or already held by a non-deleted Solar Mitra, or equal to any existing `login_identifier` (including a deleted vendor's), is skipped (`PHONE_ALREADY_USED`). A deleted vendor's *mobile number* may be reused unless its `login_identifier` equals that number.
+  - Created fields: `business_name` = `owner_name` = `name`; `login_identifier` = `mobile_number` = the normalized phone (so the phone is literally the username, backed by the unique constraint); `must_change_password = true`.
+  - One row's problem never fails the batch; `summary.failures[].row` is the row's original 1-based position in the request.
+- **Names mode (legacy).** `{ "names": ["Ram Store"], "auto_password": false }` — `owner_name` defaults to the business name, `login_identifier` is a slug of the name (`-2`/`-3` on collision), `mobile_number` is a placeholder from a reserved band (`9000010001` upward) for the Admin to correct later. With `auto_password` the password is `<slug-without-hyphens>@123`, otherwise `password_hash` stays `null`.
+- Rows are written with a small fixed number of bulk statements, never one transaction per row (measured ~0.8 s/row that way). One `VENDOR_BULK_CREATED` audit entry per created vendor; passwords are never logged or audited.
 - Success: `{ success: true, summary: { totalRows, created, failed, failures: [{ row, businessName, reason }] } }`
+
+### `GET /api/admin/vendors/bulk-import-template`
+
+Download the blank CSV for rows mode.
+
+- Authentication: Admin
+- Response: `text/csv`, header `name,phone,password=phonenumber` and one example row. The parser matches the password column by prefix, so a plain `password` header also works. A blank password cell means "use the phone number".
 
 ### `POST /api/admin/vendors/:vendorId/reset-password`
 
@@ -315,6 +326,7 @@ List QR inventory and current assignment summary.
 
 - Authentication: Admin
 - Query: bounded pagination, `status` filter, and `assignment` filter (`ASSIGNED`/`UNASSIGNED`)
+- Each row also carries `latestPrint: { jobId, kind, templateId, templateName, printedAt } | null` — the most recent template this code was printed with, or `null` if it has never been printed. Resolved in one extra query for the codes on the page, not per row.
 
 ### `POST /api/admin/qr/generate`
 
@@ -366,6 +378,61 @@ Generate a printable HTML sheet of QR codes for physical distribution.
 - Query: `status` (`UNASSIGNED`/`ACTIVE`/`INACTIVE`/`RETIRED`, omitted = all), `vendor_id` (filters to QR codes currently assigned to that Vendor), bounded pagination (`page`/`limit`, same cap as every other Admin list endpoint)
 - Response: `text/html`, not JSON — a self-contained page (inline QR images, no external requests) meant to be opened in a browser and printed to PDF via the browser's own print dialog; no server-side PDF dependency
 - Rules: read-only, no audit log
+
+### `POST /api/admin/qr/templates`
+
+Create a QR print template, optionally with a background artwork file. Full placement rules are in `qr-template-placement.md`.
+
+- Authentication: Admin
+- Request: `multipart/form-data` — the geometry fields (`name`, `page_width_mm`, `page_height_mm`, `dpi`, `qr_x`, `qr_y`, `qr_width`, `qr_height`, optional label fields) plus an optional artwork file under the `artwork` field
+- Artwork formats: **PNG, JPG, or single-page PDF, 8 MB or smaller** (8 MB exactly is accepted). The file's real content is inspected — `sharp` for images, `pdf-lib` for PDFs — so the browser-declared Content-Type alone is never trusted, and a file that cannot be printed never reaches Storage or creates a template
+- The response's template rows elsewhere (`GET /api/admin/qr/templates`) carry `printJobCounts: { batch, single }` alongside the total `printJobCount`, so the usage label can say which kind of prints exist
+- Response: `201` with the created template, plus a non-blocking `artworkWarning` string when a PDF artwork's page size differs from the template page (artwork is always stretched to fill the page, so a mismatch distorts the design)
+- Errors:
+
+| Code | Status | Cause |
+|---|---|---|
+| `QR_ARTWORK_TOO_LARGE` | 413 | Over 8 MB |
+| `INVALID_QR_ARTWORK_TYPE` | 400 | Not a PNG, JPG, or PDF |
+| `QR_ARTWORK_MULTIPAGE_PDF` | 400 | PDF has more than one page; the message names the real count |
+| `QR_ARTWORK_CORRUPT` | 400 | File could not be decoded/parsed |
+| `QR_ARTWORK_ENCRYPTED` | 400 | Password-protected PDF |
+| `QR_ARTWORK_EMPTY_PDF` | 400 | PDF page has no drawable content |
+
+Multi-page PDFs are rejected rather than silently printing page 1, because the editor preview shows every page.
+
+### `GET /api/admin/qr/print-jobs`
+
+List print jobs — the QR → template → Solar Mitra mapping. Covers both multi-code print batches and single-code designed PDF downloads.
+
+- Authentication: Admin
+- Query: bounded pagination (`page`/`limit`), plus filters `template_id`, `kind` (`BATCH`/`SINGLE`), `code` (jobs containing that QR code, case-insensitive), `vendor_id` (exact) and `vendor` (business-name prefix, case-insensitive)
+- Response: `print_jobs: [...]` with `template {id,name,status}`, `createdBy {id,name}`, `kind`, `status`, `rangeStart`/`rangeEnd`, `itemCount`, `createdAt`/`generatedAt`, plus `pagination`
+- Note: the `vendor` name filter exists because `GET /api/admin/vendors/lookup` deliberately *excludes* Solar Mitras that already hold an active QR — exactly the set this filter is about — so it cannot back this picker
+
+### `GET /api/admin/qr/print-jobs/:jobId`
+
+One print job with every code it contains and the Solar Mitra currently holding each.
+
+- Authentication: Admin
+- Response: `print_job` plus `items: [{ sequence, qrId, code, qrStatus, currentVendor }]`
+- Errors: unknown id returns `404 QR_PRINT_JOB_NOT_FOUND`
+
+### `GET /api/admin/qr/:qrId/print-history`
+
+Every print of one QR code, newest first. A reprint adds a record and never replaces an earlier one.
+
+- Authentication: Admin
+- Response: `qr {id,code,status}`, `currentVendor`, and `prints: [{ jobId, kind, jobStatus, templateId, templateName, printedAt, printedBy, sequence }]`
+- Errors: unknown id returns `404 QR_NOT_FOUND`
+
+### `GET /api/admin/qr/print-history/export`
+
+CSV of the flattened mapping, honouring the same filters as `GET /api/admin/qr/print-jobs`.
+
+- Authentication: Admin
+- Response: `text/csv` — QR Code, QR ID, Template, Template ID, Print Type, Print Job ID, Printed At, Printed By, Current Vendor, Vendor ID, QR Status
+- Bounded to 5,000 rows, consistent with the other exports in this API; larger histories are paged through the list endpoint
 
 ### `GET /api/admin/scans`
 
@@ -475,6 +542,7 @@ Authenticate using a login identifier or registered mobile number and password.
 
 - Authentication: public
 - Rules: create a server-managed Vendor session; enforce temporary-password change when `must_change_password = true`
+- While `must_change_password` is `true`, every Vendor data route (`GET /api/vendor/leads`, `GET /api/vendor/payouts`, and all `/api/vendor/bank-details` routes) returns `403 PASSWORD_CHANGE_REQUIRED`. Only login, logout, `GET /api/vendor/profile` and `POST /api/vendor/change-password` work until the password is changed (`requireVendorReady` in `backend/src/middleware/auth.js`).
 - Security: requests are rate-limited per client IP and invalid credentials use a generic response
 
 ### `GET /api/vendor/profile`

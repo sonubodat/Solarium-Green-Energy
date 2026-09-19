@@ -1,6 +1,7 @@
 // AdminPage.js
 
 import { Fragment, useEffect, useRef, useState } from 'react';
+import { parse as parseCsv } from 'csv-parse/browser/esm/sync';
 import { apiRequest, API_BASE_URL } from '../api/client';
 import { SkeletonBlock } from '../components/Skeleton';
 import QrScanner from '../components/QrScanner';
@@ -63,10 +64,68 @@ function parseBulkVendorNames(text) {
   return names;
 }
 
+// Keep in sync with backend/src/lib/qr-artwork-limits.js (the backend stays authoritative).
+const QR_ARTWORK_MAX_MB = 8;
+const QR_ARTWORK_TYPES = ['image/png', 'image/jpeg', 'application/pdf'];
+
+const BULK_VENDOR_NAME_HEADERS = ['name', 'business_name', 'business name', 'solar mitra', 'solar mitra name'];
+
+// Parses a pasted or uploaded list into { name, phone, password } rows. Handles CSV and the
+// tab-separated text a spreadsheet paste produces, quoted cells (a name may contain a comma),
+// an optional header row, and a header like `password=phonenumber` (matched by prefix). A line
+// with a single cell is a name with no phone. Rows are not de-duplicated here — the backend
+// reports duplicates with their row numbers.
+function parseBulkVendorRows(text) {
+  let records;
+  try {
+    records = parseCsv(text, {
+      delimiter: [',', '\t'],
+      relax_column_count: true,
+      relax_quotes: true,
+      skip_empty_lines: true,
+      trim: true,
+      bom: true,
+    });
+  } catch (error) {
+    return { rows: [], error: 'Could not read this list — check for an unclosed quote.' };
+  }
+
+  let nameIndex = 0;
+  let phoneIndex = 1;
+  let passwordIndex = 2;
+  if (records.length && BULK_VENDOR_NAME_HEADERS.includes(String(records[0][0] || '').toLowerCase())) {
+    const header = records.shift().map((cell) => String(cell || '').toLowerCase());
+    const phoneColumn = header.findIndex((cell) => cell.startsWith('phone') || cell.startsWith('mobile'));
+    const passwordColumn = header.findIndex((cell) => cell.startsWith('password'));
+    if (phoneColumn !== -1) phoneIndex = phoneColumn;
+    if (passwordColumn !== -1) passwordIndex = passwordColumn;
+  }
+
+  const rows = records
+    .map((cells) => ({
+      name: String(cells[nameIndex] || '').trim(),
+      phone: String(cells[phoneIndex] || '').trim(),
+      password: String(cells[passwordIndex] || '').trim(),
+    }))
+    .filter((row) => row.name || row.phone)
+    // A second uploaded file appended below the first repeats its header row mid-list.
+    .filter((row) => !(BULK_VENDOR_NAME_HEADERS.includes(row.name.toLowerCase()) && /^(phone|mobile)/i.test(row.phone)));
+  return { rows, error: '' };
+}
+
+const BULK_VENDOR_FAILURE_LABELS = {
+  MOBILE_REQUIRED: 'Phone number missing',
+  INVALID_MOBILE_NUMBER: 'Invalid phone number',
+  PHONE_ALREADY_USED: 'Phone number already used',
+  PASSWORD_TOO_SHORT: 'Password under 8 characters',
+  LOGIN_IDENTIFIER_TAKEN: 'Login ID already taken',
+};
+
 const NAV_ITEMS = [
   ['dashboard', 'Dashboard'],
   ['vendors', 'Solar Mitras'],
   ['qr', 'QR Management'],
+  ['print-history', 'Print History'],
   ['leads', 'Leads'],
   ['scans', 'Scans'],
   ['payouts', 'Commissions'],
@@ -200,6 +259,9 @@ function AdminPage() {
   const [confirmDeactivateStaffId, setConfirmDeactivateStaffId] = useState(null);
 
   const [detailLead, setDetailLead] = useState(null);
+  const [qrPrintHistory, setQrPrintHistory] = useState(null);
+  const [printHistoryFilters, setPrintHistoryFilters] = useState({ template_id: '', kind: '', code: '', vendor: '' });
+  const [expandedPrintJob, setExpandedPrintJob] = useState(null);
   const [confirmDeleteLeadId, setConfirmDeleteLeadId] = useState(null);
   const [detailBank, setDetailBank] = useState(null);
   const [detailAuditLog, setDetailAuditLog] = useState(null);
@@ -233,6 +295,24 @@ function AdminPage() {
       hasScrolledToDashboardRef.current = true;
     }
   }, [portalData]);
+
+  function handleTemplateArtworkSelect(event) {
+    const file = event.target.files?.[0] || null;
+    let problem = '';
+    if (file && !QR_ARTWORK_TYPES.includes(file.type)) {
+      problem = 'Upload a PNG, JPG, or single-page PDF artwork file.';
+    } else if (file && file.size > QR_ARTWORK_MAX_MB * 1024 * 1024) {
+      problem = `QR artwork must be ${QR_ARTWORK_MAX_MB} MB or smaller.`;
+    }
+    if (problem) {
+      event.target.value = '';
+      setTemplateArtwork(null);
+      setMessage(problem);
+      setMessageType('error');
+      return;
+    }
+    setTemplateArtwork(file);
+  }
 
   useEffect(() => {
     if (!templateArtwork) {
@@ -421,6 +501,23 @@ function AdminPage() {
         query += `&assignment=${encodeURIComponent(effectiveAssignment)}`;
       }
 
+      // Print History reads the print-job list rather than a same-named resource endpoint.
+      if (nextResource === 'print-history') {
+        const filterQuery = printHistoryQuery();
+        // Templates power the filter dropdown; fetched here too so opening Print History
+        // directly (without visiting QR Management first) still offers the full list.
+        const [data, templates] = await Promise.all([
+          apiRequest(`/admin/qr/print-jobs${query}${filterQuery ? `&${filterQuery}` : ''}`, { forceRefresh }),
+          apiRequest('/admin/qr/templates', { forceRefresh }),
+        ]);
+        if (!mountedRef.current) return;
+        setAdminPage(page);
+        setExpandedPrintJob(null);
+        setQrTemplates(templates.templates || []);
+        setPortalData((current) => ({ ...current, data }));
+        return;
+      }
+
       const data = await apiRequest(`/admin/${nextResource}${query}`, { forceRefresh });
 
       if (!mountedRef.current) return;
@@ -605,8 +702,15 @@ function AdminPage() {
 
   async function bulkCreateVendors(event) {
     event.preventDefault();
-    const names = parseBulkVendorNames(bulkVendorNamesText);
-    if (!names.length || names.length > 500) return;
+    const { rows } = parseBulkVendorRows(bulkVendorNamesText);
+    if (!rows.length || rows.length > 500 || rows.some((row) => !row.name)) return;
+
+    // Any phone in the list means rows mode for every row (a name-only row then fails with
+    // "Phone number missing"); a list with no phones at all keeps the legacy name-only mode.
+    const rowsMode = rows.some((row) => row.phone);
+    const body = rowsMode
+      ? { rows }
+      : { names: parseBulkVendorNames(rows.map((row) => row.name).join('\n')), auto_password: bulkVendorAutoPassword };
 
     setLoading(true);
     setMessage('');
@@ -615,7 +719,7 @@ function AdminPage() {
     try {
       const result = await apiRequest('/admin/vendors/bulk-create', {
         method: 'POST',
-        body: JSON.stringify({ names, auto_password: bulkVendorAutoPassword }),
+        body: JSON.stringify(body),
       });
 
       setBulkVendorResult(result.summary);
@@ -856,8 +960,10 @@ function AdminPage() {
         label_font_size: '12',
       });
 
-      setMessage(`Template created: ${result.template.name}`);
-      setMessageType('success');
+      setMessage(result.artworkWarning
+        ? `Template created: ${result.template.name}. ${result.artworkWarning}`
+        : `Template created: ${result.template.name}`);
+      setMessageType(result.artworkWarning ? 'error' : 'success');
       await loadAdminResource('qr', adminPage);
     } catch (error) {
       setMessage(error.message);
@@ -2357,6 +2463,173 @@ function AdminPage() {
     );
   }
 
+  function renderPrintHistory() {
+    const jobs = portalData?.data?.print_jobs || [];
+
+    function applyFilters(next) {
+      setPrintHistoryFilters(next);
+    }
+
+    return (
+      <div className="admin-panel">
+        <div className="admin-panel-heading">
+          <div>
+            <span className="admin-eyebrow">PRINT HISTORY</span>
+            <div className="admin-form-title">Which template printed which QR</div>
+            <p>Every print batch and single designed PDF, with the template used and the Solar Mitra currently holding each code.</p>
+          </div>
+          <div className="admin-qr-action">
+            <button type="button" className="admin-outline-button" onClick={downloadPrintHistoryCsv}>
+              Export CSV
+            </button>
+            <button
+              type="button"
+              className="admin-outline-button"
+              disabled={loading}
+              onClick={() => loadAdminResource('print-history', adminPage, undefined, undefined, true)}
+            >
+              <Icon path={ICONS.refresh} />
+              Refresh
+            </button>
+          </div>
+        </div>
+
+        <div className="admin-print-filters">
+          <label>
+            Template
+            <select
+              value={printHistoryFilters.template_id}
+              onChange={(event) => applyFilters({ ...printHistoryFilters, template_id: event.target.value })}
+            >
+              <option value="">All templates</option>
+              {qrTemplates.map((template) => (
+                <option key={template.id} value={template.id}>{template.name}</option>
+              ))}
+            </select>
+          </label>
+
+          <label>
+            Print type
+            <select
+              value={printHistoryFilters.kind}
+              onChange={(event) => applyFilters({ ...printHistoryFilters, kind: event.target.value })}
+            >
+              <option value="">All types</option>
+              <option value="BATCH">Print batch</option>
+              <option value="SINGLE">Single print</option>
+            </select>
+          </label>
+
+          <label>
+            QR code
+            <input
+              value={printHistoryFilters.code}
+              placeholder="e.g. V-0116"
+              onChange={(event) => applyFilters({ ...printHistoryFilters, code: event.target.value })}
+            />
+          </label>
+
+          <label>
+            Solar Mitra
+            <input
+              value={printHistoryFilters.vendor}
+              placeholder="Business name"
+              onChange={(event) => applyFilters({ ...printHistoryFilters, vendor: event.target.value })}
+            />
+          </label>
+
+          <button
+            type="button"
+            className="admin-primary-button"
+            disabled={loading}
+            onClick={() => loadAdminResource('print-history', 1, undefined, undefined, true)}
+          >
+            Apply
+          </button>
+        </div>
+
+        <div className="admin-table-wrap">
+          <table className="admin-table">
+            <thead>
+              <tr>
+                <th>Printed</th>
+                <th>Template</th>
+                <th>Type</th>
+                <th>QR codes</th>
+                <th>Printed by</th>
+                <th>Status</th>
+                <th>Codes</th>
+              </tr>
+            </thead>
+            <tbody>
+              {jobs.length ? (
+                jobs.map((job) => (
+                  <Fragment key={job.id}>
+                    <tr>
+                      <td>
+                        {new Date(job.generatedAt || job.createdAt).toLocaleString()}
+                        <br />
+                        <small className="admin-muted-text">{job.id}</small>
+                      </td>
+                      <td>
+                        {job.template?.name || '—'}
+                        <br />
+                        <small className="admin-muted-text">{job.templateId}</small>
+                      </td>
+                      <td>{job.kind === 'SINGLE' ? 'Single print' : 'Print batch'}</td>
+                      <td>
+                        {job.rangeStart === job.rangeEnd ? job.rangeStart : `${job.rangeStart} – ${job.rangeEnd}`}
+                        <br />
+                        <small className="admin-muted-text">{job.itemCount} code(s)</small>
+                      </td>
+                      <td>{job.createdBy?.name || '—'}</td>
+                      <td><span className="admin-status">{job.status}</span></td>
+                      <td>
+                        <button type="button" className="admin-mini-button" onClick={() => loadPrintJobDetail(job.id)}>
+                          {expandedPrintJob?.jobId === job.id ? 'Hide' : 'View codes'}
+                        </button>
+                      </td>
+                    </tr>
+                    {expandedPrintJob?.jobId === job.id && (
+                      <tr>
+                        <td colSpan={7}>
+                          {expandedPrintJob.loading ? (
+                            <p>Loading codes...</p>
+                          ) : (
+                            <table className="admin-table">
+                              <thead>
+                                <tr><th>QR code</th><th>QR ID</th><th>QR status</th><th>Current Solar Mitra</th><th>Solar Mitra ID</th></tr>
+                              </thead>
+                              <tbody>
+                                {expandedPrintJob.items.map((item) => (
+                                  <tr key={item.qrId}>
+                                    <td>{item.code}</td>
+                                    <td><small>{item.qrId}</small></td>
+                                    <td>{item.qrStatus || '—'}</td>
+                                    <td>{item.currentVendor?.businessName || 'Unassigned'}</td>
+                                    <td><small>{item.currentVendor?.id || '—'}</small></td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          )}
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
+                ))
+              ) : (
+                <tr><td colSpan={7}>No print jobs match these filters.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+
+        {renderPagination()}
+      </div>
+    );
+  }
+
   function renderQr() {
     // The backend returns the QR list under `data` (see GET /api/admin/qr), not `qr`.
     const qrs = portalData?.data?.data || [];
@@ -2596,7 +2869,10 @@ function AdminPage() {
                   <div className="admin-template-preview-heading">
                     <div>
                       <strong>Placement preview</strong>
-                      <small>Drag the square QR marker. Pull its corner to resize.</small>
+                      <small>
+                        Drag the square QR marker. Pull its corner to resize.
+                        {templateArtwork?.type === 'application/pdf' && ' PDF preview is approximate — the print output stretches the artwork to the page.'}
+                      </small>
                     </div>
                     <span>{Number(templateDraft.qr_width || 0).toFixed(1)} mm x {Number(templateDraft.qr_height || 0).toFixed(1)} mm</span>
                   </div>
@@ -2605,11 +2881,14 @@ function AdminPage() {
                     data-qr-template-editor
                     style={{ aspectRatio: `${Number(templateDraft.page_width_mm) || 210} / ${Number(templateDraft.page_height_mm) || 297}` }}
                   >
+                    {templateArtworkPreview && templateArtwork?.type === 'application/pdf' && (
+                      <iframe
+                        src={`${templateArtworkPreview}#toolbar=0&navpanes=0&scrollbar=0&view=Fit`}
+                        title="Uploaded template artwork preview"
+                      />
+                    )}
                     {templateArtworkPreview && templateArtwork?.type !== 'application/pdf' && (
                       <img src={templateArtworkPreview} alt="Uploaded template artwork" />
-                    )}
-                    {templateArtworkPreview && templateArtwork?.type === 'application/pdf' && (
-                      <iframe src={templateArtworkPreview} title="Uploaded template artwork preview" />
                     )}
                     {!templateArtworkPreview && <div className="admin-template-preview-empty">Upload artwork to preview the physical page.</div>}
                     <div
@@ -2640,8 +2919,8 @@ function AdminPage() {
                 </label>
                 <label className="admin-upload-field">
                   Artwork file
-                  <input id="template-artwork" name="artwork" type="file" accept="image/png,image/jpeg,application/pdf" onChange={(event) => setTemplateArtwork(event.target.files?.[0] || null)} />
-                  <small>{templateArtwork ? templateArtwork.name : 'PNG, JPG, or PDF up to 2 MB'}</small>
+                  <input id="template-artwork" name="artwork" type="file" accept="image/png,image/jpeg,application/pdf" onChange={handleTemplateArtworkSelect} />
+                  <small>{templateArtwork ? templateArtwork.name : `PNG, JPG, or PDF up to ${QR_ARTWORK_MAX_MB} MB`}</small>
                 </label>
                 <label>
                   Page width (mm)
@@ -2979,6 +3258,7 @@ function AdminPage() {
               <tr>
                 <th>QR ID</th>
                 <th>Current Solar Mitra</th>
+                <th>Template</th>
                 <th>Status</th>
                 <th>Assigned date</th>
                 <th>Solar Mitra action</th>
@@ -3003,6 +3283,27 @@ function AdminPage() {
                       <td>
                         {currentVendor?.businessName ||
                           'Unassigned'}
+                      </td>
+
+                      <td>
+                        {qr.latestPrint ? (
+                          <div className="admin-qr-template-cell">
+                            <strong>{qr.latestPrint.templateName}</strong>
+                            <small>
+                              {new Date(qr.latestPrint.printedAt).toLocaleDateString()}
+                              {qr.latestPrint.kind === 'SINGLE' ? ' · single' : ' · batch'}
+                            </small>
+                            <button
+                              type="button"
+                              className="admin-mini-button"
+                              onClick={() => openQrPrintHistory(qr)}
+                            >
+                              History
+                            </button>
+                          </div>
+                        ) : (
+                          <span className="admin-muted-text">Not printed</span>
+                        )}
                       </td>
 
                       <td>
@@ -3462,6 +3763,95 @@ function AdminPage() {
             </div>
           );
         })}
+      </div>
+    );
+  }
+
+  async function openQrPrintHistory(qr) {
+    setQrPrintHistory({ qr, loading: true, prints: [], currentVendor: null });
+    try {
+      const result = await apiRequest(`/admin/qr/${encodeURIComponent(qr.id)}/print-history`, { forceRefresh: true });
+      setQrPrintHistory({ qr, loading: false, prints: result.prints || [], currentVendor: result.currentVendor || null });
+    } catch (error) {
+      setQrPrintHistory(null);
+      setMessage(error.message);
+      setMessageType('error');
+    }
+  }
+
+  async function loadPrintJobDetail(jobId) {
+    if (expandedPrintJob?.jobId === jobId) {
+      setExpandedPrintJob(null);
+      return;
+    }
+    setExpandedPrintJob({ jobId, loading: true, items: [] });
+    try {
+      const result = await apiRequest(`/admin/qr/print-jobs/${encodeURIComponent(jobId)}`, { forceRefresh: true });
+      setExpandedPrintJob({ jobId, loading: false, items: result.items || [] });
+    } catch (error) {
+      setExpandedPrintJob(null);
+      setMessage(error.message);
+      setMessageType('error');
+    }
+  }
+
+  function printHistoryQuery() {
+    const params = new URLSearchParams();
+    Object.entries(printHistoryFilters).forEach(([key, value]) => {
+      if (value) params.set(key, value);
+    });
+    return params.toString();
+  }
+
+  function downloadPrintHistoryCsv() {
+    const query = printHistoryQuery();
+    window.location.href = `${API_BASE_URL}/admin/qr/print-history/export${query ? `?${query}` : ''}`;
+  }
+
+  function renderQrPrintHistoryModal() {
+    const { qr, loading: historyLoading, prints, currentVendor } = qrPrintHistory;
+    return (
+      <div className="admin-modal-overlay" onClick={() => setQrPrintHistory(null)}>
+        <div className="admin-modal" role="dialog" aria-modal="true" aria-label={`${qr.code} print history`} onClick={(event) => event.stopPropagation()}>
+          <div className="admin-modal-header">
+            <div>
+              <span className="admin-eyebrow">PRINT HISTORY</span>
+              <h2>{qr.code}</h2>
+            </div>
+            <button className="admin-mini-button" onClick={() => setQrPrintHistory(null)} aria-label="Close"><Icon path={ICONS.close} /></button>
+          </div>
+          <div className="admin-modal-body">
+            <div className="admin-detail-grid">
+              <div><span>QR ID</span><strong>{qr.id}</strong></div>
+              <div><span>Current Solar Mitra</span><strong>{currentVendor?.businessName || 'Unassigned'}</strong></div>
+              {currentVendor?.id && <div><span>Solar Mitra ID</span><strong>{currentVendor.id}</strong></div>}
+            </div>
+            {historyLoading ? (
+              <p>Loading print history...</p>
+            ) : prints.length ? (
+              <div className="admin-table-wrap">
+                <table className="admin-table">
+                  <thead>
+                    <tr><th>Printed</th><th>Template</th><th>Type</th><th>Print job</th><th>By</th></tr>
+                  </thead>
+                  <tbody>
+                    {prints.map((print) => (
+                      <tr key={print.jobId}>
+                        <td>{new Date(print.printedAt).toLocaleString()}</td>
+                        <td>{print.templateName || '—'}<br /><small className="admin-muted-text">{print.templateId}</small></td>
+                        <td>{print.kind === 'SINGLE' ? 'Single print' : 'Print batch'}</td>
+                        <td><small>{print.jobId}</small></td>
+                        <td>{print.printedBy || '—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <p>This QR code has not been printed from a template yet.</p>
+            )}
+          </div>
+        </div>
       </div>
     );
   }
@@ -4562,7 +4952,7 @@ function AdminPage() {
                   {invalid.map((item) => (
                     <div className="admin-deletion-blocked-item" key={`invalid-${item.row}`}>
                       <strong>Row {item.row}</strong>
-                      <small>{item.reason}</small>
+                      <small>{BULK_VENDOR_FAILURE_LABELS[item.reason] || item.reason}</small>
                     </div>
                   ))}
                 </div>
@@ -4578,8 +4968,16 @@ function AdminPage() {
   }
 
   function renderBulkCreateVendorsModal() {
-    const detectedNames = parseBulkVendorNames(bulkVendorNamesText);
-    const overLimit = detectedNames.length > 500;
+    const { rows: detectedRows, error: parseError } = parseBulkVendorRows(bulkVendorNamesText);
+    const rowsWithPhone = detectedRows.filter((row) => row.phone).length;
+    const rowsMissingName = detectedRows.filter((row) => !row.name).length;
+    const rowsMode = rowsWithPhone > 0;
+    const detectedCount = rowsMode ? detectedRows.length : parseBulkVendorNames(detectedRows.map((row) => row.name).join('\n')).length;
+    const overLimit = detectedCount > 500;
+
+    function downloadVendorImportTemplate() {
+      window.location.href = `${API_BASE_URL}/admin/vendors/bulk-import-template`;
+    }
 
     async function handleBulkFileRead(event) {
       const file = event.target.files?.[0];
@@ -4617,14 +5015,23 @@ function AdminPage() {
 
           <form onSubmit={bulkCreateVendors} className="admin-modal-body">
             <p>
-              Paste Solar Mitra business names, one per line (from a
-              spreadsheet column), or upload a .csv/.txt file. Up
-              to 500 at a time.
+              Columns: <strong>name, phone, password</strong>. Paste rows from a
+              spreadsheet or upload a .csv file — up to 500 at a time. Leave
+              password blank to use the phone number as the initial password;
+              each Solar Mitra must set a new one on first login.
             </p>
+
+            <button
+              type="button"
+              className="admin-outline-button"
+              onClick={downloadVendorImportTemplate}
+            >
+              Download CSV template
+            </button>
 
             <textarea
               rows={10}
-              placeholder={'Ram Store\nA1 Solar Co.\nSunrise Energy'}
+              placeholder={'name,phone,password\nRam Store,9876543210,\nA1 Solar Co.,9812345678,MyPass123'}
               value={bulkVendorNamesText}
               onChange={(event) => setBulkVendorNamesText(event.target.value)}
             />
@@ -4636,20 +5043,31 @@ function AdminPage() {
             />
 
             <small>
-              {detectedNames.length} name{detectedNames.length === 1 ? '' : 's'} detected
+              {rowsMode
+                ? `${detectedRows.length} row${detectedRows.length === 1 ? '' : 's'} detected · ${rowsWithPhone} with a phone number`
+                : `${detectedCount} name${detectedCount === 1 ? '' : 's'} detected`}
               {overLimit ? ' — over the 500 limit, trim the list' : ''}
             </small>
+            {parseError && <small role="alert">{parseError}</small>}
+            {rowsMissingName > 0 && (
+              <small role="alert">{rowsMissingName} row{rowsMissingName === 1 ? ' has' : 's have'} no name — fix or remove before creating.</small>
+            )}
+            {rowsMode && detectedRows.length > rowsWithPhone && (
+              <small>{detectedRows.length - rowsWithPhone} row(s) have no phone number and will be reported as failed.</small>
+            )}
 
-            <label className="admin-toggle-row">
-              <input
-                type="checkbox"
-                checked={bulkVendorAutoPassword}
-                onChange={(event) => setBulkVendorAutoPassword(event.target.checked)}
-              />
-              Set an initial password automatically (businessname@123)
-            </label>
+            {!rowsMode && (
+              <label className="admin-toggle-row">
+                <input
+                  type="checkbox"
+                  checked={bulkVendorAutoPassword}
+                  onChange={(event) => setBulkVendorAutoPassword(event.target.checked)}
+                />
+                Set an initial password automatically (businessname@123)
+              </label>
+            )}
 
-            {bulkVendorAutoPassword && loading && (
+            {loading && (
               <small>Creating Solar Mitras and passwords — this may take up to a minute for large batches.</small>
             )}
 
@@ -4664,9 +5082,9 @@ function AdminPage() {
               </button>
               <button
                 className="admin-primary-button"
-                disabled={loading || detectedNames.length === 0 || overLimit}
+                disabled={loading || detectedCount === 0 || overLimit || rowsMissingName > 0 || Boolean(parseError)}
               >
-                {loading ? 'Creating...' : `Create ${detectedNames.length} Solar Mitra${detectedNames.length === 1 ? '' : 's'}`}
+                {loading ? 'Creating...' : `Create ${detectedCount} Solar Mitra${detectedCount === 1 ? '' : 's'}`}
               </button>
             </div>
           </form>
@@ -4699,7 +5117,7 @@ function AdminPage() {
                   {failures.map((item) => (
                     <div className="admin-deletion-blocked-item" key={`bulk-vendor-fail-${item.row}`}>
                       <strong>Row {item.row}: {item.businessName}</strong>
-                      <small>{item.reason}</small>
+                      <small>{BULK_VENDOR_FAILURE_LABELS[item.reason] || item.reason}</small>
                     </div>
                   ))}
                 </div>
@@ -4814,6 +5232,10 @@ function AdminPage() {
 
     if (resource === 'qr') {
       return renderQr();
+    }
+
+    if (resource === 'print-history') {
+      return renderPrintHistory();
     }
 
     if (resource === 'leads') {
@@ -5153,6 +5575,7 @@ function AdminPage() {
         </div>
 
         {detailLead && renderLeadDetailModal()}
+        {qrPrintHistory && renderQrPrintHistoryModal()}
         {detailBank && renderBankDetailsModal()}
         {detailOnboardingMedia && renderOnboardingMediaModal()}
         {detailAuditLog && renderAuditLogDetailModal()}

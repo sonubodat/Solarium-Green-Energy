@@ -42,6 +42,13 @@ enum QrPrintTemplateStatus {
   ARCHIVED
 }
 
+// Distinguishes a multi-code print batch from a single-code designed PDF download. A batch
+// can legitimately contain one code, so the two cannot be told apart by itemCount alone.
+enum QrPrintKind {
+  BATCH
+  SINGLE
+}
+
 enum QrPrintJobStatus {
   QUEUED
   PROCESSING
@@ -384,6 +391,7 @@ model QrPrintJob {
   templateId       String           @map("template_id")
   createdById      String           @map("created_by_id")
   idempotencyKey   String           @unique @map("idempotency_key")
+  kind             QrPrintKind      @default(BATCH)
   status           QrPrintJobStatus @default(QUEUED)
   rangeStart       String?          @map("range_start")
   rangeEnd         String?          @map("range_end")

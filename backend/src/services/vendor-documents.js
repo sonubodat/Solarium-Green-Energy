@@ -1,6 +1,8 @@
 import { createClient } from '@supabase/supabase-js';
 import sharp from 'sharp';
 import { env } from '../config/env.js';
+import { QR_ARTWORK_ALLOWED_TYPES, QR_ARTWORK_MAX_BYTES, qrArtworkTooLargeError, qrArtworkTypeError } from '../lib/qr-artwork-limits.js';
+import { inspectArtwork } from './qr-artwork.js';
 
 const maxFileSize = 200 * 1024;
 const allowedTypes = new Set(['application/pdf', 'image/jpeg', 'image/png']);
@@ -75,18 +77,11 @@ export async function createVendorDocumentUrl(objectKey) {
 }
 
 export async function uploadQrArtwork(adminId, file) {
-  if (!file || !allowedTypes.has(file.mimetype)) {
-    const error = new Error('Upload a PDF, JPG, or PNG artwork file.');
-    error.statusCode = 400;
-    error.code = 'INVALID_QR_ARTWORK_TYPE';
-    throw error;
-  }
-  if (file.size > 2 * 1024 * 1024) {
-    const error = new Error('QR artwork must be 2 MB or smaller.');
-    error.statusCode = 413;
-    error.code = 'QR_ARTWORK_TOO_LARGE';
-    throw error;
-  }
+  if (!file || !QR_ARTWORK_ALLOWED_TYPES.has(file.mimetype)) throw qrArtworkTypeError();
+  if (file.size > QR_ARTWORK_MAX_BYTES) throw qrArtworkTooLargeError();
+  // Inspect before uploading, so a file that cannot be printed never reaches Storage and
+  // never creates a template row. Throws a specific error per failure reason.
+  const inspection = await inspectArtwork(file.buffer, file.mimetype);
   const objectKey = `templates/${adminId}/${Date.now()}-${file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_')}`;
   const { error } = await storageClient().storage.from(env.supabaseQrStorageBucket).upload(objectKey, file.buffer, { contentType: file.mimetype, upsert: false });
   if (error) {
@@ -94,7 +89,7 @@ export async function uploadQrArtwork(adminId, file) {
     error.code = 'QR_ARTWORK_UPLOAD_FAILED';
     throw error;
   }
-  return { objectKey, fileName: file.originalname, fileSize: file.size, contentType: file.mimetype };
+  return { objectKey, fileName: file.originalname, fileSize: file.size, contentType: file.mimetype, inspection };
 }
 
 export async function removeQrArtwork(objectKey) {

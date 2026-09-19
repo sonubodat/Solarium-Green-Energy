@@ -12,6 +12,8 @@ import { hashPassword, normalizeLoginIdentifier, publicVendor, slugifyVendorName
 import { z } from 'zod';
 import { createQrArtworkUrl, createVendorDocumentUrl, removeQrArtwork, removeVendorDocument, uploadQrArtwork, uploadQrProof, uploadVendorPhoto, removeVendorPhoto, createVendorPhotoUrl } from '../services/vendor-documents.js';
 import { generateQrProof, generateQrTemplatePdf } from '../services/qr-proof.js';
+import { QR_ARTWORK_MAX_BYTES } from '../lib/qr-artwork-limits.js';
+import { artworkSizeWarning } from '../services/qr-artwork.js';
 import { buildQrCodeSequence, normalizeQrCode, parseQrRange } from '../services/qr-print.js';
 import { env } from '../config/env.js';
 import { normalizePhone, customerHashFor, findExistingLeadByHash } from '../lib/customer-identity.js';
@@ -54,9 +56,20 @@ const userUpdateSchema = userSchema.partial().extend({ status: z.enum(['ACTIVE',
 const bulkDeleteSchema = z.object({
 	ids: z.array(z.string().trim().min(1)).min(1).max(100),
 });
+// Two mutually exclusive modes: `names` (legacy, name-only, placeholder phones) or `rows`
+// (real phone per row). Row-level problems in `rows` mode (missing/invalid phone, short
+// password) are reported per row rather than failing the whole request, so the fields are
+// loose here and validated row by row in the route.
 const bulkCreateVendorsSchema = z.object({
-	names: z.array(z.string().trim().min(2).max(160)).min(1).max(500),
+	names: z.array(z.string().trim().min(2).max(160)).min(1).max(500).optional(),
+	rows: z.array(z.object({
+		name: z.string().trim().min(2).max(160),
+		phone: z.string().max(40).optional(),
+		password: z.string().max(200).optional(),
+	})).min(1).max(500).optional(),
 	auto_password: z.boolean().optional().default(false),
+}).refine((value) => Boolean(value.names) !== Boolean(value.rows), {
+	message: 'Provide either names or rows, not both.',
 });
 const BULK_VENDOR_MOBILE_RANGE_START = '9000010000';
 const BULK_VENDOR_MOBILE_RANGE_END = '9000020000';
@@ -557,9 +570,110 @@ adminRoutes.post('/vendors/bulk-delete', requireAuth, requireAdmin, async (reque
 	}
 });
 
+// Rows mode: a real phone number per Solar Mitra. The normalized phone is both the login
+// identifier and the mobile number, so "phone as username" is literally true and the
+// unique constraint on login_identifier backs up the duplicate check. The password is the
+// row's own (trimmed) password, or the phone number when blank. must_change_password keeps
+// its schema default (true), and the vendor routes refuse data access until it is cleared.
+async function bulkCreateVendorsFromRows(request, response, rows) {
+	const failures = [];
+	const candidates = [];
+	const seenPhones = new Set();
+
+	rows.forEach((row, index) => {
+		const rowNumber = index + 1;
+		const fail = (reason) => failures.push({ row: rowNumber, businessName: row.name, reason });
+		const phone = normalizeMobile(row.phone ?? '');
+		if (!phone) return fail('MOBILE_REQUIRED');
+		if (!/^[6-9]\d{9}$/.test(phone)) return fail('INVALID_MOBILE_NUMBER');
+		const password = row.password?.trim() || phone;
+		if (password.length < 8) return fail('PASSWORD_TOO_SHORT');
+		if (seenPhones.has(phone)) return fail('PHONE_ALREADY_USED');
+		seenPhones.add(phone);
+		return candidates.push({ rowNumber, name: row.name, phone, password });
+	});
+
+	if (candidates.length) {
+		const phones = candidates.map((candidate) => candidate.phone);
+		const phoneSet = new Set(phones);
+		// A DELETED vendor's mobile number may be reused, but login_identifier is unique
+		// regardless of status, so an identifier equal to the phone still blocks the row.
+		const existing = await prisma.vendor.findMany({
+			where: { OR: [{ mobileNumber: { in: phones }, status: { not: 'DELETED' } }, { loginIdentifier: { in: phones } }] },
+			select: { mobileNumber: true, loginIdentifier: true, status: true },
+		});
+		const taken = new Set();
+		for (const vendor of existing) {
+			if (phoneSet.has(vendor.loginIdentifier)) taken.add(vendor.loginIdentifier);
+			if (vendor.status !== 'DELETED' && phoneSet.has(vendor.mobileNumber)) taken.add(vendor.mobileNumber);
+		}
+		for (let index = candidates.length - 1; index >= 0; index -= 1) {
+			if (taken.has(candidates[index].phone)) {
+				const [dropped] = candidates.splice(index, 1);
+				failures.push({ row: dropped.rowNumber, businessName: dropped.name, reason: 'PHONE_ALREADY_USED' });
+			}
+		}
+	}
+
+	let createdCount = 0;
+	if (candidates.length) {
+		// scrypt is CPU-bound, not a DB round trip, so hashing the whole batch concurrently
+		// never touches the connection pool.
+		const data = await Promise.all(candidates.map(async (candidate) => ({
+			businessName: candidate.name,
+			ownerName: candidate.name,
+			loginIdentifier: candidate.phone,
+			mobileNumber: candidate.phone,
+			passwordHash: await hashPassword(candidate.password),
+		})));
+
+		const result = await prisma.vendor.createMany({ data, skipDuplicates: true });
+		createdCount = result.count;
+
+		// Attribute rows to this request by phone + name so a row that lost a race to another
+		// request claiming the same phone is reported rather than mistaken for ours.
+		const inserted = await prisma.vendor.findMany({
+			where: { loginIdentifier: { in: data.map((row) => row.loginIdentifier) } },
+			select: { id: true, loginIdentifier: true, businessName: true, mobileNumber: true },
+		});
+		const insertedByPhone = new Map(inserted.map((row) => [row.loginIdentifier, row]));
+		const created = [];
+		candidates.forEach((candidate) => {
+			const row = insertedByPhone.get(candidate.phone);
+			if (row && row.businessName === candidate.name && row.mobileNumber === candidate.phone && created.length < createdCount) {
+				created.push(row);
+			} else {
+				failures.push({ row: candidate.rowNumber, businessName: candidate.name, reason: 'PHONE_ALREADY_USED' });
+			}
+		});
+
+		if (created.length) {
+			await prisma.auditLog.createMany({
+				data: created.map((row) => ({
+					actorUserId: request.auth.user.id,
+					actorRole: request.auth.user.role,
+					action: 'VENDOR_BULK_CREATED',
+					entity: 'Vendor',
+					entityId: row.id,
+					metadata: { batchSize: rows.length },
+				})),
+			});
+			checkAuditLogRetention(prisma).catch((error) => console.error('[AuditRetention] cleanup failed:', error));
+		}
+		createdCount = created.length;
+	}
+
+	failures.sort((first, second) => first.row - second.row);
+	return response.status(201).json({
+		success: true,
+		summary: { totalRows: rows.length, created: createdCount, failed: failures.length, failures },
+	});
+}
+
 adminRoutes.post('/vendors/bulk-create', requireAuth, requireAdmin, async (request, response, next) => {
 	try {
-		const { names, auto_password: autoPassword } = bulkCreateVendorsSchema.parse(request.body);
+		const { names, rows: importRows, auto_password: autoPassword } = bulkCreateVendorsSchema.parse(request.body);
+		if (importRows) return await bulkCreateVendorsFromRows(request, response, importRows);
 
 		// Measured against the real dev database: one prisma.$transaction() per row (each an
 		// interactive BEGIN/INSERT/INSERT/COMMIT round trip) cost ~0.8s/row here — a 500-row
@@ -703,7 +817,10 @@ const qrBatchSchema = z.object({
 	range_end: z.string().trim().min(1),
 	idempotency_key: z.string().trim().min(1).optional(),
 });
-const qrArtworkUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 2 * 1024 * 1024 } });
+// busboy flags a file as over-limit when it reaches fileSize bytes *exactly*, so a limit of
+// MAX would also reject a file of exactly MAX bytes. MAX + 1 makes the limit inclusive; the
+// service-level check (file.size > MAX) is the exact gate.
+const qrArtworkUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: QR_ARTWORK_MAX_BYTES + 1 } });
 
 adminRoutes.get('/qr', requireAuth, requireAdmin, async (request, response, next) => {
 	try {
@@ -722,7 +839,31 @@ adminRoutes.get('/qr', requireAuth, requireAdmin, async (request, response, next
 			prisma.qrCode.findMany({ where, skip: (page - 1) * limit, take: limit, orderBy: { createdAt: 'desc' }, include: { assignments: { where: { unassignedAt: null }, include: { vendor: true }, take: 1 } } }),
 			prisma.qrCode.count({ where }),
 		]);
-		return response.json({ success: true, data: qrCodes, pagination: { page, limit, total } });
+		// One extra query for the codes on this page (<=100), newest print first, reduced to the
+		// latest per code — the same shape as the active-assignment include above, not an N+1.
+		const latestByQrCode = new Map();
+		if (qrCodes.length) {
+			const printed = await prisma.qrPrintJobItem.findMany({
+				where: { qrCodeId: { in: qrCodes.map((qr) => qr.id) } },
+				orderBy: { printJob: { createdAt: 'desc' } },
+				select: {
+					qrCodeId: true,
+					printJob: { select: { id: true, kind: true, createdAt: true, generatedAt: true, template: { select: { id: true, name: true } } } },
+				},
+			});
+			for (const item of printed) {
+				if (latestByQrCode.has(item.qrCodeId)) continue;
+				latestByQrCode.set(item.qrCodeId, {
+					jobId: item.printJob.id,
+					kind: item.printJob.kind,
+					templateId: item.printJob.template.id,
+					templateName: item.printJob.template.name,
+					printedAt: item.printJob.generatedAt || item.printJob.createdAt,
+				});
+			}
+		}
+		const data = qrCodes.map((qr) => ({ ...qr, latestPrint: latestByQrCode.get(qr.id) || null }));
+		return response.json({ success: true, data, pagination: { page, limit, total } });
 	} catch (error) {
 		return next(error);
 	}
@@ -759,9 +900,19 @@ adminRoutes.get('/qr/templates', requireAuth, requireAdmin, async (request, resp
 				_count: { select: { printJobs: true } },
 			},
 		});
+		// Split by kind in one grouped query so the usage label can say which prints exist
+		// ("2 batches, 5 single prints") rather than an unexplained total.
+		const kindCounts = await prisma.qrPrintJob.groupBy({ by: ['templateId', 'kind'], _count: { _all: true } });
+		const countsByTemplate = new Map();
+		for (const row of kindCounts) {
+			const entry = countsByTemplate.get(row.templateId) || { batch: 0, single: 0 };
+			entry[row.kind === 'SINGLE' ? 'single' : 'batch'] += row._count._all;
+			countsByTemplate.set(row.templateId, entry);
+		}
 		const templatesWithArtwork = await Promise.all(templates.map(async ({ _count, ...template }) => ({
 			...template,
 			printJobCount: _count.printJobs,
+			printJobCounts: countsByTemplate.get(template.id) || { batch: 0, single: 0 },
 			artworkUrl: await createQrArtworkUrl(template.artworkPath),
 		})));
 		return response.json({ success: true, templates: templatesWithArtwork });
@@ -796,7 +947,10 @@ adminRoutes.post('/qr/templates', requireAuth, requireAdmin, qrArtworkUpload.sin
 				status: 'DRAFT',
 			},
 		});
-		return response.status(201).json({ success: true, template });
+		// Non-blocking: artwork is always stretched to the template page, so a size mismatch
+		// distorts the design. The admin is told rather than silently given a stretched print.
+		const artworkWarning = artworkSizeWarning(uploadedArtwork?.inspection, input.page_width_mm, input.page_height_mm);
+		return response.status(201).json({ success: true, template, ...(artworkWarning ? { artworkWarning } : {}) });
 	} catch (error) {
 		if (uploadedArtwork?.objectKey) {
 			try {
@@ -804,11 +958,6 @@ adminRoutes.post('/qr/templates', requireAuth, requireAdmin, qrArtworkUpload.sin
 			} catch (cleanupError) {
 				console.error('QR artwork cleanup failed after template creation error.', cleanupError);
 			}
-		}
-		if (error instanceof multer.MulterError && error.code === 'LIMIT_FILE_SIZE') {
-			error.statusCode = 413;
-			error.code = 'QR_ARTWORK_TOO_LARGE';
-			error.message = 'QR artwork must be 2 MB or smaller.';
 		}
 		return next(error);
 	}
@@ -848,12 +997,19 @@ adminRoutes.post('/qr/templates/:templateId/delete', requireAuth, requireAdmin, 
 				error.code = 'QR_TEMPLATE_NOT_FOUND';
 				throw error;
 			}
-			const printJobCount = await transaction.qrPrintJob.count({ where: { templateId: template.id } });
+			const [batchCount, singleCount] = await Promise.all([
+				transaction.qrPrintJob.count({ where: { templateId: template.id, kind: 'BATCH' } }),
+				transaction.qrPrintJob.count({ where: { templateId: template.id, kind: 'SINGLE' } }),
+			]);
+			const printJobCount = batchCount + singleCount;
 			if (printJobCount > 0) {
-				const error = new Error(`This template is used by ${printJobCount} print job(s) and can't be deleted — archive it instead to remove it from future use.`);
+				// Single-code designed downloads count too: deleting the template would mean
+				// destroying that print history, so archiving is offered instead.
+				const parts = [batchCount ? `${batchCount} print batch(es)` : null, singleCount ? `${singleCount} single print(s)` : null].filter(Boolean);
+				const error = new Error(`This template is used by ${parts.join(' and ')} and can't be deleted — archive it instead to remove it from future use.`);
 				error.statusCode = 409;
 				error.code = 'QR_TEMPLATE_HAS_PRINT_JOBS';
-				error.details = { printJobCount };
+				error.details = { printJobCount, batchCount, singleCount };
 				throw error;
 			}
 			artworkPath = template.artworkPath;
@@ -923,6 +1079,208 @@ adminRoutes.post('/qr/templates/:templateId/restore', requireAuth, requireAdmin,
 			error.code = 'QR_TEMPLATE_NOT_FOUND';
 			error.message = 'QR print template was not found.';
 		}
+		return next(error);
+	}
+});
+
+const printJobFilterSchema = z.object({
+	template_id: z.string().trim().min(1).optional(),
+	kind: z.enum(['BATCH', 'SINGLE']).optional(),
+	code: z.string().trim().min(1).optional(),
+	vendor_id: z.string().trim().min(1).optional(),
+	vendor: z.string().trim().min(1).max(160).optional(),
+});
+
+// Shared by the print-history list and its CSV export so the two can never disagree.
+function printJobWhere(query) {
+	const filters = printJobFilterSchema.parse({
+		template_id: query.template_id || undefined,
+		kind: query.kind || undefined,
+		code: query.code || undefined,
+		vendor_id: query.vendor_id || undefined,
+		vendor: query.vendor || undefined,
+	});
+	const and = [];
+	if (filters.template_id) and.push({ templateId: filters.template_id });
+	if (filters.kind) and.push({ kind: filters.kind });
+	if (filters.code) and.push({ items: { some: { expectedCode: normalizeQrCode(filters.code) } } });
+	if (filters.vendor_id) {
+		and.push({ items: { some: { qrCode: { assignments: { some: { vendorId: filters.vendor_id, unassignedAt: null } } } } } });
+	}
+	// Name search rather than a picker: /admin/vendors/lookup deliberately excludes vendors that
+	// already hold an active QR, which is exactly the set this filter is about. Prefix match keeps
+	// it index-friendly as the vendor table grows, per plan.md's search rule.
+	if (filters.vendor) {
+		and.push({
+			items: {
+				some: {
+					qrCode: {
+						assignments: {
+							some: { unassignedAt: null, vendor: { businessName: { startsWith: filters.vendor, mode: 'insensitive' } } },
+						},
+					},
+				},
+			},
+		});
+	}
+	return and.length ? { AND: and } : {};
+}
+
+function currentVendorOf(qrCode) {
+	const assignment = qrCode?.assignments?.[0];
+	return assignment ? { id: assignment.vendor.id, businessName: assignment.vendor.businessName } : null;
+}
+
+adminRoutes.get('/qr/print-jobs', requireAuth, requireAdmin, async (request, response, next) => {
+	try {
+		const { page, limit, skip } = pagination(request.query);
+		const where = printJobWhere(request.query);
+		const [jobs, total] = await Promise.all([
+			prisma.qrPrintJob.findMany({
+				where,
+				orderBy: { createdAt: 'desc' },
+				skip,
+				take: limit,
+				include: {
+					template: { select: { id: true, name: true, status: true } },
+					createdBy: { select: { id: true, name: true } },
+				},
+			}),
+			prisma.qrPrintJob.count({ where }),
+		]);
+		return response.json({ success: true, print_jobs: jobs, pagination: { page, limit, total } });
+	} catch (error) {
+		return next(error);
+	}
+});
+
+adminRoutes.get('/qr/print-jobs/:jobId', requireAuth, requireAdmin, async (request, response, next) => {
+	try {
+		const job = await prisma.qrPrintJob.findUnique({
+			where: { id: request.params.jobId },
+			include: {
+				template: { select: { id: true, name: true, status: true } },
+				createdBy: { select: { id: true, name: true } },
+				items: {
+					orderBy: { sequence: 'asc' },
+					include: {
+						qrCode: {
+							select: {
+								id: true,
+								code: true,
+								status: true,
+								assignments: { where: { unassignedAt: null }, take: 1, include: { vendor: { select: { id: true, businessName: true } } } },
+							},
+						},
+					},
+				},
+			},
+		});
+		if (!job) {
+			return response.status(404).json({ success: false, error: { code: 'QR_PRINT_JOB_NOT_FOUND', message: 'Print job was not found.' } });
+		}
+		const { items, ...rest } = job;
+		return response.json({
+			success: true,
+			print_job: rest,
+			items: items.map((item) => ({
+				sequence: item.sequence,
+				qrId: item.qrCodeId,
+				code: item.expectedCode,
+				qrStatus: item.qrCode?.status || null,
+				currentVendor: currentVendorOf(item.qrCode),
+			})),
+		});
+	} catch (error) {
+		return next(error);
+	}
+});
+
+// Bounded like every other export in this API; a print history larger than this is paged
+// through the list endpoint rather than returned unbounded in one response.
+const PRINT_HISTORY_EXPORT_LIMIT = 5000;
+
+adminRoutes.get('/qr/print-history/export', requireAuth, requireAdmin, async (request, response, next) => {
+	try {
+		const items = await prisma.qrPrintJobItem.findMany({
+			where: { printJob: printJobWhere(request.query) },
+			orderBy: [{ printJob: { createdAt: 'desc' } }, { sequence: 'asc' }],
+			take: PRINT_HISTORY_EXPORT_LIMIT,
+			include: {
+				printJob: { include: { template: { select: { id: true, name: true } }, createdBy: { select: { name: true } } } },
+				qrCode: {
+					select: {
+						id: true,
+						code: true,
+						status: true,
+						assignments: { where: { unassignedAt: null }, take: 1, include: { vendor: { select: { id: true, businessName: true } } } },
+					},
+				},
+			},
+		});
+		const csv = toCsv(
+			['QR Code', 'QR ID', 'Template', 'Template ID', 'Print Type', 'Print Job ID', 'Printed At', 'Printed By', 'Current Vendor', 'Vendor ID', 'QR Status'],
+			items.map((item) => {
+				const vendor = currentVendorOf(item.qrCode);
+				return [
+					item.expectedCode,
+					item.qrCodeId,
+					item.printJob.template?.name || '',
+					item.printJob.templateId,
+					item.printJob.kind,
+					item.printJob.id,
+					(item.printJob.generatedAt || item.printJob.createdAt).toISOString(),
+					item.printJob.createdBy?.name || '',
+					vendor?.businessName || '',
+					vendor?.id || '',
+					item.qrCode?.status || '',
+				];
+			}),
+		);
+		response.setHeader('Content-Type', 'text/csv; charset=utf-8');
+		response.setHeader('Content-Disposition', 'attachment; filename="qr-print-history.csv"');
+		return response.send(csv);
+	} catch (error) {
+		return next(error);
+	}
+});
+
+adminRoutes.get('/qr/:qrId/print-history', requireAuth, requireAdmin, async (request, response, next) => {
+	try {
+		const qr = await prisma.qrCode.findUnique({
+			where: { id: request.params.qrId },
+			select: {
+				id: true,
+				code: true,
+				status: true,
+				assignments: { where: { unassignedAt: null }, take: 1, include: { vendor: { select: { id: true, businessName: true } } } },
+			},
+		});
+		if (!qr) {
+			return response.status(404).json({ success: false, error: { code: 'QR_NOT_FOUND', message: 'QR code was not found.' } });
+		}
+		// Every print of this code, newest first. Reprints add rows and never replace one.
+		const prints = await prisma.qrPrintJobItem.findMany({
+			where: { qrCodeId: qr.id },
+			orderBy: { printJob: { createdAt: 'desc' } },
+			include: { printJob: { include: { template: { select: { id: true, name: true } }, createdBy: { select: { id: true, name: true } } } } },
+		});
+		return response.json({
+			success: true,
+			qr: { id: qr.id, code: qr.code, status: qr.status },
+			currentVendor: currentVendorOf(qr),
+			prints: prints.map((item) => ({
+				jobId: item.printJob.id,
+				kind: item.printJob.kind,
+				jobStatus: item.printJob.status,
+				templateId: item.printJob.templateId,
+				templateName: item.printJob.template?.name || null,
+				printedAt: item.printJob.generatedAt || item.printJob.createdAt,
+				printedBy: item.printJob.createdBy?.name || null,
+				sequence: item.sequence,
+			})),
+		});
+	} catch (error) {
 		return next(error);
 	}
 });
@@ -1100,6 +1458,37 @@ adminRoutes.get('/qr/template-pdf', requireAuth, requireAdmin, async (request, r
 			items: [{ sequence: 1, qrCodeId: qr.id, expectedCode: qr.code, expectedUrl: `${env.appBaseUrl}/v/${encodeURIComponent(qr.code)}` }],
 		};
 		const pdf = await generateQrTemplatePdf(job);
+
+		// Recorded only once the PDF actually generated, so a failed download never writes
+		// false print history. Stored as a one-item print job so batch and single prints share
+		// a single history shape; a reprint adds another record and never overwrites this one.
+		await prisma.$transaction(async (transaction) => {
+			const printJob = await transaction.qrPrintJob.create({
+				data: {
+					templateId: template.id,
+					createdById: request.auth.user.id,
+					idempotencyKey: `single-${randomUUID()}`,
+					kind: 'SINGLE',
+					status: 'COMPLETED',
+					rangeStart: qr.code,
+					rangeEnd: qr.code,
+					itemCount: 1,
+					generatedAt: new Date(),
+					templateSnapshot: job.templateSnapshot,
+				},
+			});
+			await transaction.qrPrintJobItem.create({
+				data: {
+					printJobId: printJob.id,
+					qrCodeId: qr.id,
+					sequence: 1,
+					expectedCode: qr.code,
+					expectedUrl: job.items[0].expectedUrl,
+					status: 'GENERATED',
+				},
+			});
+		});
+
 		response.setHeader('Content-Type', 'application/pdf');
 		response.setHeader('Content-Disposition', `${request.query.inline === 'true' ? 'inline' : 'attachment'}; filename="${safeFilenameSegment(code)}-template.pdf"`);
 		return response.send(pdf);
@@ -1232,6 +1621,15 @@ adminRoutes.post('/qr/:qrId/assign', requireAuth, requireAdmin, async (request, 
 	} catch (error) {
 		return next(error);
 	}
+});
+
+adminRoutes.get('/vendors/bulk-import-template', requireAuth, requireAdmin, (request, response) => {
+	// The password column header carries its own rule; the parser matches it by prefix, so a
+	// plain "password" header works too. A blank password cell means "use the phone number".
+	const csv = toCsv(['name', 'phone', 'password=phonenumber'], [['Ram Store', '9876543210', '']]);
+	response.setHeader('Content-Type', 'text/csv; charset=utf-8');
+	response.setHeader('Content-Disposition', 'attachment; filename="solar-mitras-import-template.csv"');
+	return response.send(csv);
 });
 
 adminRoutes.get('/vendors/lookup', requireAuth, requireAdmin, async (request, response, next) => {

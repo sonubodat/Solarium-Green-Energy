@@ -1,3 +1,5 @@
+import { qrArtworkTooLargeMessage } from '../lib/qr-artwork-limits.js';
+
 export function notFoundHandler(_request, response) {
   response.status(404).json({
     success: false,
@@ -12,7 +14,7 @@ export function errorHandler(error, request, response, _next) {
     // middleware) — a route's own inline MulterError check in its catch block never fires.
     // The multipart field name is the only way to tell which upload this was.
     if (error.field === 'artwork') {
-      return response.status(413).json({ success: false, error: { code: 'QR_ARTWORK_TOO_LARGE', message: 'QR artwork must be 2 MB or smaller.' } });
+      return response.status(413).json({ success: false, error: { code: 'QR_ARTWORK_TOO_LARGE', message: qrArtworkTooLargeMessage() } });
     }
     if (error.field === 'photo') {
       return response.status(413).json({ success: false, error: { code: 'PHOTO_TOO_LARGE', message: 'Photos must be 15 MB or smaller.' } });

@@ -92,6 +92,7 @@ function VendorPage() {
   // dashboard. Shows a skeleton instead of that flash.
   const [sessionChecked, setSessionChecked] = useState(false);
   const [newPassword, setNewPassword] = useState('');
+  const [currentPasswordInput, setCurrentPasswordInput] = useState('');
   const [message, setMessage] = useState('');
   const [loading, setLoading] = useState(false);
   const [activeSection, setActiveSection] = useState('overview');
@@ -134,13 +135,29 @@ function VendorPage() {
   }, []);
 
   async function loadVendorData(account = null) {
-    // Parallelized — these are three independent GET requests, not steps of one transaction,
+    // Parallelized (below) — these are independent GET requests, not steps of one transaction,
     // so there is no held connection for them to contend over. (This used to be sequential
     // specifically to avoid grabbing 3 pooled connections at once under the old transaction-mode
     // pooler; that root cause was fixed separately — see prisma.js/env.js — and this codebase's
     // Admin dashboard was parallelized the same way once that fix landed.)
-    const [profile, leads, payouts, bank] = await Promise.all([
-      apiRequest('/vendor/profile'),
+    const profile = await apiRequest('/vendor/profile');
+
+    // While the password is still temporary the backend refuses leads/payouts/bank-details
+    // (403 PASSWORD_CHANGE_REQUIRED), so only the profile is loaded and the portal shows the
+    // blocking "set your permanent password" screen. The full data loads after the change.
+    if (profile.vendor?.mustChangePassword) {
+      return {
+        account,
+        data: [
+          profile,
+          { leads: [], pagination: { page: 1, limit: 25, total: 0 } },
+          { payouts: [], pagination: { page: 1, limit: 25, total: 0 } },
+          { bank_details: null },
+        ],
+      };
+    }
+
+    const [leads, payouts, bank] = await Promise.all([
       apiRequest('/vendor/leads'),
       apiRequest('/vendor/payouts'),
       apiRequest('/vendor/bank-details'),
@@ -259,22 +276,16 @@ function VendorPage() {
       const result = await apiRequest('/vendor/change-password', {
         method: 'POST',
         body: JSON.stringify({
-          current_password: login.password,
+          current_password: login.password || currentPasswordInput,
           new_password: newPassword,
         }),
       });
 
-      setPortalData((current) => {
-        // renderWorkspace() derives the rendered `vendor` from `data[0].vendor` (the profile
-        // slot) first, falling back to `account` only when that's absent — since the profile
-        // slot is always present after login, updating only `account` here had no visible
-        // effect. `mustChangePassword` stayed true in what was actually rendered even though
-        // the backend had already correctly flipped it to false, so the one-time password
-        // banner never went away without a full page reload.
-        const data = [...current.data];
-        data[0] = { ...data[0], vendor: result.vendor };
-        return { ...current, account: result.vendor, data };
-      });
+      // The temporary password gated the dashboard data, so load it now that the change is
+      // done. loadVendorData re-fetches the profile too, which carries mustChangePassword: false.
+      const data = await loadVendorData(result.vendor);
+      if (!mountedRef.current) return;
+      setPortalData(data);
 
       setLogin((current) => ({
         ...current,
@@ -490,6 +501,17 @@ function VendorPage() {
           onSubmit={changeVendorPassword}
           className="vendor-password-form"
         >
+          {/* After a page reload the sign-in form's password is gone, so ask for it again. */}
+          {!login.password && (
+            <input
+              required
+              type="password"
+              autoComplete="current-password"
+              placeholder="Current (temporary) password"
+              value={currentPasswordInput}
+              onChange={(event) => setCurrentPasswordInput(event.target.value)}
+            />
+          )}
           <input
             required
             minLength={8}
@@ -1030,6 +1052,8 @@ function VendorPage() {
         <main className="vendor-main">
           {renderPasswordSetup(vendor)}
 
+          {!vendor.mustChangePassword && (
+            <>
           <nav className="vendor-tabs" aria-label="Solar Mitra navigation">
             <button
               type="button"
@@ -1093,6 +1117,8 @@ function VendorPage() {
             renderAccount(vendor)}
 
           {activeSection === 'settings' && renderSettings()}
+            </>
+          )}
 
           {message && (
             <div className="vendor-success-message" role="status">

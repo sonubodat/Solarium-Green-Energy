@@ -227,6 +227,8 @@ curl -i -c vendor.cookies -X POST $BASE/vendor/login \
 ```
 Expect `200`, `{"success":true,"vendor":{...,"mustChangePassword":false}}`. Login by mobile number also works: `"login_identifier":"9876543210"`.
 
+**Temporary password gate.** A Vendor whose `must_change_password` is `true` (Sales-onboarded, Admin-reset, or bulk-created with their phone number as the password) can only reach `GET /vendor/profile` and `POST /vendor/change-password`; `GET /vendor/leads`, `/payouts` and `/bank-details` (and the bank-details `PATCH`/`POST`) return `403 PASSWORD_CHANGE_REQUIRED` until the password is changed, then return `200`. Bulk-created Solar Mitras log in with `login_identifier` = their phone number and, when the CSV password cell was blank, `password` = the same number. The seeded vendors have the flag `false`, so §5.2 below is unaffected.
+
 ### 5.2 Profile / leads / payouts (all scoped to the authenticated Vendor)
 ```bash
 curl -i -b vendor.cookies $BASE/vendor/profile
