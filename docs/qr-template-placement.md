@@ -186,3 +186,20 @@ No QR code ever stores which template it was printed with — reprinting always 
 ## Proof preview and the Content-Security-Policy
 
 Step 3 of the print wizard embeds the proof PDF in an `<iframe>` whose `src` is a signed Supabase Storage URL (`GET /api/admin/qr/print-batch/:jobId/proof` → `proof_url`). `frontend/vercel.json`'s CSP must therefore list `https://*.supabase.co` in `frame-src` (alongside `'self' blob:`); without it the browser blocks the frame ("Framing ... violates ... frame-src") and the proof appears blank even though the `POST .../proof` returned `201`. Keep `frame-src`, `img-src` and `connect-src` in sync when changing storage hosts.
+
+## Proof storage cleanup
+
+Proof PDFs are throwaway review copies in Supabase Storage (`proofs/`). They are removed automatically: (1) when the production PDF is downloaded (`GET /api/admin/qr/print-batch/:jobId/pdf` without `inline=true`), the stored proof is deleted and `proofPath`/`proofFileName` cleared; (2) when a proof is regenerated, the previous proof file is deleted instead of orphaned. The print job row and its history are kept. Cleanup is best-effort (failures are logged). After the download the proof can no longer be re-opened; regenerate it if needed.
+
+## Heavy job queue and batch limits
+
+PDF work (`POST .../print-batch/:jobId/proof`, `GET .../print-batch/:jobId/pdf`, `GET /qr/template-pdf`, `GET /qr/pdf`) runs through `backend/src/lib/heavy-queue.js`:
+
+- **One PDF job at a time**, FIFO. A failed job never blocks the next one. At most 4 jobs may wait behind the running one; more get `503 SERVER_BUSY` ("Another print job is running. Try again in a minute.").
+- **Dedupe only while running**: proof and production PDF share one run per job id if the request is repeated mid-flight (double click). The entry is removed when the run settles, so a finished result is never cached or reused; `template-pdf` and `/qr/pdf` are deliberately un-keyed.
+- Batch creation (`POST /qr/print-batch`) is database work only and stays **outside** the queue; it is protected by its idempotency key (a lost race returns the existing job with `duplicate: true`). Items are inserted with a single `createMany` in a transaction with a 20 s timeout.
+- **Batch caps** (`422 QR_BATCH_TOO_LARGE`, checked at creation and again before PDF generation) come from measured peak RSS, no DB/Supabase (image/PDF artwork stubbed), 200-500 pages: PDF artwork (pdf-lib) 300 pages ~357 MB, 400 ~458 MB, 500 ~582 MB (over the 512 MB Render limit) -> cap **300**; PNG/JPG artwork (PDFKit) 500 pages ~295 MB -> cap **500**. Override with `QR_MAX_BATCH_PAGES_PDF` / `QR_MAX_BATCH_PAGES`.
+- Both composers yield to the event loop every 10 pages. This helps responsiveness only, it does **not** reduce memory. pdf-lib's final `save()` is one synchronous block (about 2.7 s at 200 pages, 6.7 s at 500), during which the server cannot answer other requests. Vector QR drawing instead of embedding a PNG per page would remove most of that cost and is the next optimization if it matters.
+- The queue is per process (one Render instance). Multiple instances would need a database/Redis lock.
+
+Frontend: identical in-flight print requests are shared (`apiRequest(..., { dedupe: true })`), the batch idempotency key is created once per new batch and reused on retry, and the print PDF downloads through `fetch` (`downloadFile`) so the page knows when it finished. Step 4 then offers **Print another batch** and **Back to QR Management**. The small pill at the top-right shows an indeterminate bar with the name of the running operation (no fake percentage).

@@ -638,3 +638,10 @@ Authenticate using a login identifier or registered mobile number and password.
 - No role may alter historical lead attribution.
 - Public QR requests cannot access internal records beyond the safe referral response.
 - All state-changing sensitive operations create focused audit records.
+
+## Print queue errors and idempotency
+
+- `503 SERVER_BUSY`: another PDF job is running and the wait queue is full; retry shortly. Returned by the proof, print PDF, template PDF and QR PDF endpoints.
+- `422 QR_BATCH_TOO_LARGE`: a batch exceeds the per-template cap (300 pages for PDF artwork, 500 for PNG/JPG). `POST /api/admin/qr/print-batch` and `GET /api/admin/qr/print-batch/:jobId/pdf` return it.
+- `500 QR_PDF_GENERATION_FAILED`: PDF composition failed; the queue slot is released.
+- `POST /api/admin/qr/print-batch` with an `idempotency_key` that already exists (including a concurrent duplicate) returns `200 { job, duplicate: true }` for the existing job instead of an error.

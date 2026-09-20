@@ -2,7 +2,7 @@
 
 import { Fragment, useEffect, useRef, useState } from 'react';
 import { parse as parseCsv } from 'csv-parse/browser/esm/sync';
-import { apiRequest, API_BASE_URL } from '../api/client';
+import { apiRequest, API_BASE_URL, downloadFile } from '../api/client';
 import { SkeletonBlock } from '../components/Skeleton';
 import VendorPicker from '../components/VendorPicker';
 import './AdminPage.css';
@@ -180,6 +180,12 @@ function AdminPage() {
   const [printWizardDraft, setPrintWizardDraft] = useState({ range_start: '', range_end: '', code: '', template_id: '' });
   const [printWizardJob, setPrintWizardJob] = useState(null);
   const [printWizardBusy, setPrintWizardBusy] = useState(false);
+  // Batch idempotency: one nonce per NEW batch (openPrintWizard / printGeneratedCodes). A retry of the
+  // same batch reuses the key, so double clicks and retries can never create two jobs. busyRef is the
+  // same-tick click lock (state updates are async, so a fast second click would slip past `disabled`).
+  const printBatchNonceRef = useRef('');
+  const printBusyRef = useRef(false);
+  const [printDone, setPrintDone] = useState(false);
   // QR Management's own "Generate QR codes" panel — a plain quantity batch (POST /admin/qr/generate,
   // unchanged), so an admin can build up inventory (e.g. 100-200 codes) before ever opening the
   // Print QR Codes wizard, then jump straight into it with that exact range pre-filled.
@@ -454,7 +460,7 @@ function AdminPage() {
     try {
       // POST generates/refreshes the proof PDF (job.proofPath); the signed download URL comes
       // back only from the separate GET — the POST response has no proof_url field.
-      const generated = await apiRequest(`/admin/qr/print-batch/${encodeURIComponent(jobId)}/proof`, { method: 'POST' });
+      const generated = await apiRequest(`/admin/qr/print-batch/${encodeURIComponent(jobId)}/proof`, { method: 'POST', body: '{}', label: 'Generating proof', dedupe: true });
       setPrintWizardJob(generated.job);
       const signed = await apiRequest(`/admin/qr/print-batch/${encodeURIComponent(jobId)}/proof`, { forceRefresh: true });
       setPrintProofState({ loading: false, error: '', url: signed.proof_url, ready: true });
@@ -1181,11 +1187,6 @@ function AdminPage() {
       setMessage(error.message);
       setMessageType('error');
     }
-  }
-
-  function downloadTemplatePdf(job) {
-    if (!job?.id) return;
-    window.location.href = `${API_BASE_URL}/admin/qr/print-batch/${encodeURIComponent(job.id)}/pdf`;
   }
 
   async function assignQr(qr, reassign = false) {
@@ -2535,7 +2536,10 @@ function AdminPage() {
     );
   }
 
-  function openPrintWizard() {
+  // Clears every piece of print-wizard state and starts a new batch (fresh idempotency nonce).
+  function resetPrintWizardState() {
+    printBatchNonceRef.current = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    setPrintDone(false);
     setPrintWizardStep(1);
     setPrintWizardMode('range');
     setPrintWizardDraft({ range_start: '', range_end: '', code: '', template_id: '' });
@@ -2543,6 +2547,10 @@ function AdminPage() {
     setPrintRangeCheck({ loading: false, checked: false, total: 0, existingCount: 0, missingCount: 0, error: '' });
     setPrintProofState({ loading: false, error: '', url: '', ready: false });
     printProofAttemptRef.current = null;
+  }
+
+  function openPrintWizard() {
+    resetPrintWizardState();
     setResource('print-qr');
     setAdminPage(1);
     setMobileNavOpen(false);
@@ -2605,6 +2613,8 @@ function AdminPage() {
   // "generate, then map to a template" without retyping the range by hand.
   function printGeneratedCodes() {
     if (!generateQrResult) return;
+    printBatchNonceRef.current = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    setPrintDone(false);
     setPrintWizardStep(1);
     setPrintWizardMode('range');
     setPrintWizardDraft({ range_start: generateQrResult.rangeStart, range_end: generateQrResult.rangeEnd, code: '', template_id: '' });
@@ -2748,10 +2758,6 @@ function AdminPage() {
     const canContinue = printWizardStep === 1
       ? validCodes && rangeOrderValid && printRangeCheck.checked && !printRangeCheck.loading && !printRangeCheck.error && !hasGap
       : true;
-    function downloadWizardIndividual() {
-      const params = new URLSearchParams({ template_id: printWizardDraft.template_id, code: rangeStart });
-      window.open(`${API_BASE_URL}/admin/qr/template-pdf?${params.toString()}`, '_blank', 'noopener,noreferrer');
-    }
     async function generateMissingCodes() {
       setPrintGenerateBusy(true);
       try {
@@ -2769,17 +2775,71 @@ function AdminPage() {
     }
     async function createWizardJob() {
       if (printWizardMode === 'individual' || !printWizardDraft.template_id) { setPrintWizardStep(3); return; }
+      if (printBusyRef.current) return;
+      printBusyRef.current = true;
       setPrintWizardBusy(true);
       setPrintProofState({ loading: false, error: '', url: '', ready: false });
       printProofAttemptRef.current = null;
-      try { const result = await apiRequest('/admin/qr/print-batch', { method: 'POST', body: JSON.stringify({ template_id: printWizardDraft.template_id, range_start: rangeStart, range_end: rangeEnd, idempotency_key: `qr-print-${Date.now()}` }) }); setPrintWizardJob(result.job); setPrintWizardStep(3); } catch (error) { setMessage(error.message); setMessageType('error'); } finally { setPrintWizardBusy(false); }
+      if (!printBatchNonceRef.current) printBatchNonceRef.current = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+      const idempotencyKey = `qr-print-${printBatchNonceRef.current}-${printWizardDraft.template_id}-${rangeStart}-${rangeEnd}`;
+      try {
+        const result = await apiRequest('/admin/qr/print-batch', { method: 'POST', body: JSON.stringify({ template_id: printWizardDraft.template_id, range_start: rangeStart, range_end: rangeEnd, idempotency_key: idempotencyKey }), label: 'Creating print batch', dedupe: true });
+        setPrintWizardJob(result.job);
+        setPrintWizardStep(3);
+      } catch (error) {
+        setMessage(error.message);
+        setMessageType('error');
+      } finally {
+        printBusyRef.current = false;
+        setPrintWizardBusy(false);
+      }
     }
-    async function approveWizardJob() { if (!printWizardJob) return; setPrintWizardBusy(true); try { const result = await apiRequest(`/admin/qr/print-batch/${encodeURIComponent(printWizardJob.id)}/approve`, { method: 'POST' }); setPrintWizardJob(result.job); setPrintWizardStep(4); } catch (error) { setMessage(error.message); setMessageType('error'); } finally { setPrintWizardBusy(false); } }
+    async function approveWizardJob() {
+      if (!printWizardJob || printBusyRef.current) return;
+      printBusyRef.current = true;
+      setPrintWizardBusy(true);
+      try {
+        const result = await apiRequest(`/admin/qr/print-batch/${encodeURIComponent(printWizardJob.id)}/approve`, { method: 'POST', body: '{}', label: 'Approving proof', dedupe: true });
+        setPrintWizardJob(result.job);
+        setPrintWizardStep(4);
+      } catch (error) {
+        setMessage(error.message);
+        setMessageType('error');
+      } finally {
+        printBusyRef.current = false;
+        setPrintWizardBusy(false);
+      }
+    }
+    // One download path for all three print types. Errors keep the user on step 4 so they can retry;
+    // success flips to the finish state (no automatic navigation - the user picks what happens next).
+    async function runWizardDownload() {
+      if (printBusyRef.current) return;
+      printBusyRef.current = true;
+      setPrintWizardBusy(true);
+      try {
+        if (!selectedTemplate) {
+          const params = new URLSearchParams(printWizardMode === 'individual' ? { code: rangeStart } : { range_start: rangeStart, range_end: rangeEnd });
+          await downloadFile(`/admin/qr/pdf?${params.toString()}`, `${rangeStart}-qr-codes.pdf`, 'Generating PDF');
+        } else if (printWizardMode === 'individual') {
+          const params = new URLSearchParams({ template_id: printWizardDraft.template_id, code: rangeStart });
+          await downloadFile(`/admin/qr/template-pdf?${params.toString()}`, `${rangeStart}-template.pdf`, 'Generating PDF');
+        } else {
+          await downloadFile(`/admin/qr/print-batch/${encodeURIComponent(printWizardJob.id)}/pdf`, `${rangeStart}-template.pdf`, 'Generating PDF');
+        }
+        setPrintDone(true);
+      } catch (error) {
+        setMessage(error.message);
+        setMessageType('error');
+      } finally {
+        printBusyRef.current = false;
+        setPrintWizardBusy(false);
+      }
+    }
     return <div className="admin-resource admin-print-wizard"><div className="admin-resource-heading"><div><span className="admin-eyebrow">PRINT WORKFLOW</span><h2>Print QR Codes</h2><p>Select the codes, choose a design, review the proof, then print.</p></div><button className="admin-outline-button" onClick={() => setResource('qr')}>Back to QR Management</button></div><div className="admin-qr-wizard-steps">{['Select QR codes', 'Choose design', 'Review proof', 'Generate PDF'].map((label, index) => <span key={label} className={printWizardStep === index + 1 ? 'active' : ''}><b>{index + 1}</b>{label}</span>)}</div>
       {printWizardStep === 1 && <section className="admin-wizard-panel"><span className="admin-eyebrow">STEP 1</span><h3>What do you want to print?</h3><div className="admin-wizard-choice-grid"><button type="button" className={printWizardMode === 'range' ? 'selected' : ''} onClick={() => setPrintWizardMode('range')}><strong>QR range</strong><small>Print a continuous range of QR codes</small></button><button type="button" className={printWizardMode === 'individual' ? 'selected' : ''} onClick={() => setPrintWizardMode('individual')}><strong>Specific QR code</strong><small>Print one QR code</small></button></div>{printWizardMode === 'range' ? <div className="admin-wizard-fields"><label>Range start<input placeholder="V-0001" value={printWizardDraft.range_start} onChange={(event) => setPrintWizardDraft({ ...printWizardDraft, range_start: event.target.value })} /></label><label>Range end<input placeholder="V-0100" value={printWizardDraft.range_end} onChange={(event) => setPrintWizardDraft({ ...printWizardDraft, range_end: event.target.value })} /></label></div> : <label className="admin-wizard-field-wide">QR code<input placeholder="V-0042" value={printWizardDraft.code} onChange={(event) => setPrintWizardDraft({ ...printWizardDraft, code: event.target.value })} /></label>}<div className="admin-wizard-count">{selectedCount ? `${selectedCount.toLocaleString()} QR code${selectedCount === 1 ? '' : 's'} selected` : 'Use a code such as V-0001, or enter a start and end range.'}{selectedCount > 0 && printRangeCheck.loading && ' — checking inventory...'}{selectedCount > 0 && printRangeCheck.checked && !printRangeCheck.loading && (hasGap ? ` — ${printRangeCheck.existingCount} already exist, ${printRangeCheck.missingCount} will need generating` : ' — all already exist in inventory')}</div>{printRangeCheck.error && <p role="alert" className="admin-wizard-helper">{printRangeCheck.error}</p>}{hasGap && <div className="admin-wizard-gap-notice"><span>{printRangeCheck.missingCount} of these QR codes don't exist yet. Generate them here, or narrow the range to codes already in inventory.</span><button type="button" className="admin-outline-button" disabled={printGenerateBusy} onClick={generateMissingCodes}>{printGenerateBusy ? 'Generating...' : `Generate ${printRangeCheck.missingCount} missing QR code${printRangeCheck.missingCount === 1 ? '' : 's'}`}</button></div>}<div className="admin-form-actions"><button type="button" className="admin-primary-button" disabled={!canContinue} onClick={() => setPrintWizardStep(2)}>Choose design <Icon path={ICONS.arrow} /></button></div></section>}
       {printWizardStep === 2 && <section className="admin-wizard-panel"><span className="admin-eyebrow">STEP 2</span><h3>Choose a design</h3><p className="admin-wizard-helper">Pick a published template or print simple QR codes without artwork.</p><div className="admin-design-grid"><button type="button" className={`admin-design-card ${!printWizardDraft.template_id ? 'selected' : ''}`} onClick={() => setPrintWizardDraft({ ...printWizardDraft, template_id: '' })}><div className="admin-design-thumb blank">QR</div><strong>Blank QR</strong><small>Print QR codes without artwork</small></button>{qrTemplates.filter((template) => template.status === 'PUBLISHED').map((template) => <button type="button" key={template.id} className={`admin-design-card ${printWizardDraft.template_id === template.id ? 'selected' : ''}`} onClick={() => setPrintWizardDraft({ ...printWizardDraft, template_id: template.id })}><div className="admin-design-thumb">{template.artworkUrl && <img src={template.artworkUrl} alt="" />}<span>QR</span></div><strong>{template.name}</strong><small>{qrStatusLabel(template.status)} · {template.pageWidthMm} × {template.pageHeightMm} mm</small></button>)}</div><div className="admin-form-actions"><button className="admin-outline-button" onClick={() => setPrintWizardStep(1)}>Back</button><button className="admin-primary-button" onClick={createWizardJob}>Review placement <Icon path={ICONS.arrow} /></button></div></section>}
       {printWizardStep === 3 && <section className="admin-wizard-panel"><span className="admin-eyebrow">STEP 3</span><h3>Review proof</h3>{selectedTemplate && printWizardMode !== 'individual' && <>{printProofState.loading && <div className="admin-wizard-blank-preview"><Icon path={ICONS.qr} /><strong>Generating proof...</strong><span>Rendering the real artwork and QR placement.</span></div>}{printProofState.error && <div className="admin-wizard-gap-notice"><span role="alert">{printProofState.error}</span><button type="button" className="admin-outline-button" onClick={() => runPrintProof(printWizardJob.id)}>Retry</button></div>}{printProofState.ready && <div className="admin-wizard-review"><iframe className="admin-template-preview-frame" src={printProofState.url} title="Print proof" /><div className="admin-wizard-summary"><strong>{selectedTemplate.name}</strong><span>QR: {rangeStart}{rangeEnd !== rangeStart ? ` → ${rangeEnd}` : ''}</span><span>QR size: {selectedTemplate.qrWidth} × {selectedTemplate.qrHeight} mm</span><span>Page: {selectedTemplate.pageWidthMm} × {selectedTemplate.pageHeightMm} mm</span>{selectedTemplate.labelEnabled && <span>Label: on</span>}</div></div>}</>}{selectedTemplate && printWizardMode === 'individual' && <div className="admin-wizard-review"><iframe className="admin-template-preview-frame" src={`${API_BASE_URL}/admin/qr/template-pdf?${new URLSearchParams({ template_id: printWizardDraft.template_id, code: rangeStart, inline: 'true' }).toString()}`} title="Print preview" /><div className="admin-wizard-summary"><strong>{selectedTemplate.name}</strong><span>QR: {rangeStart}</span><span>QR size: {selectedTemplate.qrWidth} × {selectedTemplate.qrHeight} mm</span><span>Page: {selectedTemplate.pageWidthMm} × {selectedTemplate.pageHeightMm} mm</span></div></div>}{!selectedTemplate && <div className="admin-wizard-blank-preview"><Icon path={ICONS.qr} /><strong>Blank QR</strong><span>The QR codes will print without artwork.</span></div>}<div className="admin-form-actions"><button className="admin-outline-button" onClick={() => setPrintWizardStep(2)}>Back</button>{selectedTemplate && printWizardMode !== 'individual' ? <button className="admin-primary-button" disabled={!printProofState.ready || printWizardBusy} onClick={approveWizardJob}>{printWizardBusy ? 'Approving...' : 'Approve proof'}</button> : <button className="admin-primary-button" onClick={() => setPrintWizardStep(4)}>Continue <Icon path={ICONS.arrow} /></button>}</div></section>}
-      {printWizardStep === 4 && <section className="admin-wizard-panel"><span className="admin-eyebrow">STEP 4</span><h3>Generate PDF</h3><div className="admin-wizard-final-summary"><strong>{selectedCount.toLocaleString()} QR codes ready</strong><span>QR: {rangeStart}{rangeEnd !== rangeStart ? ` → ${rangeEnd}` : ''}</span><span>Design: {selectedTemplate?.name || 'Blank QR'}</span><span>Print type: {selectedTemplate ? (printWizardMode === 'individual' ? 'Single designed print' : 'Print batch') : 'Blank QR'}</span></div><div className="admin-form-actions"><button className="admin-outline-button" onClick={() => setPrintWizardStep(3)}>Back</button>{selectedTemplate && printWizardMode !== 'individual' && <button className="admin-outline-button" onClick={() => viewPrintProof(printWizardJob)}>View proof again</button>}{selectedTemplate ? printWizardMode === 'individual' ? <button className="admin-primary-button" onClick={downloadWizardIndividual}>Generate Print PDF</button> : <button className="admin-primary-button" onClick={() => downloadTemplatePdf(printWizardJob)}>Generate Print PDF</button> : <button className="admin-primary-button" onClick={() => { const params = new URLSearchParams(printWizardMode === 'individual' ? { code: rangeStart } : { range_start: rangeStart, range_end: rangeEnd }); window.location.href = `${API_BASE_URL}/admin/qr/pdf?${params.toString()}`; }}>Generate Print PDF</button>}</div></section>}
+      {printWizardStep === 4 && <section className="admin-wizard-panel"><span className="admin-eyebrow">STEP 4</span><h3>Generate PDF</h3><div className="admin-wizard-final-summary"><strong>{selectedCount.toLocaleString()} QR codes ready</strong><span>QR: {rangeStart}{rangeEnd !== rangeStart ? ` → ${rangeEnd}` : ''}</span><span>Design: {selectedTemplate?.name || 'Blank QR'}</span><span>Print type: {selectedTemplate ? (printWizardMode === 'individual' ? 'Single designed print' : 'Print batch') : 'Blank QR'}</span></div>{printDone ? <div className="admin-wizard-review" role="status"><strong>PDF downloaded.</strong><span>Check your downloads folder. What next?</span><div className="admin-form-actions"><button className="admin-primary-button" onClick={openPrintWizard}>Print another batch</button><button className="admin-outline-button" onClick={() => { resetPrintWizardState(); setResource('qr'); }}>Back to QR Management</button></div></div> : <div className="admin-form-actions"><button className="admin-outline-button" disabled={printWizardBusy} onClick={() => setPrintWizardStep(3)}>Back</button>{selectedTemplate && printWizardMode !== 'individual' && <button className="admin-outline-button" disabled={printWizardBusy} onClick={() => viewPrintProof(printWizardJob)}>View proof again</button>}<button className="admin-primary-button" disabled={printWizardBusy} onClick={runWizardDownload}>{printWizardBusy ? 'Generating PDF…' : 'Generate Print PDF'}</button></div>}</section>}
     </div>;
   }
 

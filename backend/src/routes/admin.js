@@ -12,7 +12,8 @@ import { hashPassword, verifyPassword, normalizeLoginIdentifier, publicVendor, s
 import { z } from 'zod';
 import { createQrArtworkUrl, createVendorDocumentUrl, removeQrArtwork, removeVendorDocument, uploadQrArtwork, uploadQrProof, uploadVendorPhoto, removeVendorPhoto, createVendorPhotoUrl } from '../services/vendor-documents.js';
 import { generateQrProof, generateQrTemplatePdf } from '../services/qr-proof.js';
-import { QR_ARTWORK_MAX_BYTES } from '../lib/qr-artwork-limits.js';
+import { runHeavy } from '../lib/heavy-queue.js';
+import { QR_ARTWORK_MAX_BYTES, maxBatchPages, batchTooLargeError } from '../lib/qr-artwork-limits.js';
 import { artworkSizeWarning } from '../services/qr-artwork.js';
 import { vendorSearchWhere, normalizeSearchInput, pickerPagination, PICKER_VENDOR_SELECT } from '../lib/vendor-search.js';
 import { buildQrCodeSequence, normalizeQrCode, parseQrRange } from '../services/qr-print.js';
@@ -1426,6 +1427,7 @@ adminRoutes.post('/qr/print-batch', requireAuth, requireAdmin, async (request, r
 			return next(error);
 		}
 		const codes = buildQrCodeSequence(range.start, range.end);
+		if (codes.length > maxBatchPages(template.artworkMimeType)) throw batchTooLargeError(codes.length, maxBatchPages(template.artworkMimeType));
 		const foundQrCodes = await prisma.qrCode.findMany({
 			where: { code: { in: codes } },
 			select: { id: true, code: true },
@@ -1475,23 +1477,27 @@ adminRoutes.post('/qr/print-batch', requireAuth, requireAdmin, async (request, r
 				},
 			});
 
-			await Promise.all(codes.map((code, index) => transaction.qrPrintJobItem.create({
-				data: {
+			const expectedBase = process.env.APP_BASE_URL || 'https://solariumenergy.in';
+			await transaction.qrPrintJobItem.createMany({
+				data: codes.map((code, index) => ({
 					printJobId: created.id,
 					qrCodeId: foundByCode.get(code).id,
 					sequence: index + 1,
 					expectedCode: code,
-					expectedUrl: `${process.env.APP_BASE_URL || 'https://solariumenergy.in'}/v/${encodeURIComponent(code)}`,
+					expectedUrl: `${expectedBase}/v/${encodeURIComponent(code)}`,
 					status: 'PROOF_READY',
-				},
-			}))); 
+				})),
+			});
 
 			return created;
-		});
+		}, { timeout: 20000, maxWait: 10000 });
 
 		return response.status(201).json({ success: true, job, proofCodes: [...new Set([codes[0], codes[Math.floor(codes.length / 2)], codes[codes.length - 1]].filter(Boolean))] });
 	} catch (error) {
-		if (error.code === 'P2002' && error.meta?.target?.includes('idempotency_key')) {
+		if (error.code === 'P2002' && request.body?.idempotency_key) {
+			// Lost the race to an identical request: hand back the batch it created.
+			const existing = await prisma.qrPrintJob.findUnique({ where: { idempotencyKey: String(request.body.idempotency_key).trim() } }).catch(() => null);
+			if (existing) return response.status(200).json({ success: true, job: existing, duplicate: true });
 			error.statusCode = 409;
 			error.code = 'QR_PRINT_DUPLICATE';
 			error.message = 'A print batch with this idempotency key already exists.';
@@ -1499,6 +1505,18 @@ adminRoutes.post('/qr/print-batch', requireAuth, requireAdmin, async (request, r
 		return next(error);
 	}
 });
+
+// Proofs are throwaway review copies: keep them out of Supabase Storage once they are no longer
+// needed (job row and print history stay). Best-effort — a failure is logged, never surfaced.
+async function discardProof(jobId, proofPath) {
+	if (!proofPath) return;
+	try {
+		await removeQrArtwork(proofPath);
+		await prisma.qrPrintJob.updateMany({ where: { id: jobId, proofPath }, data: { proofPath: null, proofFileName: null } });
+	} catch (error) {
+		console.error('[QrProof] cleanup failed:', error);
+	}
+}
 
 adminRoutes.post('/qr/print-batch/:jobId/approve', requireAuth, requireAdmin, async (request, response, next) => {
 	try {
@@ -1531,10 +1549,14 @@ adminRoutes.get('/qr/print-batch/:jobId/pdf', requireAuth, requireAdmin, async (
 		if (job.status !== 'APPROVED' && env.nodeEnv !== 'development') {
 			return response.status(409).json({ success: false, error: { code: 'QR_PRINT_APPROVAL_REQUIRED', message: 'Approve the verified proof before downloading the production PDF.' } });
 		}
-		const pdf = await generateQrTemplatePdf(job);
+		if (job.itemCount > maxBatchPages(job.templateSnapshot?.artworkMimeType)) throw batchTooLargeError(job.itemCount, maxBatchPages(job.templateSnapshot?.artworkMimeType));
+		const pdf = await runHeavy(`pdf:${job.id}`, () => generateQrTemplatePdf(job));
 		response.setHeader('Content-Type', 'application/pdf');
-		response.setHeader('Content-Disposition', `${request.query.inline === 'true' ? 'inline' : 'attachment'}; filename="${safeFilenameSegment(job.rangeStart || job.id)}-template.pdf"`);
-		return response.send(pdf);
+		const isDownload = request.query.inline !== 'true';
+		response.setHeader('Content-Disposition', `${isDownload ? 'attachment' : 'inline'}; filename="${safeFilenameSegment(job.rangeStart || job.id)}-template.pdf"`);
+		response.send(pdf);
+		if (isDownload) discardProof(job.id, job.proofPath);
+		return undefined;
 	} catch (error) {
 		return next(error);
 	}
@@ -1577,7 +1599,7 @@ adminRoutes.get('/qr/template-pdf', requireAuth, requireAdmin, async (request, r
 			},
 			items: [{ sequence: 1, qrCodeId: qr.id, expectedCode: qr.code, expectedUrl: `${env.appBaseUrl}/v/${encodeURIComponent(qr.code)}` }],
 		};
-		const pdf = await generateQrTemplatePdf(job);
+		const pdf = await runHeavy(null, () => generateQrTemplatePdf(job));
 
 		// Recorded only once the PDF actually generated, so a failed download never writes
 		// false print history. Stored as a one-item print job so batch and single prints share
@@ -1624,30 +1646,35 @@ adminRoutes.post('/qr/print-batch/:jobId/proof', requireAuth, requireAdmin, asyn
 		if (job.status !== 'PENDING_APPROVAL' && job.status !== 'PROOF_READY') {
 			return response.status(409).json({ success: false, error: { code: 'QR_PROOF_INVALID_STATE', message: 'This print job is not waiting for proof generation.' } });
 		}
-		const proof = await generateQrProof(job);
-		const uploaded = await uploadQrProof(job.id, proof.buffer);
-		let updated;
-		try {
-			updated = await prisma.qrPrintJob.update({
-				where: { id: job.id },
-				data: {
-					status: 'PENDING_APPROVAL',
-					proofPath: uploaded.objectKey,
-					proofFileName: uploaded.fileName,
-					proofCheckedAt: new Date(),
-					proofError: null,
-					proofSummary: { representativeSequences: proof.verification.map((item) => item.sequence), verification: proof.verification },
-				},
-			});
-		} catch (error) {
+		// One run per job at a time: a double click shares this run instead of uploading twice.
+		const { updated, verification } = await runHeavy(`proof:${job.id}`, async () => {
+			const proof = await generateQrProof(job);
+			const uploaded = await uploadQrProof(job.id, proof.buffer);
+			let updated;
 			try {
-				await removeQrArtwork(uploaded.objectKey);
-			} catch (cleanupError) {
-				console.error('QR proof cleanup failed after job update error.', cleanupError);
+				updated = await prisma.qrPrintJob.update({
+					where: { id: job.id },
+					data: {
+						status: 'PENDING_APPROVAL',
+						proofPath: uploaded.objectKey,
+						proofFileName: uploaded.fileName,
+						proofCheckedAt: new Date(),
+						proofError: null,
+						proofSummary: { representativeSequences: proof.verification.map((item) => item.sequence), verification: proof.verification },
+					},
+				});
+			} catch (error) {
+				try {
+					await removeQrArtwork(uploaded.objectKey);
+				} catch (cleanupError) {
+					console.error('QR proof cleanup failed after job update error.', cleanupError);
+				}
+				throw error;
 			}
-			throw error;
-		}
-		return response.status(201).json({ success: true, job: updated, verification: proof.verification });
+			if (job.proofPath && job.proofPath !== uploaded.objectKey) removeQrArtwork(job.proofPath).catch((error) => console.error('[QrProof] old proof cleanup failed:', error));
+			return { updated, verification: proof.verification };
+		});
+		return response.status(201).json({ success: true, job: updated, verification });
 	} catch (error) {
 		return next(error);
 	}
@@ -2006,40 +2033,47 @@ adminRoutes.get('/qr/pdf', requireAuth, requireAdmin, async (request, response, 
 			return response.status(404).json({ success: false, error: { code: 'QR_NOT_FOUND', message } });
 		}
 
-		response.setHeader('Content-Type', 'application/pdf');
-		response.setHeader(
-			'Content-Disposition',
-			`attachment; filename="${filters.code ? safeFilenameSegment(filters.code) : rangeCodes ? `${safeFilenameSegment(filters.range_start)}-to-${safeFilenameSegment(filters.range_end)}` : 'solarium-qr-codes'}.pdf"`
-		);
+		await runHeavy(null, async () => {
+			response.setHeader('Content-Type', 'application/pdf');
+			response.setHeader(
+				'Content-Disposition',
+				`attachment; filename="${filters.code ? safeFilenameSegment(filters.code) : rangeCodes ? `${safeFilenameSegment(filters.range_start)}-to-${safeFilenameSegment(filters.range_end)}` : 'solarium-qr-codes'}.pdf"`
+			);
 
-		// Only the QR image itself goes on the page — no vendor name, status, or code text —
-		// per explicit request that the PDF contain nothing but the scannable QR codes.
-		const doc = new PDFDocument({ size: 'A4', margin: 24 });
-		doc.pipe(response);
+			// Only the QR image itself goes on the page — no vendor name, status, or code text —
+			// per explicit request that the PDF contain nothing but the scannable QR codes.
+			const doc = new PDFDocument({ size: 'A4', margin: 24 });
+			doc.pipe(response);
 
-		const cols = 4;
-		const cellSize = (doc.page.width - doc.page.margins.left - doc.page.margins.right) / cols;
-		const rowsPerPage = Math.floor((doc.page.height - doc.page.margins.top - doc.page.margins.bottom) / cellSize);
-		const perPage = cols * rowsPerPage;
-		const padding = 10;
+			const cols = 4;
+			const cellSize = (doc.page.width - doc.page.margins.left - doc.page.margins.right) / cols;
+			const rowsPerPage = Math.floor((doc.page.height - doc.page.margins.top - doc.page.margins.bottom) / cellSize);
+			const perPage = cols * rowsPerPage;
+			const padding = 10;
 
-		for (let index = 0; index < qrCodes.length; index += 1) {
-			const positionOnPage = index % perPage;
-			if (index > 0 && positionOnPage === 0) {
-				doc.addPage();
+			for (let index = 0; index < qrCodes.length; index += 1) {
+				const positionOnPage = index % perPage;
+				if (index > 0 && positionOnPage === 0) {
+					doc.addPage();
+				}
+				const col = positionOnPage % cols;
+				const row = Math.floor(positionOnPage / cols);
+				const x = doc.page.margins.left + col * cellSize + padding / 2;
+				const y = doc.page.margins.top + row * cellSize + padding / 2;
+				const size = cellSize - padding;
+
+				// eslint-disable-next-line no-await-in-loop
+				const png = await generateQrPng(qrCodes[index].code);
+				doc.image(png, x, y, { width: size, height: size });
 			}
-			const col = positionOnPage % cols;
-			const row = Math.floor(positionOnPage / cols);
-			const x = doc.page.margins.left + col * cellSize + padding / 2;
-			const y = doc.page.margins.top + row * cellSize + padding / 2;
-			const size = cellSize - padding;
 
-			// eslint-disable-next-line no-await-in-loop
-			const png = await generateQrPng(qrCodes[index].code);
-			doc.image(png, x, y, { width: size, height: size });
-		}
-
-		doc.end();
+			doc.end();
+			await new Promise((resolve, reject) => {
+				response.on('finish', resolve);
+				response.on('close', resolve);
+				doc.on('error', reject);
+			});
+		});
 	} catch (error) {
 		return next(error);
 	}

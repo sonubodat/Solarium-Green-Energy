@@ -47,7 +47,7 @@ export function clearApiCache() {
   clearSharedCache();
 }
 
-export async function apiRequest(path, options = {}) {
+async function apiRequestCore(path, options = {}) {
   const { forceRefresh, ...fetchOptions } = options;
   const method = (fetchOptions.method || 'GET').toUpperCase();
   const isGet = method === 'GET';
@@ -116,4 +116,93 @@ export async function apiRequest(path, options = {}) {
   }
 
   return payload;
+}
+
+// ---- Activity tracking (drives the progress bar in WakeButton) -------------------------------
+// Only operations started with a `label` are tracked, so the bar never names an unrelated
+// request. The list is replaced (never mutated) so useSyncExternalStore sees a new snapshot.
+let activity = [];
+let activitySeq = 0;
+const activityListeners = new Set();
+
+export function subscribeActivity(listener) {
+  activityListeners.add(listener);
+  return () => activityListeners.delete(listener);
+}
+
+export function getActivitySnapshot() {
+  return activity;
+}
+
+function setActivity(next) {
+  activity = next;
+  activityListeners.forEach((listener) => listener());
+}
+
+export async function trackOperation(label, work) {
+  activitySeq += 1;
+  const operation = { id: activitySeq, label };
+  setActivity([...activity, operation]);
+  try {
+    return await work();
+  } finally {
+    setActivity(activity.filter((item) => item !== operation));
+  }
+}
+
+// ---- apiRequest ------------------------------------------------------------------------------
+// Extra options on top of fetch's own:
+//   label:  name shown in the progress bar while this request runs.
+//   dedupe: identical requests (same method + path + string body) made while one is still in
+//           flight share that one request, so a double click cannot send it twice. Removed as soon
+//           as it settles (success or failure); a finished result is never reused.
+const pendingDedupe = new Map();
+
+export function apiRequest(path, options = {}) {
+  const { label, dedupe, ...rest } = options;
+  const start = () => (label ? trackOperation(label, () => apiRequestCore(path, rest)) : apiRequestCore(path, rest));
+  if (!dedupe || typeof rest.body !== 'string') return start();
+
+  const key = `${(rest.method || 'GET').toUpperCase()} ${path} ${rest.body}`;
+  if (pendingDedupe.has(key)) return pendingDedupe.get(key);
+  const promise = start();
+  pendingDedupe.set(key, promise);
+  const clear = () => pendingDedupe.delete(key);
+  promise.then(clear, clear);
+  return promise;
+}
+
+// Downloads a file through fetch (instead of navigating to it) so the page knows when it is done
+// or failed. Always resolves only after the browser was handed the file.
+export function downloadFile(path, fallbackName, label = 'Preparing download') {
+  return trackOperation(label, async () => {
+    let response;
+    try {
+      response = await fetch(`${API_BASE_URL}${path}`, { credentials: 'include' });
+    } catch (error) {
+      throw new Error('Download failed. Check your connection and try again.');
+    }
+    if (!response.ok) {
+      const payload = await response.json().catch(() => null);
+      const error = new Error(payload?.error?.message || 'Download failed. Try again.');
+      error.code = payload?.error?.code;
+      error.status = response.status;
+      throw error;
+    }
+    let blob;
+    try {
+      blob = await response.blob();
+    } catch (error) {
+      throw new Error('Download was interrupted. Try again.');
+    }
+    const name = /filename="?([^";]+)"?/i.exec(response.headers.get('Content-Disposition') || '')?.[1] || fallbackName;
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = name;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+  });
 }

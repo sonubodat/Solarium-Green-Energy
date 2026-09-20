@@ -6,6 +6,23 @@
 // composed by pdf-lib (PDFKit cannot embed a PDF page). Multi-page PDFs are rejected rather
 // than silently printing page 1, because the editor preview shows every page.
 
+// Hard caps on pages per print batch, from measured peak RSS (see docs/qr-template-placement.md):
+// PDF artwork (pdf-lib): 300 pages ~357 MB, 400 ~458 MB, 500 ~582 MB -> over the 512 MB Render limit.
+// PNG/JPG artwork (PDFKit): 500 pages ~295 MB.
+export const QR_MAX_BATCH_PAGES_PDF_ARTWORK = Number(process.env.QR_MAX_BATCH_PAGES_PDF) || 300;
+export const QR_MAX_BATCH_PAGES_IMAGE = Number(process.env.QR_MAX_BATCH_PAGES) || 500;
+
+export function maxBatchPages(artworkMimeType) {
+  return artworkMimeType === 'application/pdf' ? QR_MAX_BATCH_PAGES_PDF_ARTWORK : QR_MAX_BATCH_PAGES_IMAGE;
+}
+
+export function batchTooLargeError(count, limit) {
+  const error = new Error(`A print batch can hold at most ${limit} QR codes for this template (this one has ${count}). Split it into smaller ranges.`);
+  error.statusCode = 422;
+  error.code = 'QR_BATCH_TOO_LARGE';
+  return error;
+}
+
 export const QR_ARTWORK_MAX_BYTES = 8 * 1024 * 1024;
 export const QR_ARTWORK_IMAGE_TYPES = new Set(['image/png', 'image/jpeg']);
 export const QR_ARTWORK_PDF_TYPE = 'application/pdf';

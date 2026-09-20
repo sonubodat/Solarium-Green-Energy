@@ -79,12 +79,18 @@ async function qrPngFor(item, cache) {
 // PNG/JPG artwork. openImage() embeds the artwork once and every page references it; passing
 // the raw Buffer to document.image() per page instead embedded a full copy on each page
 // (an 8 MB artwork over 10 pages produced a 79.7 MB PDF).
+// Yield to the event loop every few pages so /health and other requests keep answering while a
+// large PDF is composed. This is responsiveness only; it does not lower memory use.
+const yieldEvery = 10;
+const yieldToEventLoop = () => new Promise((resolve) => setImmediate(resolve));
+
 async function composeWithPdfkit(geometry, items, artwork, cache) {
   const { pageWidth, pageHeight } = geometry;
   const document = new PDFDocument({ size: [pageWidth, pageHeight], margin: 0, autoFirstPage: false });
   const artworkImage = artwork ? document.openImage(artwork.buffer) : null;
 
-  for (const item of items) {
+  for (const [index, item] of items.entries()) {
+    if (index % yieldEvery === yieldEvery - 1) await yieldToEventLoop();
     const qrPng = await qrPngFor(item, cache);
     document.addPage({ size: [pageWidth, pageHeight], margin: 0 });
     if (artworkImage) document.image(artworkImage, 0, 0, { width: pageWidth, height: pageHeight });
@@ -109,7 +115,8 @@ async function composeWithPdfLib(geometry, items, artwork, cache) {
   // added before flipping into pdf-lib's bottom-left origin to keep both paths identical.
   const labelAscent = font ? font.heightAtSize(geometry.labelSize, { descender: false }) : 0;
 
-  for (const item of items) {
+  for (const [index, item] of items.entries()) {
+    if (index % yieldEvery === yieldEvery - 1) await yieldToEventLoop();
     const page = output.addPage([pageWidth, pageHeight]);
     page.drawPage(artworkPage, { x: 0, y: 0, width: pageWidth, height: pageHeight });
     const qrImage = await output.embedPng(await qrPngFor(item, cache));
@@ -136,9 +143,20 @@ async function composeWithPdfLib(geometry, items, artwork, cache) {
 async function composePages(snapshot, items, jobId, cache) {
   const geometry = resolveGeometry(snapshot);
   const artwork = await loadArtwork(snapshot, jobId);
-  return artwork?.kind === 'pdf'
-    ? composeWithPdfLib(geometry, items, artwork, cache)
-    : composeWithPdfkit(geometry, items, artwork, cache);
+  try {
+    return await (artwork?.kind === 'pdf'
+      ? composeWithPdfLib(geometry, items, artwork, cache)
+      : composeWithPdfkit(geometry, items, artwork, cache));
+  } catch (error) {
+    // Keep the real message for logs, but give the client a stable code instead of a bare 500.
+    console.error('[QrPdf] generation failed:', error);
+    if (!error.statusCode) {
+      error.statusCode = 500;
+      error.code = 'QR_PDF_GENERATION_FAILED';
+      error.message = 'The PDF could not be generated. Try a smaller batch or try again.';
+    }
+    throw error;
+  }
 }
 
 export async function generateQrProof(job) {
