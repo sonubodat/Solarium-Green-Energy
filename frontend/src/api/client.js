@@ -8,7 +8,14 @@ export const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || '/api';
 // Any successful non-GET request clears the whole cache, in both places (simplest invalidation
 // strategy that can never show stale data after a create/update/delete). Pass
 // { forceRefresh: true } to bypass it, e.g. for explicit "Refresh" buttons.
-const CACHE_TTL_MS = 30000;
+const DEFAULT_TTL_MS = 30000;
+// Longer for data that changes rarely; every successful write still wipes the whole cache, so a
+// change made through this app is visible immediately. Explicit Refresh buttons use forceRefresh.
+export function cacheTtlFor(path) {
+  if (path.startsWith('/admin/qr/templates')) return 5 * 60 * 1000;
+  if (path.startsWith('/admin/')) return 60 * 1000;
+  return DEFAULT_TTL_MS;
+}
 const CACHE_STORAGE_PREFIX = 'solarium:api-cache:';
 const getCache = new Map();
 
@@ -17,7 +24,7 @@ function readSharedCacheEntry(path) {
     const raw = window.localStorage.getItem(CACHE_STORAGE_PREFIX + path);
     if (!raw) return null;
     const entry = JSON.parse(raw);
-    if (Date.now() - entry.time >= CACHE_TTL_MS) return null;
+    if (Date.now() - entry.time >= cacheTtlFor(path)) return null;
     return entry;
   } catch (error) {
     return null;
@@ -54,7 +61,7 @@ async function apiRequestCore(path, options = {}) {
 
   if (isGet && !forceRefresh) {
     const cached = getCache.get(path) || readSharedCacheEntry(path);
-    if (cached && Date.now() - cached.time < CACHE_TTL_MS) {
+    if (cached && Date.now() - cached.time < cacheTtlFor(path)) {
       if (cached.ok) return cached.data;
       const error = new Error(cached.errorMessage);
       error.code = cached.errorCode;
@@ -152,16 +159,92 @@ export async function trackOperation(label, work) {
 
 // ---- apiRequest ------------------------------------------------------------------------------
 // Extra options on top of fetch's own:
-//   label:  name shown in the progress bar while this request runs.
-//   dedupe: identical requests (same method + path + string body) made while one is still in
-//           flight share that one request, so a double click cannot send it twice. Removed as soon
-//           as it settles (success or failure); a finished result is never reused.
+//   label:     name shown in the progress bar while this request runs.
+//   dedupe:    (non-GET) identical requests (same method + path + string body) made while one is still
+//              in flight share that one request. Removed as soon as it settles; a finished result is
+//              never reused.
+//   supersede: (GET) a group name. A newer request in the same group drops an older one that is still
+//              WAITING in the queue (it rejects with AbortError). Already-running requests continue.
+//   priority:  (GET) skip the queue.
+//
+// GETs go through a small queue (MAX_CONCURRENT_GETS at a time) so a screen that asks for several
+// things does not hit the backend with a burst. Order for a GET: cache -> dedupe -> queue -> fetch.
+export const MAX_CONCURRENT_GETS = 2;
+const GET_TIMEOUT_MS = 90000; // covers a Render cold start; also frees the queue slot if a request hangs
+const PRIORITY_PREFIXES = ['/auth/', '/vendor/login', '/vendor/profile', '/health'];
+
+const getQueue = [];
+let runningGets = 0;
+const inFlightGets = new Map();
 const pendingDedupe = new Map();
 
+function abortError() {
+  const error = new Error('Request was replaced by a newer one.');
+  error.name = 'AbortError';
+  return error;
+}
+
+function finishGet() {
+  runningGets -= 1;
+  pumpGets();
+}
+
+function startGet(item) {
+  runningGets += 1;
+  // finally runs on success, error, abort and timeout alike, so a slot can never leak.
+  Promise.resolve().then(item.task).then(item.resolve, item.reject).finally(finishGet);
+}
+
+function pumpGets() {
+  while (runningGets < MAX_CONCURRENT_GETS && getQueue.length) startGet(getQueue.shift());
+}
+
+function enqueueGet(task, group) {
+  return new Promise((resolve, reject) => {
+    if (group) {
+      for (let index = getQueue.length - 1; index >= 0; index -= 1) {
+        if (getQueue[index].group === group) getQueue.splice(index, 1)[0].reject(abortError());
+      }
+    }
+    getQueue.push({ task, resolve, reject, group });
+    pumpGets();
+  });
+}
+
+function hasFreshCache(path) {
+  const cached = getCache.get(path) || readSharedCacheEntry(path);
+  return Boolean(cached && Date.now() - cached.time < cacheTtlFor(path));
+}
+
+function getRequest(path, fetchOptions, { supersede, priority }) {
+  const forced = Boolean(fetchOptions.forceRefresh);
+  // A cache hit needs no network, so it never waits in the queue.
+  if (!forced && hasFreshCache(path)) return apiRequestCore(path, fetchOptions);
+
+  // A forced refresh only shares with another forced refresh, never with a (possibly stale) normal one.
+  const key = `${forced ? 'F' : 'N'} ${path}`;
+  if (inFlightGets.has(key)) return inFlightGets.get(key);
+
+  const run = () => apiRequestCore(path, { signal: AbortSignal.timeout(GET_TIMEOUT_MS), ...fetchOptions }).catch((error) => {
+    if (error?.name === 'TimeoutError') throw new Error('The server took too long to respond. Try again.');
+    throw error;
+  });
+  const skipQueue = priority || PRIORITY_PREFIXES.some((prefix) => path.startsWith(prefix));
+  const promise = skipQueue ? run() : enqueueGet(run, supersede);
+  inFlightGets.set(key, promise);
+  const clear = () => { if (inFlightGets.get(key) === promise) inFlightGets.delete(key); };
+  promise.then(clear, clear);
+  return promise;
+}
+
 export function apiRequest(path, options = {}) {
-  const { label, dedupe, ...rest } = options;
-  const start = () => (label ? trackOperation(label, () => apiRequestCore(path, rest)) : apiRequestCore(path, rest));
-  if (!dedupe || typeof rest.body !== 'string') return start();
+  const { label, dedupe, supersede, priority, ...rest } = options;
+  const isGet = (rest.method || 'GET').toUpperCase() === 'GET';
+  const start = () => {
+    const work = () => (isGet ? getRequest(path, rest, { supersede, priority }) : apiRequestCore(path, rest));
+    return label ? trackOperation(label, work) : work();
+  };
+  if (isGet || !dedupe || typeof rest.body !== 'string') return start();
 
   const key = `${(rest.method || 'GET').toUpperCase()} ${path} ${rest.body}`;
   if (pendingDedupe.has(key)) return pendingDedupe.get(key);

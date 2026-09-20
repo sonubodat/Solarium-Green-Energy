@@ -646,3 +646,11 @@ Authenticate using a login identifier or registered mobile number and password.
 - `422 QR_BATCH_TOO_LARGE`: a batch exceeds the per-template cap (300 pages for PDF artwork, 500 for PNG/JPG). `POST /api/admin/qr/print-batch` and `GET /api/admin/qr/print-batch/:jobId/pdf` return it.
 - `500 QR_PDF_GENERATION_FAILED`: PDF composition failed; the queue slot is released.
 - `POST /api/admin/qr/print-batch` with an `idempotency_key` that already exists (including a concurrent duplicate) returns `200 { job, duplicate: true }` for the existing job instead of an error.
+
+## Admin list size, summaries and caching
+
+- `limit` on `GET /api/admin/{vendors,leads,qr,scans,payouts,audit-logs,qr/print-jobs}` accepts up to **200** (API default 50, the Admin UI asks for 10 / 25 / 50 / 100 / 200 and defaults to 10; `201` clamps to 200; missing/invalid falls back to 50). `users` and `vendors/lookup` stay capped at 100.
+- `GET /api/admin/qr` now returns `summary: { total, assigned, unassigned, consistent }` for the **whole inventory**, ignoring the status/assignment filters and the page. `consistent` is `total === assigned + unassigned`; when false the numbers are returned as counted and a warning is logged. The request no longer performs a repair write.
+- `POST /api/admin/qr/repair-status` `{ dry_run?: boolean }` (admin, audit `QR_STATUS_REPAIRED`): counts ACTIVE codes with no open assignment (legacy rows) and, unless `dry_run`, sets them to UNASSIGNED. Returns `{ dry_run, affected }`.
+- `GET /api/admin/dashboard` keeps every existing field and adds `assignedQrCodes` (open-assignment count, the same relationship the QR table uses), `scanLinkedLeads` (leads with a scan) and `qrStatusMismatch`. `unassignedQrCodes` is still status-based.
+- Server-side cache (in process, cleared after **any** successful non-GET request anywhere in the API): dashboard counts 30 s, QR summary 20 s, template list 60 s. Public scans are GETs, so counts can lag by up to the TTL.

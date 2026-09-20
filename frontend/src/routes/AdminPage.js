@@ -7,6 +7,17 @@ import { SkeletonBlock } from '../components/Skeleton';
 import VendorPicker from '../components/VendorPicker';
 import './AdminPage.css';
 
+// Rows-per-page choices for the big tables. Default is 10. The choice lives only in React state, so
+// it survives moving between tables but resets to 10 on refresh or when the tab is closed.
+const PAGE_SIZE_OPTIONS = [10, 25, 50, 100, 200];
+const DEFAULT_PAGE_SIZE = 10;
+const PAGE_SIZE_RESOURCES = ['vendors', 'leads', 'qr', 'scans', 'payouts', 'audit-logs', 'print-history'];
+
+// All-time ratio for the dashboard: one decimal, "—" when there is nothing to divide by.
+function formatRatio(part, whole) {
+  return whole > 0 ? `${((part / whole) * 100).toFixed(1)}%` : '—';
+}
+
 const ICONS = {
   dashboard: 'M4 4h6v6H4V4Zm10 0h6v6h-6V4ZM4 14h6v6H4v-6Zm10 0h6v6h-6v-6Z',
   store: 'M4 10h16v10H4V10Zm2 0V6h12v4M3 10h18',
@@ -209,6 +220,10 @@ function AdminPage() {
   const vendorSearchRef = useRef('');
   const vendorSearchMounted = useRef(false);
   const adminLoadSeq = useRef(0);
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
+  const pageSizeRef = useRef(pageSize);
+  // Result of the QR inventory check (POST /admin/qr/repair-status with dry_run), if the admin ran it.
+  const [qrRepair, setQrRepair] = useState(null);
   const [qrStatus, setQrStatus] = useState('');
   const [qrAssignment, setQrAssignment] = useState('');
 
@@ -598,7 +613,8 @@ function AdminPage() {
         return;
       }
 
-      let query = `?page=${page}&limit=50`;
+      const limit = PAGE_SIZE_RESOURCES.includes(nextResource) ? pageSizeRef.current : 50;
+      let query = `?page=${page}&limit=${limit}`;
 
       if (nextResource === 'qr' && effectiveStatus) {
         query += `&status=${encodeURIComponent(effectiveStatus)}`;
@@ -613,10 +629,9 @@ function AdminPage() {
         const filterQuery = printHistoryQuery();
         // Templates power the filter dropdown; fetched here too so opening Print History
         // directly (without visiting QR Management first) still offers the full list.
-        const [data, templates] = await Promise.all([
-          apiRequest(`/admin/qr/print-jobs${query}${filterQuery ? `&${filterQuery}` : ''}`, { forceRefresh }),
-          apiRequest('/admin/qr/templates', { forceRefresh }),
-        ]);
+        // One after the other (templates are cached for minutes) rather than two at once.
+        const data = await apiRequest(`/admin/qr/print-jobs${query}${filterQuery ? `&${filterQuery}` : ''}`, { forceRefresh, supersede: 'admin-list' });
+        const templates = await apiRequest('/admin/qr/templates', { forceRefresh });
         if (!mountedRef.current || seq !== adminLoadSeq.current) return;
         setAdminPage(page);
         setExpandedPrintJob(null);
@@ -647,7 +662,7 @@ function AdminPage() {
         query += `&search=${encodeURIComponent(vendorSearchRef.current.trim())}`;
       }
 
-      const data = await apiRequest(`/admin/${nextResource}${query}`, { forceRefresh });
+      const data = await apiRequest(`/admin/${nextResource}${query}`, { forceRefresh, supersede: 'admin-list' });
 
       if (!mountedRef.current || seq !== adminLoadSeq.current) return;
 
@@ -669,6 +684,8 @@ function AdminPage() {
         }
       }
     } catch (error) {
+      // A newer load replaced this one while it was still queued: nothing to report.
+      if (error?.name === 'AbortError') return;
       if (seq === adminLoadSeq.current) {
         setMessage(error.message);
         setMessageType('error');
@@ -692,6 +709,37 @@ function AdminPage() {
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [vendorSearch]);
+
+  // Picking a new page size returns to page 1 and keeps the current search/filters (they are read
+  // from refs/state inside loadAdminResource).
+  function changePageSize(nextSize) {
+    if (!PAGE_SIZE_OPTIONS.includes(nextSize) || nextSize === pageSizeRef.current) return;
+    pageSizeRef.current = nextSize;
+    setPageSize(nextSize);
+    loadAdminResource(resource, 1);
+  }
+
+  // Inventory check: a dry run reports how many codes are marked Active without a Solar Mitra; only
+  // the explicit "Fix" step writes anything.
+  async function checkQrInventory(apply = false) {
+    setLoading(true);
+    try {
+      const result = await apiRequest('/admin/qr/repair-status', { method: 'POST', body: JSON.stringify({ dry_run: !apply }), label: 'Checking inventory' });
+      if (apply) {
+        setQrRepair(null);
+        setMessage(`${result.affected} QR code${result.affected === 1 ? '' : 's'} fixed.`);
+        setMessageType('success');
+        await loadAdminResource('qr', 1, undefined, undefined, true);
+      } else {
+        setQrRepair({ affected: result.affected });
+      }
+    } catch (error) {
+      setMessage(error.message);
+      setMessageType('error');
+    } finally {
+      setLoading(false);
+    }
+  }
 
   function navigate(nextResource) {
     setResource(nextResource);
@@ -1655,6 +1703,15 @@ function AdminPage() {
       ['Paid Commission', data.paidCommission ?? 0, 'money'],
     ];
 
+    const insights = [
+      ['QR assigned', formatRatio(data.assignedQrCodes ?? 0, data.totalQrCodes ?? 0), `${(data.assignedQrCodes ?? 0).toLocaleString()} of ${(data.totalQrCodes ?? 0).toLocaleString()} QR codes`],
+      ['Solar Mitras active', formatRatio(data.activeVendors ?? 0, data.totalVendors ?? 0), `${(data.activeVendors ?? 0).toLocaleString()} of ${(data.totalVendors ?? 0).toLocaleString()} (excludes deleted)`],
+      ['Leads qualified', formatRatio(data.qualifiedLeads ?? 0, data.totalLeads ?? 0), `${(data.qualifiedLeads ?? 0).toLocaleString()} of ${(data.totalLeads ?? 0).toLocaleString()} leads`],
+      ['Leads converted', formatRatio(data.convertedLeads ?? 0, data.totalLeads ?? 0), `${(data.convertedLeads ?? 0).toLocaleString()} of ${(data.totalLeads ?? 0).toLocaleString()} leads`],
+      ['Scan-to-lead', formatRatio(data.scanLinkedLeads ?? 0, data.totalScans ?? 0), `${(data.scanLinkedLeads ?? 0).toLocaleString()} leads from scans / ${(data.totalScans ?? 0).toLocaleString()} scans`],
+      ['Payouts settled', formatRatio(data.paidCommission ?? 0, (data.paidCommission ?? 0) + (data.pendingCommission ?? 0)), `${(data.paidCommission ?? 0).toLocaleString()} paid of ${((data.paidCommission ?? 0) + (data.pendingCommission ?? 0)).toLocaleString()} payouts (counts)`],
+    ];
+
     return (
       <div className="admin-dashboard">
         <div className="admin-section-heading">
@@ -1708,6 +1765,29 @@ function AdminPage() {
             </div>
           ))}
         </div>
+
+        <div className="admin-section-heading">
+          <div>
+            <span className="admin-eyebrow">ALL-TIME RATIOS</span>
+            <p>Counts over the whole history (no date range). Each ratio shows what it divides.</p>
+          </div>
+        </div>
+        <div className="admin-stat-grid">
+          {insights.map(([label, value, detail]) => (
+            <div className="admin-stat-card" key={label}>
+              <div>
+                <span>{label}</span>
+                <strong>{value}</strong>
+                <small>{detail}</small>
+              </div>
+            </div>
+          ))}
+        </div>
+        {data.qrStatusMismatch && (
+          <p className="admin-audit-capacity-note">
+            QR status and assignments disagree for some codes. Open QR management and run Check inventory.
+          </p>
+        )}
 
         <div className="admin-quick-grid">
           <button
@@ -2642,6 +2722,7 @@ function AdminPage() {
   function renderQrInventory() {
     const qrs = portalData?.data?.data || [];
     const qrTotal = portalData?.data?.pagination?.total || 0;
+    const qrSummary = portalData?.data?.summary;
     return (
       <div className="admin-resource">
         <div className="admin-resource-heading">
@@ -2687,11 +2768,20 @@ function AdminPage() {
           </div>
         )}
         <div className="admin-qr-overview">
-          <div className="admin-qr-overview-intro"><span className="admin-eyebrow">INVENTORY CONTROL</span><strong>{qrTotal.toLocaleString()} QR codes</strong><small>Assignment and print status at a glance.</small></div>
-          <div className="admin-qr-overview-stat"><span>Loaded page</span><strong>{qrs.length}</strong></div>
-          <div className="admin-qr-overview-stat warning"><span>Unassigned</span><strong>{qrs.filter((qr) => !qr.assignments?.[0]).length}</strong></div>
-          <div className="admin-qr-overview-stat success"><span>Assigned</span><strong>{qrs.filter((qr) => qr.assignments?.[0]).length}</strong></div>
+          <div className="admin-qr-overview-intro"><span className="admin-eyebrow">INVENTORY CONTROL</span><strong>{(qrSummary?.total ?? qrTotal).toLocaleString()} QR codes</strong><small>Assignment and print status at a glance.</small></div>
+          {qrSummary && <div className="admin-qr-overview-stat success"><span>Assigned</span><strong>{qrSummary.assigned.toLocaleString()}</strong></div>}
+          {qrSummary && <div className="admin-qr-overview-stat warning"><span>Unassigned</span><strong>{qrSummary.unassigned.toLocaleString()}</strong></div>}
+          <div className="admin-qr-overview-stat"><span>Showing</span><strong>{qrs.length.toLocaleString()} of {qrTotal.toLocaleString()}</strong></div>
         </div>
+        {qrSummary && qrSummary.consistent === false && (
+          <p className="admin-audit-capacity-note" role="alert">
+            Inventory check needed: assigned + unassigned does not add up to the total.{' '}
+            {qrRepair ? (qrRepair.affected > 0
+              ? <button type="button" className="admin-mini-button" disabled={loading} onClick={() => checkQrInventory(true)}>Fix {qrRepair.affected} code{qrRepair.affected === 1 ? '' : 's'}</button>
+              : 'Nothing to repair automatically; the counts need a manual look.')
+              : <button type="button" className="admin-mini-button" disabled={loading} onClick={() => checkQrInventory(false)}>Check inventory</button>}
+          </p>
+        )}
         <div className="admin-filter-bar">
           <div className="admin-filter"><Icon path={ICONS.filter} /><select value={qrStatus} onChange={(event) => { setQrStatus(event.target.value); loadAdminResource('qr', 1, event.target.value, qrAssignment); }}><option value="">All statuses</option><option value="ACTIVE">Active</option><option value="UNASSIGNED">Unassigned</option></select></div>
           <div className="admin-filter"><Icon path={ICONS.store} /><select value={qrAssignment} onChange={(event) => { setQrAssignment(event.target.value); loadAdminResource('qr', 1, qrStatus, event.target.value); }}><option value="">All assignments</option><option value="ASSIGNED">Assigned</option><option value="UNASSIGNED">Unassigned</option></select></div>
@@ -4719,6 +4809,21 @@ function AdminPage() {
             ? 'No records'
             : `Showing ${start}–${end} of ${total}`}
         </span>
+
+        {PAGE_SIZE_RESOURCES.includes(resource) && (
+          <label className="admin-page-size">
+            <span>Rows per page</span>
+            <select
+              value={pageSize}
+              disabled={loading}
+              onChange={(event) => changePageSize(Number(event.target.value))}
+            >
+              {PAGE_SIZE_OPTIONS.map((size) => (
+                <option key={size} value={size}>{size}</option>
+              ))}
+            </select>
+          </label>
+        )}
 
         <div>
           <button

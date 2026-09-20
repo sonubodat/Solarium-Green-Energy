@@ -8,6 +8,7 @@ import { adminRoutes } from './routes/admin.js';
 import { registrationRoutes } from './routes/registrations.js';
 import { notFoundHandler, errorHandler } from './middleware/errors.js';
 import { env } from './config/env.js';
+import { invalidateAfterWrites } from './lib/response-cache.js';
 
 export const app = express();
 
@@ -30,6 +31,8 @@ app.use((request, response, next) => {
 	return next();
 });
 app.use(express.json());
+// Any successful write anywhere clears the short-lived admin response cache.
+app.use('/api', invalidateAfterWrites);
 app.get(['/health', '/api/health'], (_request, response) => response.json({ success: true, status: 'ok' }));
 app.get('/v/:qrCode', (request, response) => response.redirect(`/api/public/qr/${encodeURIComponent(request.params.qrCode)}`));
 app.use('/api/public', publicRoutes);

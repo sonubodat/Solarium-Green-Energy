@@ -13,6 +13,9 @@ import { z } from 'zod';
 import { createQrArtworkUrl, createVendorDocumentUrl, removeQrArtwork, removeVendorDocument, uploadQrArtwork, uploadQrProof, uploadVendorPhoto, removeVendorPhoto, createVendorPhotoUrl } from '../services/vendor-documents.js';
 import { generateQrProof, generateQrTemplatePdf } from '../services/qr-proof.js';
 import { runHeavy } from '../lib/heavy-queue.js';
+import { cached, CACHE_KEYS } from '../lib/response-cache.js';
+import { pagination } from '../lib/pagination.js';
+import { computeDashboardCounts, computeQrSummary } from '../lib/admin-stats.js';
 import { QR_ARTWORK_MAX_BYTES, maxBatchPages, batchTooLargeError } from '../lib/qr-artwork-limits.js';
 import { artworkSizeWarning } from '../services/qr-artwork.js';
 import { vendorSearchWhere, normalizeSearchInput, pickerPagination, PICKER_VENDOR_SELECT } from '../lib/vendor-search.js';
@@ -89,12 +92,6 @@ const PROTECTED_DIRECT_VENDOR_LOGINS = new Set([COMPANY_IMPORT_VENDOR_LOGIN, GEN
 
 function isProtectedDirectVendor(vendor) {
 	return PROTECTED_DIRECT_VENDOR_LOGINS.has(vendor.loginIdentifier);
-}
-
-function pagination(query) {
-	const page = Math.max(Number.parseInt(query.page, 10) || 1, 1);
-	const limit = Math.min(Math.max(Number.parseInt(query.limit, 10) || 50, 1), 100);
-	return { page, limit, skip: (page - 1) * limit };
 }
 
 async function writeAudit(transaction, request, action, entity, entityId, metadata = {}) {
@@ -204,52 +201,11 @@ async function ensureActiveAdminRemains(transaction, userId, changes) {
 // safe to run concurrently. Was sequential (~2.0s); now ~0.87s measured. See progress.md.
 adminRoutes.get('/dashboard', requireAuth, requireAdmin, async (request, response, next) => {
 	try {
-		const [
-			totalVendors,
-			activeVendors,
-			totalQrCodes,
-			unassignedQrCodes,
-			totalScans,
-			uniqueCustomers,
-			totalLeads,
-			qualifiedLeads,
-			convertedLeads,
-			// Counts only — no amount/percentage is calculated anywhere, matching plan.md's rule
-			// against commission calculation. This is the same kind of plain operational count as
-			// every other tile on this dashboard (Total Leads, Qualified Leads, etc.), not a KPI.
-			pendingCommission,
-			paidCommission,
-		] = await Promise.all([
-			prisma.vendor.count({ where: { status: { not: 'DELETED' } } }),
-			prisma.vendor.count({ where: { status: 'ACTIVE' } }),
-			prisma.qrCode.count(),
-			prisma.qrCode.count({ where: { status: 'UNASSIGNED' } }),
-			prisma.scan.count(),
-			prisma.customerIdentity.count(),
-			prisma.lead.count(),
-			prisma.lead.count({ where: { status: 'QUALIFIED' } }),
-			prisma.lead.count({ where: { status: 'CONVERTED' } }),
-			prisma.payout.count({ where: { status: { in: ['UNPAID', 'PARTIAL'] } } }),
-			prisma.payout.count({ where: { status: 'PAID' } }),
-		]);
-
+		// Grouped counts run one after another (lib/admin-stats.js) and are cached for 30 s; any
+		// successful write clears the cache. Retention is checked live, as before.
+		const counts = await cached(CACHE_KEYS.dashboard, 30000, () => computeDashboardCounts(prisma));
 		const retention = await checkAuditLogRetention(prisma);
-
-		return response.json({
-			success: true,
-			totalVendors,
-			activeVendors,
-			totalQrCodes,
-			unassignedQrCodes,
-			totalScans,
-			uniqueCustomers,
-			totalLeads,
-			qualifiedLeads,
-			convertedLeads,
-			pendingCommission,
-			paidCommission,
-			retention,
-		});
+		return response.json({ success: true, ...counts, retention });
 	} catch (error) {
 		return next(error);
 	}
@@ -890,18 +846,13 @@ const qrArtworkUpload = multer({ storage: multer.memoryStorage(), limits: { file
 
 adminRoutes.get('/qr', requireAuth, requireAdmin, async (request, response, next) => {
 	try {
-		// A vendor purge can remove the final assignment; repair any legacy ACTIVE rows
-		// before applying filters so inventory status matches the current relationship state.
-		await prisma.qrCode.updateMany({
-			where: { status: 'ACTIVE', assignments: { none: { unassignedAt: null } } },
-			data: { status: 'UNASSIGNED' },
-		});
+		// No table-wide repair write here any more: a GET must not write. Legacy ACTIVE-without-assignment
+		// rows are fixed on demand by POST /qr/repair-status; new ones cannot be created (purge resets status).
 		const { status, assignment } = qrListFilterSchema.parse({
 			status: request.query.status || undefined,
 			assignment: request.query.assignment || undefined,
 		});
-		const page = Math.max(Number.parseInt(request.query.page, 10) || 1, 1);
-		const limit = Math.min(Math.max(Number.parseInt(request.query.limit, 10) || 50, 1), 100);
+		const { page, limit } = pagination(request.query, 200);
 		const where = {
 			...(status ? { status } : {}),
 			...(assignment === 'ASSIGNED' ? { assignments: { some: { unassignedAt: null } } } : {}),
@@ -935,7 +886,29 @@ adminRoutes.get('/qr', requireAuth, requireAdmin, async (request, response, next
 			}
 		}
 		const data = qrCodes.map((qr) => ({ ...qr, latestPrint: latestByQrCode.get(qr.id) || null }));
-		return response.json({ success: true, data, pagination: { page, limit, total } });
+		// Whole-inventory numbers (ignore the filters/page above), cached briefly.
+		const summary = await cached(CACHE_KEYS.qrSummary, 20000, () => computeQrSummary(prisma));
+		return response.json({ success: true, data, pagination: { page, limit, total }, summary });
+	} catch (error) {
+		return next(error);
+	}
+});
+
+// Explicit, admin-triggered fix for legacy rows: an ACTIVE code that has no open assignment
+// (left over from before vendor purge reset the status). dry_run only reports the count.
+adminRoutes.post('/qr/repair-status', requireAuth, requireAdmin, async (request, response, next) => {
+	try {
+		const { dry_run: dryRun = false } = z.object({ dry_run: z.boolean().optional() }).parse(request.body ?? {});
+		const where = { status: 'ACTIVE', assignments: { none: { unassignedAt: null } } };
+		const affected = await prisma.$transaction(async (transaction) => {
+			const count = await transaction.qrCode.count({ where });
+			if (dryRun || count === 0) return count;
+			await transaction.qrCode.updateMany({ where, data: { status: 'UNASSIGNED' } });
+			await writeAudit(transaction, request, 'QR_STATUS_REPAIRED', 'QrCode', 'inventory', { affected: count });
+			return count;
+		});
+		console.log(`[QrRepair] ${dryRun ? 'dry run' : 'repaired'}: ${affected} code(s)`);
+		return response.json({ success: true, dry_run: dryRun, affected });
 	} catch (error) {
 		return next(error);
 	}
@@ -963,35 +936,39 @@ adminRoutes.post('/qr/generate', requireAuth, requireAdmin, async (request, resp
 
 adminRoutes.get('/qr/templates', requireAuth, requireAdmin, async (request, response, next) => {
 	try {
-		const templates = await prisma.qrPrintTemplate.findMany({
-			orderBy: { createdAt: 'desc' },
-			include: {
-				createdBy: { select: { id: true, name: true, role: true } },
-				// Surfaced as printJobCount below so the admin can "check by template" before
-				// deciding whether Delete (safe, unused) or Archive (has history) applies.
-				_count: { select: { printJobs: true } },
-			},
-		});
-		// Split by kind in one grouped query so the usage label can say which prints exist
-		// ("2 batches, 5 single prints") rather than an unexplained total.
-		const kindCounts = await prisma.qrPrintJob.groupBy({ by: ['templateId', 'kind'], _count: { _all: true } });
-		const countsByTemplate = new Map();
-		for (const row of kindCounts) {
-			const entry = countsByTemplate.get(row.templateId) || { batch: 0, single: 0 };
-			entry[row.kind === 'SINGLE' ? 'single' : 'batch'] += row._count._all;
-			countsByTemplate.set(row.templateId, entry);
-		}
-		const templatesWithArtwork = await Promise.all(templates.map(async ({ _count, ...template }) => ({
-			...template,
-			printJobCount: _count.printJobs,
-			printJobCounts: countsByTemplate.get(template.id) || { batch: 0, single: 0 },
-			artworkUrl: await createQrArtworkUrl(template.artworkPath),
-		})));
-		return response.json({ success: true, templates: templatesWithArtwork });
+		return response.json(await cached(CACHE_KEYS.qrTemplates, 60000, () => buildTemplatesResponse()));
 	} catch (error) {
 		return next(error);
 	}
 });
+
+async function buildTemplatesResponse() {
+	const templates = await prisma.qrPrintTemplate.findMany({
+		orderBy: { createdAt: 'desc' },
+		include: {
+			createdBy: { select: { id: true, name: true, role: true } },
+			// Surfaced as printJobCount below so the admin can "check by template" before
+			// deciding whether Delete (safe, unused) or Archive (has history) applies.
+			_count: { select: { printJobs: true } },
+		},
+	});
+	// Split by kind in one grouped query so the usage label can say which prints exist
+	// ("2 batches, 5 single prints") rather than an unexplained total.
+	const kindCounts = await prisma.qrPrintJob.groupBy({ by: ['templateId', 'kind'], _count: { _all: true } });
+	const countsByTemplate = new Map();
+	for (const row of kindCounts) {
+		const entry = countsByTemplate.get(row.templateId) || { batch: 0, single: 0 };
+		entry[row.kind === 'SINGLE' ? 'single' : 'batch'] += row._count._all;
+		countsByTemplate.set(row.templateId, entry);
+	}
+	const templatesWithArtwork = await Promise.all(templates.map(async ({ _count, ...template }) => ({
+		...template,
+		printJobCount: _count.printJobs,
+		printJobCounts: countsByTemplate.get(template.id) || { batch: 0, single: 0 },
+		artworkUrl: await createQrArtworkUrl(template.artworkPath),
+	})));
+	return { success: true, templates: templatesWithArtwork };
+}
 
 adminRoutes.post('/qr/templates', requireAuth, requireAdmin, qrArtworkUpload.single('artwork'), async (request, response, next) => {
 	let uploadedArtwork = null;
@@ -1205,7 +1182,7 @@ function currentVendorOf(qrCode) {
 
 adminRoutes.get('/qr/print-jobs', requireAuth, requireAdmin, async (request, response, next) => {
 	try {
-		const { page, limit, skip } = pagination(request.query);
+		const { page, limit, skip } = pagination(request.query, 200);
 		const where = printJobWhere(request.query);
 		const [jobs, total] = await Promise.all([
 			prisma.qrPrintJob.findMany({
@@ -2081,7 +2058,7 @@ adminRoutes.get('/qr/pdf', requireAuth, requireAdmin, async (request, response, 
 
 adminRoutes.get('/vendors', requireAuth, requireAdmin, async (request, response, next) => {
 	try {
-		const { page, limit, skip } = pagination(request.query);
+		const { page, limit, skip } = pagination(request.query, 200);
 		const search = vendorSearchWhere(request.query.search);
 		// An exact vendor id also matches, so an id copied from Print History or an audit log
 		// still finds its Solar Mitra (the previous client-side filter matched ids too).
@@ -2128,7 +2105,7 @@ adminRoutes.get('/vendors', requireAuth, requireAdmin, async (request, response,
 
 adminRoutes.get('/leads', requireAuth, requireAdmin, async (request, response, next) => {
 	try {
-		const { page, limit, skip } = pagination(request.query);
+		const { page, limit, skip } = pagination(request.query, 200);
 		const [leads, total] = await Promise.all([
 			prisma.lead.findMany({
 				orderBy: { createdAt: 'desc' },
@@ -2388,7 +2365,7 @@ adminRoutes.post('/leads/import', requireAuth, requireAdmin, csvUpload.single('f
 
 adminRoutes.get('/scans', requireAuth, requireAdmin, async (request, response, next) => {
 	try {
-		const { page, limit, skip } = pagination(request.query);
+		const { page, limit, skip } = pagination(request.query, 200);
 		const [scans, total] = await Promise.all([
 			prisma.scan.findMany({
 				orderBy: { createdAt: 'desc' },
@@ -2406,7 +2383,7 @@ adminRoutes.get('/scans', requireAuth, requireAdmin, async (request, response, n
 
 adminRoutes.get('/payouts', requireAuth, requireAdmin, async (request, response, next) => {
 	try {
-		const { page, limit, skip } = pagination(request.query);
+		const { page, limit, skip } = pagination(request.query, 200);
 		const [payouts, total] = await Promise.all([
 			prisma.payout.findMany({ orderBy: { createdAt: 'desc' }, skip, take: limit, include: { vendor: { select: { id: true, businessName: true } }, lead: { select: { customerName: true, status: true } } } }),
 			prisma.payout.count(),
@@ -2422,7 +2399,7 @@ adminRoutes.get('/audit-logs', requireAuth, requireAdmin, async (request, respon
 		// Run retention first so, if it trims anything, the list/count below already
 		// reflects the post-cleanup state rather than momentarily showing stale rows.
 		const retention = await checkAuditLogRetention(prisma);
-		const { page, limit, skip } = pagination(request.query);
+		const { page, limit, skip } = pagination(request.query, 200);
 		const [auditLogs, total] = await Promise.all([
 			prisma.auditLog.findMany({ orderBy: { timestamp: 'desc' }, skip, take: limit, include: { actor: { select: { name: true } } } }),
 			prisma.auditLog.count(),

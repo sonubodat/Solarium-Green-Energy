@@ -529,6 +529,8 @@
   padding: 0 13px;
   border: 0;
   border-radius: 6px;
+  line-height: 1;
+  white-space: nowrap;
   color: var(--vendor-muted);
   background: transparent;
   cursor: pointer;
@@ -546,6 +548,8 @@
 }
 
 .vendor-tabs svg {
+  display: block;
+  flex: 0 0 15px;
   width: 15px;
   height: 15px;
 }
@@ -668,20 +672,29 @@
   min-width: 0;
 }
 
-.vendor-stat-icon {
+/* `.vendor-stat-card span` (display:block, margin-top, font-size) is more specific than a bare
+   `.vendor-stat-icon`, which turned this wrapper into a plain block and left the icon in its
+   top-left corner. The parent-qualified selector wins and restores the centering. */
+.vendor-stat-card .vendor-stat-icon {
   width: 43px;
   height: 43px;
-  display: grid;
-  place-items: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   flex: 0 0 43px;
+  margin: 0;
   border-radius: 10px;
   color: var(--vendor-blue);
   background: var(--vendor-blue-light);
+  font-size: 0;
+  line-height: 1;
 }
 
-.vendor-stat-icon svg {
-  width: 20px;
-  height: 20px;
+.vendor-stat-card .vendor-stat-icon svg {
+  display: block;
+  flex: none;
+  width: 47%;
+  height: 47%;
 }
 
 .vendor-stat-card small,
@@ -946,20 +959,25 @@
   background: var(--vendor-green-bg);
 }
 
-.vendor-account-check {
+.vendor-account-status .vendor-account-check {
   width: 30px;
   height: 30px;
-  display: grid;
-  place-items: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   flex: 0 0 30px;
   border-radius: 50%;
   color: var(--vendor-green);
   background: #fff;
+  font-size: 0;
+  line-height: 1;
 }
 
-.vendor-account-check svg {
-  width: 15px;
-  height: 15px;
+.vendor-account-status .vendor-account-check svg {
+  display: block;
+  flex: none;
+  width: 50%;
+  height: 50%;
 }
 
 .vendor-account-status strong,
@@ -1022,20 +1040,25 @@
   padding: 70px 20px;
 }
 
-.vendor-empty-icon {
+.vendor-empty .vendor-empty-icon {
   width: 43px;
   height: 43px;
   margin: 0 auto 12px;
-  display: grid;
-  place-items: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   border-radius: 50%;
   color: var(--vendor-blue);
   background: var(--vendor-blue-light);
+  font-size: 0;
+  line-height: 1;
 }
 
-.vendor-empty-icon svg {
-  width: 20px;
-  height: 20px;
+.vendor-empty .vendor-empty-icon svg {
+  display: block;
+  flex: none;
+  width: 47%;
+  height: 47%;
 }
 
 .vendor-empty strong {

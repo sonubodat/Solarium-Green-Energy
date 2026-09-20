@@ -37,6 +37,19 @@ const ICONS = {
   target: 'M12 2v3m0 14v3M2 12h3m14 0h3M12 16a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z',
 };
 
+// "18.5204, 73.8567" (also space-separated, e.g. pasted from Google Maps) -> { latitude, longitude }.
+function parseCoordsText(text) {
+  const parts = String(text).trim().split(/[,\s]+/).filter(Boolean);
+  const [latitude, longitude] = parts.map(Number);
+  if (parts.length !== 2 || !Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+    throw new Error('Enter coordinates as "latitude, longitude", e.g. 18.5204, 73.8567.');
+  }
+  if (latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180) {
+    throw new Error('Latitude must be between -90 and 90, longitude between -180 and 180.');
+  }
+  return { latitude, longitude };
+}
+
 function Icon({ path, className = '' }) {
   return (
     <svg
@@ -177,6 +190,8 @@ function SalesPage() {
   const [newVendorLocation, setNewVendorLocation] = useState(null);
   const [locatingVendor, setLocatingVendor] = useState(false);
   const [vendorLocationError, setVendorLocationError] = useState('');
+  // Typed/pasted alternative to the GPS button (same idea as Admin's coordinates field).
+  const [coordsText, setCoordsText] = useState('');
   const [shopPhotoFile, setShopPhotoFile] = useState(null);
   const [qrPlacementPhotoFile, setQrPlacementPhotoFile] = useState(null);
   const [shopPhotoPreview, setShopPhotoPreview] = useState('');
@@ -310,6 +325,18 @@ function SalesPage() {
   // Being physically at the shop is the whole point of a Solar Mitra geo-tag, so
   // enableHighAccuracy is on here (unlike the public enquiry page's rougher "which city"
   // need) — Sales is standing there and precision is worth the extra GPS settle time.
+  // Uses typed/pasted coordinates instead of GPS; no accuracy value exists for these, so none is sent.
+  function applyCoordsText() {
+    try {
+      const { latitude, longitude } = parseCoordsText(coordsText);
+      setNewVendorLocation({ latitude, longitude, capturedAt: new Date().toISOString() });
+      setVendorLocationError('');
+    } catch (error) {
+      setNewVendorLocation(null);
+      setVendorLocationError(error.message);
+    }
+  }
+
   function captureVendorLocation() {
     if (!navigator.geolocation) {
       setVendorLocationError('Location is not available on this device.');
@@ -321,6 +348,7 @@ function SalesPage() {
       (position) => {
         const { latitude, longitude, accuracy } = position.coords;
         setNewVendorLocation({ latitude, longitude, accuracy, capturedAt: new Date(position.timestamp).toISOString() });
+        setCoordsText(`${latitude.toFixed(6)}, ${longitude.toFixed(6)}`);
         setLocatingVendor(false);
       },
       () => {
@@ -358,6 +386,7 @@ function SalesPage() {
   }
 
   function resetOnboardingCapture() {
+    setCoordsText('');
     setNewVendorLocation(null);
     setVendorLocationError('');
     setShopPhotoFile(null);
@@ -1081,6 +1110,17 @@ function SalesPage() {
                         {locatingVendor ? 'Detecting...' : newVendorLocation ? 'Location captured' : 'Capture shop location'}
                         {newVendorLocation && !locatingVendor && <Icon path={ICONS.check} className="sales-field-icon" />}
                       </button>
+                      <div className="sales-field-input">
+                        <input
+                          aria-label="Shop coordinates"
+                          inputMode="decimal"
+                          placeholder="Or paste coordinates: 18.5204, 73.8567"
+                          value={coordsText}
+                          onChange={(event) => { setCoordsText(event.target.value); setNewVendorLocation(null); }}
+                          onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); applyCoordsText(); } }}
+                        />
+                        <button type="button" className="sales-cancel-button" disabled={!coordsText.trim()} onClick={applyCoordsText}>Use</button>
+                      </div>
                       {vendorLocationError && <small className="sales-field-error">{vendorLocationError}</small>}
                     </div>
 
@@ -1178,6 +1218,17 @@ function SalesPage() {
                         <Icon path={ICONS.target} className="sales-field-icon" />
                         {locatingVendor ? 'Detecting...' : newVendorLocation ? 'Location captured' : 'Capture shop location'}
                       </button>
+                      <div className="sales-field-input">
+                        <input
+                          aria-label="Shop coordinates"
+                          inputMode="decimal"
+                          placeholder="Or paste coordinates: 18.5204, 73.8567"
+                          value={coordsText}
+                          onChange={(event) => { setCoordsText(event.target.value); setNewVendorLocation(null); }}
+                          onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); applyCoordsText(); } }}
+                        />
+                        <button type="button" className="sales-cancel-button" disabled={!coordsText.trim() || !completeVendorId} onClick={applyCoordsText}>Use</button>
+                      </div>
                       {vendorLocationError && <small className="sales-field-error">{vendorLocationError}</small>}
                       {newVendorLocation && (
                         <button type="button" className="sales-primary-button" disabled={loading} onClick={completeOnboardingLocation}>

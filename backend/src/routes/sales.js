@@ -305,7 +305,6 @@ salesRoutes.post('/vendors/:vendorId/photos/:photoType', requireAuth, requireSal
 	}
 });
 
-salesRoutes.use((_request, response) => response.status(501).json({ success: false, error: { code: 'NOT_IMPLEMENTED', message: 'Sales route is scaffolded but not implemented.' } }));
 
 // Sales fills bank details on the Solar Mitra's behalf (same fields and 200 KB documents as the
 // vendor's own form, stored in the same VendorBankDetails row). Same ownership rule as above.
@@ -395,3 +394,6 @@ salesRoutes.post('/vendors/:vendorId/bank-details/:documentType', requireAuth, r
 		return next(error);
 	}
 });
+
+// Must stay LAST: anything registered after this never matches.
+salesRoutes.use((_request, response) => response.status(501).json({ success: false, error: { code: 'NOT_IMPLEMENTED', message: 'Sales route is scaffolded but not implemented.' } }));
