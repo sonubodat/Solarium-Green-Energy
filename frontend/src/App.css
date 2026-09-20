@@ -97,3 +97,20 @@ h1 { font-family: Georgia, 'Times New Roman', serif; font-size: clamp(2.7rem, 6v
 .qr-scanner-manual-form button:disabled { cursor: not-allowed; opacity: .5; }
 .qr-scanner-manual-error { color: #b3413a; font-size: .78rem; margin: .5rem 1rem 0; }
 .qr-scanner-hint { color: #718078; font-size: .78rem; margin: 0; padding: .75rem 1rem; text-align: center; }
+
+.wake-button {
+  position: fixed;
+  top: 6px;
+  right: 6px;
+  z-index: 2000;
+  padding: 2px 8px;
+  font: 600 11px/1.4 system-ui, sans-serif;
+  color: #334155;
+  background: rgba(255, 255, 255, 0.9);
+  border: 1px solid #cbd5e1;
+  border-radius: 999px;
+  cursor: pointer;
+  opacity: 0.75;
+}
+.wake-button:hover:not(:disabled) { opacity: 1; }
+.wake-button:disabled { cursor: progress; }

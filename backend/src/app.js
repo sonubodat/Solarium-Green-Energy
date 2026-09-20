@@ -30,7 +30,7 @@ app.use((request, response, next) => {
 	return next();
 });
 app.use(express.json());
-app.get('/health', (_request, response) => response.json({ success: true, status: 'ok' }));
+app.get(['/health', '/api/health'], (_request, response) => response.json({ success: true, status: 'ok' }));
 app.get('/v/:qrCode', (request, response) => response.redirect(`/api/public/qr/${encodeURIComponent(request.params.qrCode)}`));
 app.use('/api/public', publicRoutes);
 app.use('/api/vendors', registrationRoutes);
