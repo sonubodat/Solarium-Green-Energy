@@ -300,6 +300,8 @@ function AdminPage() {
   const [expandedPrintJob, setExpandedPrintJob] = useState(null);
   const [confirmDeleteLeadId, setConfirmDeleteLeadId] = useState(null);
   const [detailBank, setDetailBank] = useState(null);
+  // Full Solar Mitra "Details" view: profile row + bank details + onboarding location/photos, fetched together.
+  const [detailVendor, setDetailVendor] = useState(null);
   const [detailAuditLog, setDetailAuditLog] = useState(null);
   const [expandedVendorGroups, setExpandedVendorGroups] = useState({});
   const [expandedCommissionGroups, setExpandedCommissionGroups] = useState({});
@@ -2183,6 +2185,13 @@ function AdminPage() {
                           </>
                         ) : (
                           <>
+                            <button
+                              className="admin-mini-button"
+                              onClick={() => viewVendorDetails(vendor)}
+                            >
+                              Details
+                            </button>
+
                             <button
                               className="admin-mini-button"
                               onClick={() =>
@@ -4104,6 +4113,86 @@ function AdminPage() {
     );
   }
 
+  async function viewVendorDetails(vendor) {
+    setDetailVendor({ vendor, loading: true, bank: null, media: null, error: '' });
+    try {
+      const [bank, media] = await Promise.all([
+        apiRequest(`/admin/vendors/${vendor.id}/bank-details`, { forceRefresh: true }),
+        apiRequest(`/admin/vendors/${vendor.id}/onboarding-media`, { forceRefresh: true }),
+      ]);
+      setDetailVendor((current) => (current?.vendor.id === vendor.id ? { vendor, loading: false, bank: bank.bank_details, media: media.onboarding_media, error: '' } : current));
+    } catch (error) {
+      setDetailVendor((current) => (current?.vendor.id === vendor.id ? { ...current, loading: false, error: error.message } : current));
+    }
+  }
+
+  function renderVendorDetailsModal() {
+    const { vendor, loading: detailLoading, bank, media, error } = detailVendor;
+    const dash = (value) => (value === null || value === undefined || value === '' ? '—' : value);
+    return (
+      <div className="admin-modal-overlay" onClick={() => setDetailVendor(null)}>
+        <div className="admin-modal" role="dialog" aria-modal="true" aria-label="Solar Mitra details" onClick={(event) => event.stopPropagation()}>
+          <div className="admin-modal-header">
+            <div>
+              <span className="admin-eyebrow">SOLAR MITRA DETAILS</span>
+              <h2>{vendor.businessName}</h2>
+            </div>
+            <button className="admin-mini-button" onClick={() => setDetailVendor(null)} aria-label="Close"><Icon path={ICONS.close} /></button>
+          </div>
+          <div className="admin-modal-body">
+            <h3>Profile</h3>
+            <dl className="admin-modal-fields">
+              <dt>Business name</dt><dd>{dash(vendor.businessName)}</dd>
+              <dt>Owner</dt><dd>{dash(vendor.ownerName)}</dd>
+              <dt>Phone number</dt><dd>{dash(vendor.mobileNumber)}</dd>
+              <dt>Login ID</dt><dd>{dash(vendor.loginIdentifier)}</dd>
+              <dt>Status</dt><dd>{dash(vendor.status)}</dd>
+              <dt>Current QR</dt><dd>{dash(vendor.currentQr)}</dd>
+              <dt>Leads</dt><dd>{vendor.leadCount ?? 0}</dd>
+              <dt>Created</dt><dd>{vendor.createdAt ? new Date(vendor.createdAt).toLocaleString() : '—'}</dd>
+            </dl>
+            {detailLoading && <p>Loading bank details and location…</p>}
+            {error && <p className="admin-scan-assign-blocked" role="alert">{error}</p>}
+            {!detailLoading && !error && (
+              <>
+                <h3>Bank details</h3>
+                {bank ? (
+                  <>
+                    <dl className="admin-modal-fields">
+                      <dt>UPI number</dt><dd>{dash(bank.upiNumber)}</dd>
+                      <dt>UPI ID</dt><dd>{dash(bank.upiId)}</dd>
+                      <dt>Account holder</dt><dd>{dash(bank.accountHolderName)}</dd>
+                      <dt>Account number</dt><dd>{dash(bank.accountNumber)}</dd>
+                      <dt>IFSC code</dt><dd>{dash(bank.ifscCode)}</dd>
+                    </dl>
+                    <div className="admin-row-actions">
+                      {bank.passbookUrl && <a className="admin-mini-button" href={bank.passbookUrl} target="_blank" rel="noreferrer">Open passbook</a>}
+                      {bank.chequeUrl && <a className="admin-mini-button" href={bank.chequeUrl} target="_blank" rel="noreferrer">Open cancelled cheque</a>}
+                    </div>
+                  </>
+                ) : <p className="admin-scan-assign-blocked">No bank details submitted yet.</p>}
+                <h3>Shop location and photos</h3>
+                {media ? (
+                  <>
+                    <dl className="admin-modal-fields">
+                      <dt>Location</dt>
+                      <dd>{media.latitude !== null && media.latitude !== undefined ? <a href={`https://www.google.com/maps?q=${media.latitude},${media.longitude}`} target="_blank" rel="noreferrer">{media.latitude}, {media.longitude}</a> : '—'}</dd>
+                      <dt>Captured</dt><dd>{media.capturedAt ? new Date(media.capturedAt).toLocaleString() : '—'}</dd>
+                    </dl>
+                    <div className="admin-row-actions">
+                      {media.shopPhotoUrl && <a className="admin-mini-button" href={media.shopPhotoUrl} target="_blank" rel="noreferrer">Open shop photo</a>}
+                      {media.qrPlacementPhotoUrl && <a className="admin-mini-button" href={media.qrPlacementPhotoUrl} target="_blank" rel="noreferrer">Open QR placement photo</a>}
+                    </div>
+                  </>
+                ) : <p className="admin-scan-assign-blocked">No location or photos added yet.</p>}
+              </>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   function renderBankDetailsModal() {
     const details = detailBank.details;
     return (
@@ -5054,6 +5143,7 @@ function AdminPage() {
         {detailLead && renderLeadDetailModal()}
         {qrPrintHistory && renderQrPrintHistoryModal()}
         {detailBank && renderBankDetailsModal()}
+        {detailVendor && renderVendorDetailsModal()}
         {detailOnboardingMedia && renderOnboardingMediaModal()}
         {detailAuditLog && renderAuditLogDetailModal()}
         {deletionResult && renderDeletionResultModal()}

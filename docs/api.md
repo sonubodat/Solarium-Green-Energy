@@ -590,6 +590,7 @@ Authenticate using a login identifier or registered mobile number and password.
 
 - Authentication: public
 - Rules: create a server-managed Vendor session. A Vendor created without a password (Admin create, Sales create/onboard, or bulk rows with a blank password) signs in with their **phone number** as the password. A legacy Vendor with no stored password can also sign in with the phone number; it is hashed and stored on first use.
+- Login lookup: every ACTIVE Vendor matching the identifier (login ID or mobile number, also `+91`/spaced phone forms) is tried and the first whose password matches signs in, because `mobile_number` is not unique and old/test/deleted Vendors can share a phone. Typing the phone with `+91`/spaces also works while the password is still the phone number.
 - Changing the password is **optional**: `must_change_password = true` now only means "still on the default password" (used by the portal to show a dismissible hint). It no longer blocks any Vendor route, and `PASSWORD_CHANGE_REQUIRED` is no longer returned (`requireVendorReady` only checks the Vendor role).
 - When Admin edits a Vendor's mobile number without setting a password, the password follows the new number only if it is still the old phone number; a password the Vendor or Admin chose is never changed.
 - Security: requests are rate-limited per client IP and invalid credentials use a generic response

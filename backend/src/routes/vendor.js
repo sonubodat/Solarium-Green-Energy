@@ -1,4 +1,3 @@
-import { createHash, timingSafeEqual } from 'node:crypto';
 import { Router } from 'express';
 import multer from 'multer';
 import { z } from 'zod';
@@ -8,6 +7,7 @@ import { authRateLimit } from '../middleware/rate-limit.js';
 import {
 	clearSessionCookie,
 	createVendorSession,
+	checkVendorPassword,
 	defaultVendorPassword,
 	hashPassword,
 	normalizeLoginIdentifier,
@@ -54,18 +54,34 @@ vendorRoutes.post('/login', authRateLimit, async (request, response, next) => {
 	try {
 		const input = loginSchema.parse(request.body);
 		const identifier = normalizeLoginIdentifier(input.login_identifier);
-		const vendor = await prisma.vendor.findFirst({
-			where: { OR: [{ loginIdentifier: identifier }, { mobileNumber: input.login_identifier.trim() }] },
+		const typed = input.login_identifier.trim();
+		const digits = defaultVendorPassword(typed);
+		const phoneLike = digits.length === 10 && /^[+\d\s-]+$/.test(typed);
+		// mobile_number is not unique and old/test/deleted vendors can share a phone, so every ACTIVE
+		// vendor matching this identifier is tried and the first whose password matches signs in.
+		const candidates = await prisma.vendor.findMany({
+			where: {
+				status: 'ACTIVE',
+				OR: [{ loginIdentifier: identifier }, { mobileNumber: typed }, ...(phoneLike ? [{ mobileNumber: digits }, { loginIdentifier: digits }] : [])],
+			},
+			orderBy: { createdAt: 'desc' },
+			take: 5,
 		});
 
-		if (!vendor || vendor.status !== 'ACTIVE') return next(invalidCredentials());
-		if (vendor.passwordHash) {
-			if (!(await verifyPassword(input.password, vendor.passwordHash))) return next(invalidCredentials());
-		} else {
-			// No password was ever set: the phone number is the password. Store it on first use.
-			const expected = createHash('sha256').update(defaultVendorPassword(vendor.mobileNumber)).digest();
-			const actual = createHash('sha256').update(input.password.trim()).digest();
-			if (!defaultVendorPassword(vendor.mobileNumber) || !timingSafeEqual(expected, actual)) return next(invalidCredentials());
+		let vendor = null;
+		let needsHash = false;
+		for (const candidate of candidates) {
+			// eslint-disable-next-line no-await-in-loop
+			const result = await checkVendorPassword(candidate, input.password);
+			if (result.ok) {
+				vendor = candidate;
+				needsHash = result.needsHash;
+				break;
+			}
+		}
+		if (!vendor) return next(invalidCredentials());
+		// No password was ever set: the phone number was the password. Store it now.
+		if (needsHash) {
 			await prisma.vendor.updateMany({ where: { id: vendor.id, passwordHash: null }, data: { passwordHash: await hashPassword(defaultVendorPassword(vendor.mobileNumber)) } });
 		}
 

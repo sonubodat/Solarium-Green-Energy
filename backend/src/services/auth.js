@@ -57,6 +57,23 @@ export function defaultVendorPassword(phone) {
   return String(phone ?? '').replace(/\D/g, '').slice(-10);
 }
 
+// Vendor password check. A stored hash is verified as-is, and also against the 10-digit form of
+// what was typed, so "+91 98765 43210" still works while the password is the phone number.
+// A vendor with no stored password uses the phone number. Returns { ok, needsHash }.
+export async function checkVendorPassword(vendor, typed) {
+  const password = String(typed ?? '');
+  const phone = defaultVendorPassword(vendor.mobileNumber);
+  if (vendor.passwordHash) {
+    if (await verifyPassword(password, vendor.passwordHash)) return { ok: true, needsHash: false };
+    const typedPhone = defaultVendorPassword(password);
+    const looksLikePhone = typedPhone.length === 10 && typedPhone !== password && /^[+\d\s-]+$/.test(password.trim());
+    return { ok: looksLikePhone && await verifyPassword(typedPhone, vendor.passwordHash), needsHash: false };
+  }
+  const a = createHash('sha256').update(phone).digest();
+  const b = createHash('sha256').update(defaultVendorPassword(password) === phone ? phone : password.trim()).digest();
+  return { ok: phone.length > 0 && timingSafeEqual(a, b), needsHash: true };
+}
+
 export function createSessionToken() {
   return randomBytes(32).toString('base64url');
 }
