@@ -80,7 +80,7 @@ A print batch must:
 - never create missing QR records;
 - snapshot the exact ordered QR list and published template version;
 - prevent duplicate batches with an idempotency key;
-- produce representative proof pages before final generation;
+- produce representative proof pages (first, middle, last, de-duplicated: a 1-code job shows 1 page, a 2-code job 2) before final generation;
 - decode every QR on every proof page and compare it with the expected `/v/V-####` URL;
 - require explicit Admin approval before final generation.
 

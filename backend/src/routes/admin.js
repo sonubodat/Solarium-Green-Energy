@@ -1471,7 +1471,7 @@ adminRoutes.post('/qr/print-batch', requireAuth, requireAdmin, async (request, r
 						labelTextY: template.labelTextY,
 						labelFontSize: template.labelFontSize,
 					},
-					proofSummary: { previewCodes: [codes[0], codes[Math.floor(codes.length / 2)], codes[codes.length - 1]], decoded: false },
+					proofSummary: { previewCodes: [...new Set([codes[0], codes[Math.floor(codes.length / 2)], codes[codes.length - 1]].filter(Boolean))], decoded: false },
 				},
 			});
 
@@ -1489,7 +1489,7 @@ adminRoutes.post('/qr/print-batch', requireAuth, requireAdmin, async (request, r
 			return created;
 		});
 
-		return response.status(201).json({ success: true, job, proofCodes: [codes[0], codes[Math.floor(codes.length / 2)], codes[codes.length - 1]] });
+		return response.status(201).json({ success: true, job, proofCodes: [...new Set([codes[0], codes[Math.floor(codes.length / 2)], codes[codes.length - 1]].filter(Boolean))] });
 	} catch (error) {
 		if (error.code === 'P2002' && error.meta?.target?.includes('idempotency_key')) {
 			error.statusCode = 409;

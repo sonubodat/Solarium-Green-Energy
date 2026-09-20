@@ -145,7 +145,8 @@ export async function generateQrProof(job) {
   const snapshot = job.templateSnapshot;
   if (!snapshot) throw new Error('Print job has no immutable template snapshot.');
   const items = job.items || [];
-  const selected = [items[0], items[Math.floor(items.length / 2)], items[items.length - 1]].filter(Boolean);
+  // Set: first/middle/last collapse into one page when the batch has 1 or 2 items.
+  const selected = [...new Set([items[0], items[Math.floor(items.length / 2)], items[items.length - 1]].filter(Boolean))];
   const verification = [];
   const cache = new Map();
 
