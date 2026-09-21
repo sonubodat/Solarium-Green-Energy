@@ -2,7 +2,7 @@
 
 import { Fragment, useEffect, useRef, useState } from 'react';
 import { parse as parseCsv } from 'csv-parse/browser/esm/sync';
-import { apiRequest, API_BASE_URL, downloadFile } from '../api/client';
+import { apiRequest, API_BASE_URL, downloadFile, clearApiCache } from '../api/client';
 import { SkeletonBlock } from '../components/Skeleton';
 import VendorPicker from '../components/VendorPicker';
 import './AdminPage.css';
@@ -641,7 +641,10 @@ function AdminPage() {
       }
 
       if (nextResource === 'templates') {
-        const data = await apiRequest('/admin/qr/templates', { forceRefresh });
+        // Refresh also clears the browser cache (other pages keep their own copy of the template list)
+        // and asks the server to skip its short cache.
+        if (forceRefresh) clearApiCache();
+        const data = await apiRequest(forceRefresh ? '/admin/qr/templates?refresh=1' : '/admin/qr/templates', { forceRefresh });
         if (!mountedRef.current || seq !== adminLoadSeq.current) return;
         setQrTemplates(data.templates || []);
         setPortalData((current) => ({ ...current, data }));
@@ -2809,7 +2812,7 @@ function AdminPage() {
   function renderTemplates() {
     return (
       <div className="admin-resource">
-        <div className="admin-resource-heading"><div><span className="admin-eyebrow">PRINT DESIGNS</span><h2>Templates</h2><p>Reusable designs for printing QR codes.</p></div><button className="admin-primary-button" onClick={() => setShowTemplateForm(true)}><Icon path={ICONS.plus} /> Create Template</button></div>
+        <div className="admin-resource-heading"><div><span className="admin-eyebrow">PRINT DESIGNS</span><h2>Templates</h2><p>Reusable designs for printing QR codes.</p></div><div className="admin-row-actions"><button className="admin-outline-button" disabled={loading} onClick={() => loadAdminResource('templates', 1, undefined, undefined, true)}><Icon path={ICONS.refresh} /> Refresh</button><button className="admin-primary-button" onClick={() => setShowTemplateForm(true)}><Icon path={ICONS.plus} /> Create Template</button></div></div>
         {showTemplateForm && renderTemplateEditor()}
         <div className="admin-template-cards">
           {(qrTemplates || []).length ? qrTemplates.map((template) => <div className="admin-template-card" key={template.id}>

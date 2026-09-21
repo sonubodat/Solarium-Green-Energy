@@ -12,7 +12,8 @@ const DEFAULT_TTL_MS = 30000;
 // Longer for data that changes rarely; every successful write still wipes the whole cache, so a
 // change made through this app is visible immediately. Explicit Refresh buttons use forceRefresh.
 export function cacheTtlFor(path) {
-  if (path.startsWith('/admin/qr/templates')) return 5 * 60 * 1000;
+  // Template list carries 300 s signed artwork URLs: keep it well under that (server 60 s + client 60 s).
+  if (path.startsWith('/admin/qr/templates')) return 60 * 1000;
   if (path.startsWith('/admin/')) return 60 * 1000;
   return DEFAULT_TTL_MS;
 }

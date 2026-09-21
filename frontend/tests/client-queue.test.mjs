@@ -89,7 +89,7 @@ test('a successful write wipes the cache; a failed write does not', async () => 
 });
 
 test('per-path TTLs', () => {
-	assert.equal(client.cacheTtlFor('/admin/qr/templates'), 300000);
+	assert.equal(client.cacheTtlFor('/admin/qr/templates'), 60000);
 	assert.equal(client.cacheTtlFor('/admin/dashboard'), 60000);
 	assert.equal(client.cacheTtlFor('/vendor/leads'), 30000);
 });

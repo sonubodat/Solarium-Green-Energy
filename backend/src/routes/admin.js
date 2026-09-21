@@ -13,7 +13,7 @@ import { z } from 'zod';
 import { createQrArtworkUrl, createVendorDocumentUrl, removeQrArtwork, removeVendorDocument, uploadQrArtwork, uploadQrProof, uploadVendorPhoto, removeVendorPhoto, createVendorPhotoUrl } from '../services/vendor-documents.js';
 import { generateQrProof, generateQrTemplatePdf } from '../services/qr-proof.js';
 import { runHeavy } from '../lib/heavy-queue.js';
-import { cached, CACHE_KEYS } from '../lib/response-cache.js';
+import { cached, CACHE_KEYS, invalidateResponseCache } from '../lib/response-cache.js';
 import { pagination } from '../lib/pagination.js';
 import { computeDashboardCounts, computeQrSummary } from '../lib/admin-stats.js';
 import { QR_ARTWORK_MAX_BYTES, maxBatchPages, batchTooLargeError } from '../lib/qr-artwork-limits.js';
@@ -936,6 +936,9 @@ adminRoutes.post('/qr/generate', requireAuth, requireAdmin, async (request, resp
 
 adminRoutes.get('/qr/templates', requireAuth, requireAdmin, async (request, response, next) => {
 	try {
+		// ?refresh=1 (the Templates page's Refresh button) skips the short server cache, so changes made
+		// outside the API (e.g. rows deleted directly in the database) show up immediately.
+		if (request.query.refresh === '1') invalidateResponseCache();
 		return response.json(await cached(CACHE_KEYS.qrTemplates, 60000, () => buildTemplatesResponse()));
 	} catch (error) {
 		return next(error);
