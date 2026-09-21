@@ -11,7 +11,8 @@ import { randomUUID } from 'node:crypto';
 import { hashPassword, verifyPassword, normalizeLoginIdentifier, publicVendor, slugifyVendorName, autoPasswordFor } from '../services/auth.js';
 import { z } from 'zod';
 import { createQrArtworkUrl, createVendorDocumentUrl, removeQrArtwork, removeVendorDocument, uploadQrArtwork, uploadQrProof, uploadVendorPhoto, removeVendorPhoto, createVendorPhotoUrl } from '../services/vendor-documents.js';
-import { generateQrProof, generateQrTemplatePdf } from '../services/qr-proof.js';
+import { generateQrProof, generateQrTemplatePdf, generateQrPrintChunks, PDF_CHUNK_PAGES } from '../services/qr-proof.js';
+import { streamZipResponse } from '../services/stream-zip-response.js';
 import { runHeavy } from '../lib/heavy-queue.js';
 import { cached, CACHE_KEYS, invalidateResponseCache } from '../lib/response-cache.js';
 import { pagination } from '../lib/pagination.js';
@@ -1407,7 +1408,7 @@ adminRoutes.post('/qr/print-batch', requireAuth, requireAdmin, async (request, r
 			return next(error);
 		}
 		const codes = buildQrCodeSequence(range.start, range.end);
-		if (codes.length > maxBatchPages(template.artworkMimeType)) throw batchTooLargeError(codes.length, maxBatchPages(template.artworkMimeType));
+		if (codes.length > maxBatchPages()) throw batchTooLargeError(codes.length, maxBatchPages());
 		const foundQrCodes = await prisma.qrCode.findMany({
 			where: { code: { in: codes } },
 			select: { id: true, code: true },
@@ -1522,6 +1523,32 @@ adminRoutes.post('/qr/print-batch/:jobId/approve', requireAuth, requireAdmin, as
 	}
 });
 
+// Streams a large batch as a ZIP of PDF_CHUNK_PAGES-page PDFs. One chunk is composed at a time inside
+// the single heavy-job slot; the first chunk is built before any header is sent, so a failure there
+// still returns a normal JSON error. A failure after that destroys the connection, so the browser
+// reports a failed download instead of saving a truncated ZIP as if it were complete.
+const zipsInProgress = new Set();
+
+async function streamPrintZip(job, response) {
+	if (zipsInProgress.has(job.id)) {
+		return response.status(409).json({ success: false, error: { code: 'QR_PDF_IN_PROGRESS', message: 'This batch is already being prepared. Wait for it to finish.' } });
+	}
+	zipsInProgress.add(job.id);
+	try {
+		await runHeavy(null, async () => {
+			const finished = await streamZipResponse({
+				response,
+				chunks: generateQrPrintChunks(job),
+				filename: `${safeFilenameSegment(job.rangeStart || job.id)}-print-files.zip`,
+			});
+			if (finished) discardProof(job.id, job.proofPath);
+		});
+		return undefined;
+	} finally {
+		zipsInProgress.delete(job.id);
+	}
+}
+
 adminRoutes.get('/qr/print-batch/:jobId/pdf', requireAuth, requireAdmin, async (request, response, next) => {
 	try {
 		const job = await prisma.qrPrintJob.findUnique({ where: { id: request.params.jobId }, include: { items: { orderBy: { sequence: 'asc' } } } });
@@ -1529,7 +1556,10 @@ adminRoutes.get('/qr/print-batch/:jobId/pdf', requireAuth, requireAdmin, async (
 		if (job.status !== 'APPROVED' && env.nodeEnv !== 'development') {
 			return response.status(409).json({ success: false, error: { code: 'QR_PRINT_APPROVAL_REQUIRED', message: 'Approve the verified proof before downloading the production PDF.' } });
 		}
-		if (job.itemCount > maxBatchPages(job.templateSnapshot?.artworkMimeType)) throw batchTooLargeError(job.itemCount, maxBatchPages(job.templateSnapshot?.artworkMimeType));
+		if (job.itemCount > maxBatchPages()) throw batchTooLargeError(job.itemCount, maxBatchPages());
+		// Bigger batches are built one PDF_CHUNK_PAGES-page chunk at a time and streamed as a ZIP, so a
+		// large print never holds (or blocks the server on) one giant PDF.
+		if (job.itemCount > PDF_CHUNK_PAGES) return await streamPrintZip(job, response);
 		const pdf = await runHeavy(`pdf:${job.id}`, () => generateQrTemplatePdf(job));
 		response.setHeader('Content-Type', 'application/pdf');
 		const isDownload = request.query.inline !== 'true';

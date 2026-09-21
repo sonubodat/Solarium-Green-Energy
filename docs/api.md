@@ -643,7 +643,8 @@ Authenticate using a login identifier or registered mobile number and password.
 ## Print queue errors and idempotency
 
 - `503 SERVER_BUSY`: another PDF job is running and the wait queue is full; retry shortly. Returned by the proof, print PDF, template PDF and QR PDF endpoints.
-- `422 QR_BATCH_TOO_LARGE`: a batch exceeds the per-template cap (300 pages for PDF artwork, 500 for PNG/JPG). `POST /api/admin/qr/print-batch` and `GET /api/admin/qr/print-batch/:jobId/pdf` return it.
+- `422 QR_BATCH_TOO_LARGE`: a batch exceeds `QR_MAX_BATCH_PAGES` (default 500). `POST /api/admin/qr/print-batch` and `GET /api/admin/qr/print-batch/:jobId/pdf` return it.
+- `GET /api/admin/qr/print-batch/:jobId/pdf`: batches of up to 50 QR codes return one `application/pdf` as before. Larger batches return `application/zip` (`<start>-print-files.zip`) holding one PDF per 50 QR codes (`V-0001_to_V-0050.pdf`, ...), generated one chunk at a time and streamed. `409 QR_PDF_IN_PROGRESS` if the same batch is already being prepared. A failure after the download started drops the connection instead of returning a truncated ZIP.
 - `500 QR_PDF_GENERATION_FAILED`: PDF composition failed; the queue slot is released.
 - `POST /api/admin/qr/print-batch` with an `idempotency_key` that already exists (including a concurrent duplicate) returns `200 { job, duplicate: true }` for the existing job instead of an error.
 

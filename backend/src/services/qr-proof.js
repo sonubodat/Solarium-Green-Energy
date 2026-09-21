@@ -140,9 +140,11 @@ async function composeWithPdfLib(geometry, items, artwork, cache) {
   return Buffer.from(await output.save());
 }
 
-async function composePages(snapshot, items, jobId, cache) {
-  const geometry = resolveGeometry(snapshot);
-  const artwork = await loadArtwork(snapshot, jobId);
+// Pages per generated PDF. A print batch bigger than this is produced one chunk at a time (a
+// single chunk is all that is ever held in memory) and delivered as a ZIP of these PDFs.
+export const PDF_CHUNK_PAGES = Number(process.env.QR_PDF_CHUNK_PAGES) || 50;
+
+async function composeChunk(geometry, items, artwork, cache) {
   try {
     return await (artwork?.kind === 'pdf'
       ? composeWithPdfLib(geometry, items, artwork, cache)
@@ -157,6 +159,12 @@ async function composePages(snapshot, items, jobId, cache) {
     }
     throw error;
   }
+}
+
+async function composePages(snapshot, items, jobId, cache) {
+  const geometry = resolveGeometry(snapshot);
+  const artwork = await loadArtwork(snapshot, jobId);
+  return composeChunk(geometry, items, artwork, cache);
 }
 
 export async function generateQrProof(job) {
@@ -190,4 +198,27 @@ export async function generateQrTemplatePdf(job) {
   const snapshot = job.templateSnapshot;
   if (!snapshot) throw new Error('Print job has no immutable template snapshot.');
   return composePages(snapshot, job.items || [], job.id);
+}
+
+// Production print files for a batch, one PDF per PDF_CHUNK_PAGES items, generated strictly one
+// after another. The artwork is downloaded once and shared by every chunk; each yielded buffer is
+// dropped by the caller before the next chunk is composed, so peak memory is one chunk, not the batch.
+export async function* generateQrPrintChunks(job) {
+  const snapshot = job.templateSnapshot;
+  if (!snapshot) throw new Error('Print job has no immutable template snapshot.');
+  const items = job.items || [];
+  const geometry = resolveGeometry(snapshot);
+  const artwork = await loadArtwork(snapshot, job.id);
+
+  for (let start = 0; start < items.length; start += PDF_CHUNK_PAGES) {
+    const chunk = items.slice(start, start + PDF_CHUNK_PAGES);
+    const first = chunk[0].expectedCode;
+    const last = chunk[chunk.length - 1].expectedCode;
+    // eslint-disable-next-line no-await-in-loop
+    const buffer = await composeChunk(geometry, chunk, artwork);
+    yield { name: chunk.length === 1 ? `${first}.pdf` : `${first}_to_${last}.pdf`, buffer, pages: chunk.length };
+    // Let other requests (health checks, logins) run between chunks.
+    // eslint-disable-next-line no-await-in-loop
+    await yieldToEventLoop();
+  }
 }
