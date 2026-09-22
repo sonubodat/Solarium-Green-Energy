@@ -53,6 +53,7 @@ password_hash
 must_change_password
 status
 sales_user_id       nullable until ownership is assigned
+state               nullable; one of a fixed India state/UT list (backend/src/lib/indian-states.js); set only by Admin's or Sales' own create/edit form, never by bulk create
 created_at
 updated_at
 ```
@@ -61,7 +62,7 @@ Constraints and indexes:
 
 - Unique normalized `login_identifier`.
 - Define the duplicate policy for `mobile_number`; enforce the chosen policy in the database.
-- Index `mobile_number`, `status`, `sales_user_id`, and `created_at`.
+- Index `mobile_number`, `status`, `sales_user_id`, and `created_at`. `state` is not indexed (a fixed short list filtered by equality on a small table); add one only if the table grows large enough to matter.
 - Store only password hashes.
 - Preserve the vendor record when historical records exist.
 

@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { apiRequest } from '../api/client';
+import { INDIAN_STATES } from '../constants/indian-states';
 import QrScanner from '../components/QrScanner';
 import VendorPicker from '../components/VendorPicker';
 import { SkeletonBlock } from '../components/Skeleton';
@@ -186,7 +187,7 @@ function SalesPage() {
   const [qrStatus, setQrStatus] = useState(null);
   const [showScanner, setShowScanner] = useState(false);
   const [showCreateVendor, setShowCreateVendor] = useState(false);
-  const [newVendor, setNewVendor] = useState({ business_name: '', owner_name: '', login_identifier: '', mobile_number: '', password: '' });
+  const [newVendor, setNewVendor] = useState({ business_name: '', owner_name: '', login_identifier: '', mobile_number: '', password: '', state: '' });
   const [newVendorLocation, setNewVendorLocation] = useState(null);
   const [locatingVendor, setLocatingVendor] = useState(false);
   const [vendorLocationError, setVendorLocationError] = useState('');
@@ -420,6 +421,7 @@ function SalesPage() {
             }
           : {}),
       };
+      if (!body.state) delete body.state;
       const result = await apiRequest('/sales/vendors', {
         method: 'POST',
         body: JSON.stringify(body),
@@ -438,7 +440,7 @@ function SalesPage() {
         }
       }
 
-      setNewVendor({ business_name: '', owner_name: '', login_identifier: '', mobile_number: '', password: '' });
+      setNewVendor({ business_name: '', owner_name: '', login_identifier: '', mobile_number: '', password: '', state: '' });
       resetOnboardingCapture();
       setShowCreateVendor(false);
       setSelectedVendorId(vendorId);
@@ -1095,6 +1097,23 @@ function SalesPage() {
                           value={newVendor.password}
                           onChange={(event) => setNewVendor({ ...newVendor, password: event.target.value })}
                         />
+                      </div>
+                    </label>
+
+                    <label className="sales-field-labeled">
+                      <span>State (optional)</span>
+                      <div className="sales-field-input">
+                        <select
+                          id="sales-new-vendor-state"
+                          name="state"
+                          value={newVendor.state}
+                          onChange={(event) => setNewVendor({ ...newVendor, state: event.target.value })}
+                        >
+                          <option value="">Select state</option>
+                          {INDIAN_STATES.map((state) => (
+                            <option key={state} value={state}>{state}</option>
+                          ))}
+                        </select>
                       </div>
                     </label>
 

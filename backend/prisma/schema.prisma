@@ -102,6 +102,7 @@ model Vendor {
   mustChangePassword Boolean                @default(true) @map("must_change_password")
   status             AccountStatus          @default(ACTIVE)
   salesUserId        String?                @map("sales_user_id")
+  state              String?
   createdAt          DateTime               @default(now()) @map("created_at")
   updatedAt          DateTime               @updatedAt @map("updated_at")
   salesUser          User?                  @relation("SalesOwner", fields: [salesUserId], references: [id])

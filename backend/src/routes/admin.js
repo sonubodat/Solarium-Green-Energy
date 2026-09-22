@@ -21,6 +21,7 @@ import { QR_ARTWORK_MAX_BYTES, maxBatchPages, batchTooLargeError } from '../lib/
 import { artworkSizeWarning } from '../services/qr-artwork.js';
 import { vendorSearchWhere, normalizeSearchInput, pickerPagination, PICKER_VENDOR_SELECT } from '../lib/vendor-search.js';
 import { buildQrCodeSequence, normalizeQrCode, parseQrRange } from '../services/qr-print.js';
+import { INDIAN_STATES } from '../lib/indian-states.js';
 import { env } from '../config/env.js';
 import { normalizePhone, customerHashFor, findExistingLeadByHash } from '../lib/customer-identity.js';
 import { geoTagFields, resolveGeoTag } from '../lib/geo-tag.js';
@@ -31,12 +32,15 @@ export const adminRoutes = Router();
 
 const generateQrSchema = z.object({ quantity: z.number().int().min(1).max(5000) });
 const reassignQrSchema = z.object({ vendor_id: z.string().trim().min(1) });
+// Admin's own create/edit form; Sales' own (separate) create form has the same state field —
+// see routes/sales.js. Bulk create never asks for a state (see bulkCreateVendorsSchema below).
 const vendorSchema = z.object({
 	business_name: z.string().trim().min(2).max(160),
 	owner_name: z.string().trim().min(2).max(120),
 	login_identifier: z.string().trim().min(3).max(120),
 	mobile_number: z.string().trim().min(10).max(20),
 	password: z.string().min(8).optional(),
+	state: z.enum(INDIAN_STATES).optional(),
 });
 const vendorCreateSchema = vendorSchema.extend(geoTagFields);
 const vendorUpdateSchema = vendorSchema.partial().extend({
@@ -170,6 +174,20 @@ function normalizeMobile(value) {
 	return digits;
 }
 
+const INDIAN_STATES_SET = new Set(INDIAN_STATES);
+
+// Shared by the vendor list and vendor export routes: '' / undefined means no filter, an unknown
+// value is reported (never silently ignored), a known one is passed straight through as a `where`
+// clause value.
+function vendorStateFilterOrError(raw) {
+	const value = typeof raw === 'string' ? raw.trim() : '';
+	if (!value) return { value: null };
+	if (!INDIAN_STATES_SET.has(value)) {
+		return { error: { success: false, error: { code: 'INVALID_STATE', message: 'Unknown state filter.' } } };
+	}
+	return { value };
+}
+
 function preventSelfLockout(request, targetUserId, changes) {
 	if (targetUserId !== request.auth.user.id) return;
 	const losesActive = changes.status !== undefined && changes.status !== 'ACTIVE';
@@ -230,6 +248,7 @@ adminRoutes.post('/vendors', requireAuth, requireAdmin, async (request, response
 					loginIdentifier: normalizeLoginIdentifier(input.login_identifier),
 					mobileNumber,
 					passwordHash: await hashPassword(input.password?.trim() || mobileNumber),
+					state: input.state ?? null,
 				},
 			});
 			if (geoTag) {
@@ -341,6 +360,7 @@ adminRoutes.patch('/vendors/:vendorId', requireAuth, requireAdmin, async (reques
 			data.mobileNumber = normalizeMobile(input.mobile_number);
 			if (!/^[6-9]\d{9}$/.test(data.mobileNumber)) return response.status(400).json({ success: false, error: { code: 'INVALID_MOBILE_NUMBER', message: 'Enter a valid Indian mobile number.' } });
 		}
+		if (input.state !== undefined) data.state = input.state;
 		if (input.password !== undefined) data.passwordHash = await hashPassword(input.password);
 		// A phone change only carries the password along while it is still the default (the old
 		// phone number). A password the vendor or admin chose is never touched here.
@@ -2093,11 +2113,14 @@ adminRoutes.get('/vendors', requireAuth, requireAdmin, async (request, response,
 	try {
 		const { page, limit, skip } = pagination(request.query, 200);
 		const search = vendorSearchWhere(request.query.search);
+		const stateFilter = vendorStateFilterOrError(request.query.state);
+		if (stateFilter?.error) return response.status(400).json(stateFilter.error);
 		// An exact vendor id also matches, so an id copied from Print History or an audit log
 		// still finds its Solar Mitra (the previous client-side filter matched ids too).
 		const where = {
 			status: { not: 'DELETED' },
 			...(search ? { AND: [{ OR: [...search.OR, { id: normalizeSearchInput(request.query.search) }] }] } : {}),
+			...(stateFilter?.value ? { state: stateFilter.value } : {}),
 		};
 		const [vendors, total] = await Promise.all([
 			prisma.vendor.findMany({
@@ -2111,6 +2134,7 @@ adminRoutes.get('/vendors', requireAuth, requireAdmin, async (request, response,
 					ownerName: true,
 					loginIdentifier: true,
 					mobileNumber: true,
+					state: true,
 					status: true,
 					salesUserId: true,
 					createdAt: true,
@@ -2131,6 +2155,59 @@ adminRoutes.get('/vendors', requireAuth, requireAdmin, async (request, response,
 			qrAssigned: assignments.length > 0,
 		}));
 		return response.json({ success: true, vendors: vendorsWithExtras, pagination: { page, limit, total } });
+	} catch (error) {
+		return next(error);
+	}
+});
+
+// Same shape as GET /leads/export below: no pagination, honors the same search/state filters as
+// the list view above so "export what I'm looking at" works.
+adminRoutes.get('/vendors/export', requireAuth, requireAdmin, async (request, response, next) => {
+	try {
+		const search = vendorSearchWhere(request.query.search);
+		const stateFilter = vendorStateFilterOrError(request.query.state);
+		if (stateFilter?.error) return response.status(400).json(stateFilter.error);
+		const where = {
+			status: { not: 'DELETED' },
+			...(search ? { AND: [{ OR: [...search.OR, { id: normalizeSearchInput(request.query.search) }] }] } : {}),
+			...(stateFilter?.value ? { state: stateFilter.value } : {}),
+		};
+		const vendors = await prisma.vendor.findMany({
+			where,
+			orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
+			select: {
+				businessName: true,
+				ownerName: true,
+				loginIdentifier: true,
+				mobileNumber: true,
+				state: true,
+				status: true,
+				createdAt: true,
+				salesUser: { select: { name: true } },
+				_count: { select: { leads: true } },
+				assignments: { where: { unassignedAt: null }, select: { qrCode: { select: { code: true } } }, take: 1 },
+			},
+		});
+
+		const csv = toCsv(
+			['Business Name', 'Owner Name', 'Login ID', 'Mobile Number', 'State', 'Status', 'Current QR', 'Leads', 'Sales Owner', 'Created At'],
+			vendors.map((vendor) => [
+				vendor.businessName,
+				vendor.ownerName,
+				vendor.loginIdentifier,
+				vendor.mobileNumber,
+				vendor.state,
+				vendor.status,
+				vendor.assignments[0]?.qrCode.code,
+				vendor._count.leads,
+				vendor.salesUser?.name,
+				vendor.createdAt.toISOString(),
+			])
+		);
+
+		response.setHeader('Content-Type', 'text/csv; charset=utf-8');
+		response.setHeader('Content-Disposition', 'attachment; filename="solarium-solar-mitras.csv"');
+		return response.send(csv);
 	} catch (error) {
 		return next(error);
 	}
@@ -2201,7 +2278,7 @@ adminRoutes.get('/leads/export', requireAuth, requireAdmin, async (request, resp
 				solarSize: true,
 				status: true,
 				createdAt: true,
-				vendor: { select: { businessName: true, mobileNumber: true } },
+				vendor: { select: { businessName: true, mobileNumber: true, state: true } },
 				qr: { select: { code: true } },
 				payout: { select: { status: true, paidReference: true } },
 				geoLocation: { select: { latitude: true, longitude: true, accuracy: true } },
@@ -2209,7 +2286,7 @@ adminRoutes.get('/leads/export', requireAuth, requireAdmin, async (request, resp
 		});
 
 		const csv = toCsv(
-			['Customer Name', 'Customer Phone', 'Customer Email', 'Location', 'Pincode', 'Average Electricity Bill', 'Solar Size', 'GPS Latitude', 'GPS Longitude', 'GPS Accuracy (m)', 'Lead Status', 'Vendor Name', 'Vendor Mobile Number', 'QR Code', 'Payout Status', 'Payout Reference', 'Created At'],
+			['Customer Name', 'Customer Phone', 'Customer Email', 'Location', 'Pincode', 'Average Electricity Bill', 'Solar Size', 'GPS Latitude', 'GPS Longitude', 'GPS Accuracy (m)', 'Lead Status', 'Vendor Name', 'Vendor Mobile Number', 'Vendor State', 'QR Code', 'Payout Status', 'Payout Reference', 'Created At'],
 			leads.map((lead) => [
 				lead.customerName,
 				lead.phone,
@@ -2224,6 +2301,7 @@ adminRoutes.get('/leads/export', requireAuth, requireAdmin, async (request, resp
 				lead.status,
 				lead.vendor?.businessName || `Deleted Vendor: ${lead.vendorNameSnapshot}`,
 				lead.vendor?.mobileNumber,
+				lead.vendor?.state,
 				lead.qr?.code,
 				lead.payout?.status,
 				lead.payout?.paidReference,

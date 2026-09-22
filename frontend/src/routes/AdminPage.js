@@ -3,6 +3,7 @@
 import { Fragment, useEffect, useRef, useState } from 'react';
 import { parse as parseCsv } from 'csv-parse/browser/esm/sync';
 import { apiRequest, API_BASE_URL, downloadFile, clearApiCache } from '../api/client';
+import { INDIAN_STATES } from '../constants/indian-states';
 import { SkeletonBlock } from '../components/Skeleton';
 import VendorPicker from '../components/VendorPicker';
 import './AdminPage.css';
@@ -246,7 +247,11 @@ function AdminPage() {
     login_identifier: '',
     mobile_number: '',
     password: '',
+    state: '',
   });
+  // Solar Mitra state filter — server-side, same debounced-reload pattern as vendorSearch below.
+  const [vendorStateFilter, setVendorStateFilter] = useState('');
+  const vendorStateFilterRef = useRef('');
   const [newVendorLocation, setNewVendorLocation] = useState(null);
   const [newVendorCoordsText, setNewVendorCoordsText] = useState('');
   const [vendorLocationError, setVendorLocationError] = useState('');
@@ -666,6 +671,9 @@ function AdminPage() {
       if (nextResource === 'vendors' && vendorSearchRef.current.trim()) {
         query += `&search=${encodeURIComponent(vendorSearchRef.current.trim())}`;
       }
+      if (nextResource === 'vendors' && vendorStateFilterRef.current) {
+        query += `&state=${encodeURIComponent(vendorStateFilterRef.current)}`;
+      }
 
       const data = await apiRequest(`/admin/${nextResource}${query}`, { forceRefresh, supersede: 'admin-list' });
 
@@ -705,6 +713,7 @@ function AdminPage() {
   // buttons that also call it) all see the same current query.
   useEffect(() => {
     vendorSearchRef.current = vendorSearch;
+    vendorStateFilterRef.current = vendorStateFilter;
     if (!vendorSearchMounted.current) {
       vendorSearchMounted.current = true;
       return undefined;
@@ -713,7 +722,7 @@ function AdminPage() {
     const timer = setTimeout(() => loadAdminResource('vendors', 1), 300);
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [vendorSearch]);
+  }, [vendorSearch, vendorStateFilter]);
 
   // Picking a new page size returns to page 1 and keeps the current search/filters (they are read
   // from refs/state inside loadAdminResource).
@@ -750,6 +759,7 @@ function AdminPage() {
     setResource(nextResource);
     setAdminPage(1);
     setVendorSearch('');
+    setVendorStateFilter('');
     setLeadSearch('');
     setSelectedVendorIds([]);
     setMobileNavOpen(false);
@@ -846,6 +856,9 @@ function AdminPage() {
       if (!body.password) {
         delete body.password;
       }
+      if (!body.state) {
+        delete body.state;
+      }
       if (newVendorLocation) {
         body.latitude = newVendorLocation.latitude;
         body.longitude = newVendorLocation.longitude;
@@ -875,6 +888,7 @@ function AdminPage() {
         login_identifier: '',
         mobile_number: '',
         password: '',
+        state: '',
       });
       resetOnboardingCapture();
 
@@ -1016,6 +1030,7 @@ function AdminPage() {
       owner_name: vendor.ownerName,
       login_identifier: vendor.loginIdentifier,
       mobile_number: vendor.mobileNumber,
+      state: vendor.state || '',
     });
   }
 
@@ -1027,7 +1042,7 @@ function AdminPage() {
     try {
       await apiRequest(`/admin/vendors/${vendorId}`, {
         method: 'PATCH',
-        body: JSON.stringify(editVendorDraft),
+        body: JSON.stringify({ ...editVendorDraft, state: editVendorDraft.state || undefined }),
       });
 
       setEditingVendorId(null);
@@ -1624,6 +1639,16 @@ function AdminPage() {
     window.location.href = `${API_BASE_URL}/admin/leads/export`;
   }
 
+  // Same non-blocking export pattern as downloadLeadsCsv, honoring the current search/state
+  // filters so "export what I'm looking at" matches what the table shows.
+  function downloadVendorsCsv() {
+    const params = new URLSearchParams();
+    if (vendorSearch.trim()) params.set('search', vendorSearch.trim());
+    if (vendorStateFilter) params.set('state', vendorStateFilter);
+    const query = params.toString();
+    window.location.href = `${API_BASE_URL}/admin/vendors/export${query ? `?${query}` : ''}`;
+  }
+
   // Plain, non-blocking export — used by the Audit Logs page's own "Export CSV" button.
   // Nothing gates on this succeeding, so the simple navigation-triggered download (same
   // pattern as downloadLeadsCsv) is fine here.
@@ -1872,6 +1897,13 @@ function AdminPage() {
 
           <div className="admin-heading-actions">
             <button
+              className="admin-outline-button"
+              onClick={downloadVendorsCsv}
+            >
+              Export CSV
+            </button>
+
+            <button
               className="admin-primary-button"
               onClick={() =>
                 setShowCreateVendor(
@@ -2004,6 +2036,26 @@ function AdminPage() {
                 />
               </label>
 
+              <label className="admin-form-field">
+                <span>State (optional)</span>
+                <select
+                  id="new-vendor-state"
+                  name="state"
+                  value={newVendor.state}
+                  onChange={(event) =>
+                    setNewVendor({
+                      ...newVendor,
+                      state: event.target.value,
+                    })
+                  }
+                >
+                  <option value="">Select state</option>
+                  {INDIAN_STATES.map((state) => (
+                    <option key={state} value={state}>{state}</option>
+                  ))}
+                </select>
+              </label>
+
               <div className="admin-form-field">
                 <span>Shop coordinates (optional — type or paste from Sales/Google Maps)</span>
                 <div className="admin-coords-row">
@@ -2073,6 +2125,19 @@ function AdminPage() {
             />
           </div>
 
+          <div className="admin-filter">
+            <Icon path={ICONS.filter} />
+            <select
+              value={vendorStateFilter}
+              onChange={(event) => setVendorStateFilter(event.target.value)}
+            >
+              <option value="">All states</option>
+              {INDIAN_STATES.map((state) => (
+                <option key={state} value={state}>{state}</option>
+              ))}
+            </select>
+          </div>
+
           <button
             className="admin-outline-button"
             onClick={() =>
@@ -2116,6 +2181,7 @@ function AdminPage() {
                 <th className="admin-check-cell">Select</th>
                 <th>Solar Mitra</th>
                 <th>Owner</th>
+                <th>State</th>
                 <th>QR</th>
                 <th>Status</th>
                 <th>Leads</th>
@@ -2176,6 +2242,28 @@ function AdminPage() {
                         />
                       ) : (
                         vendor.ownerName
+                      )}
+                    </td>
+
+                    <td>
+                      {editingVendorId === vendor.id ? (
+                        <select
+                          className="admin-table-input"
+                          value={editVendorDraft.state || ''}
+                          onChange={(event) =>
+                            setEditVendorDraft({
+                              ...editVendorDraft,
+                              state: event.target.value,
+                            })
+                          }
+                        >
+                          <option value="">—</option>
+                          {INDIAN_STATES.map((state) => (
+                            <option key={state} value={state}>{state}</option>
+                          ))}
+                        </select>
+                      ) : (
+                        vendor.state || '—'
                       )}
                     </td>
 
@@ -4240,6 +4328,7 @@ function AdminPage() {
               <dt>Business name</dt><dd>{dash(vendor.businessName)}</dd>
               <dt>Owner</dt><dd>{dash(vendor.ownerName)}</dd>
               <dt>Phone number</dt><dd>{dash(vendor.mobileNumber)}</dd>
+              <dt>State</dt><dd>{dash(vendor.state)}</dd>
               <dt>Login ID</dt><dd>{dash(vendor.loginIdentifier)}</dd>
               <dt>Status</dt><dd>{dash(vendor.status)}</dd>
               <dt>Current QR</dt><dd>{dash(vendor.currentQr)}</dd>

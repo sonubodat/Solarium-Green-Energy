@@ -7,6 +7,7 @@ import { hashPassword, defaultVendorPassword, normalizeLoginIdentifier, publicVe
 import { assignUnassignedQr } from '../services/qr.js';
 import { uploadVendorPhoto, removeVendorPhoto, uploadVendorDocument, removeVendorDocument, createVendorDocumentUrl } from '../services/vendor-documents.js';
 import { geoTagFields, resolveGeoTag } from '../lib/geo-tag.js';
+import { INDIAN_STATES } from '../lib/indian-states.js';
 import { vendorSearchWhere, pickerPagination, PICKER_VENDOR_SELECT } from '../lib/vendor-search.js';
 
 export const salesRoutes = Router();
@@ -28,6 +29,7 @@ const vendorCreateSchema = z.object({
 	login_identifier: z.string().trim().min(3).max(120),
 	mobile_number: z.string().trim().min(10).max(20),
 	password: optionalPassword,
+	state: z.enum(INDIAN_STATES).optional(),
 	...geoTagFields,
 });
 
@@ -213,6 +215,7 @@ salesRoutes.post('/vendors', requireAuth, requireSales, async (request, response
 					passwordHash: await hashPassword(input.password || mobileNumber),
 					mustChangePassword: true,
 					salesUserId: request.auth.user.id,
+					state: input.state ?? null,
 				},
 			});
 			if (geoTag) {
