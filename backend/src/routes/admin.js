@@ -81,6 +81,10 @@ const bulkCreateVendorsSchema = z.object({
 		password: z.string().max(200).optional(),
 	})).min(1).max(500).optional(),
 	auto_password: z.boolean().optional().default(false),
+	// Batch metadata, not row data: one state applied to every Vendor in this batch (e.g. "this
+	// whole paste is Gujarat"), never a per-row column — no CSV/paste format change, no per-row
+	// validation.
+	state: z.enum(INDIAN_STATES).optional(),
 }).refine((value) => Boolean(value.names) !== Boolean(value.rows), {
 	message: 'Provide either names or rows, not both.',
 });
@@ -594,7 +598,7 @@ adminRoutes.post('/vendors/bulk-delete', requireAuth, requireAdmin, async (reque
 // unique constraint on login_identifier backs up the duplicate check. The password is the
 // row's own (trimmed) password, or the phone number when blank. must_change_password keeps
 // its schema default (true), and the vendor routes refuse data access until it is cleared.
-async function bulkCreateVendorsFromRows(request, response, rows) {
+async function bulkCreateVendorsFromRows(request, response, rows, batchState) {
 	const failures = [];
 	const candidates = [];
 	const seenPhones = new Set();
@@ -644,6 +648,7 @@ async function bulkCreateVendorsFromRows(request, response, rows) {
 			loginIdentifier: candidate.phone,
 			mobileNumber: candidate.phone,
 			passwordHash: await hashPassword(candidate.password),
+			state: batchState ?? null,
 		})));
 
 		const result = await prisma.vendor.createMany({ data, skipDuplicates: true });
@@ -691,8 +696,8 @@ async function bulkCreateVendorsFromRows(request, response, rows) {
 
 adminRoutes.post('/vendors/bulk-create', requireAuth, requireAdmin, async (request, response, next) => {
 	try {
-		const { names, rows: importRows, auto_password: autoPassword } = bulkCreateVendorsSchema.parse(request.body);
-		if (importRows) return await bulkCreateVendorsFromRows(request, response, importRows);
+		const { names, rows: importRows, auto_password: autoPassword, state } = bulkCreateVendorsSchema.parse(request.body);
+		if (importRows) return await bulkCreateVendorsFromRows(request, response, importRows, state);
 
 		// Measured against the real dev database: one prisma.$transaction() per row (each an
 		// interactive BEGIN/INSERT/INSERT/COMMIT round trip) cost ~0.8s/row here — a 500-row
@@ -734,7 +739,7 @@ adminRoutes.post('/vendors/bulk-create', requireAuth, requireAdmin, async (reque
 			const loginIdentifier = resolveLoginIdentifier(baseSlugs[index]);
 			const mobileNumber = String(nextMobile + index);
 			const passwordHash = autoPassword ? await hashPassword(autoPasswordFor(businessName)) : null;
-			return { businessName, ownerName: businessName, loginIdentifier, mobileNumber, passwordHash };
+			return { businessName, ownerName: businessName, loginIdentifier, mobileNumber, passwordHash, state: state ?? null };
 		}));
 
 		// Every loginIdentifier was just resolved to be unique both against the DB and within

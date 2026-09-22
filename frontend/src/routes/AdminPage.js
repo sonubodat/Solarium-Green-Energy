@@ -350,6 +350,8 @@ function AdminPage() {
   const [showBulkCreateVendors, setShowBulkCreateVendors] = useState(false);
   const [bulkVendorNamesText, setBulkVendorNamesText] = useState('');
   const [bulkVendorAutoPassword, setBulkVendorAutoPassword] = useState(false);
+  // Batch metadata, not row data: one state applied to every Vendor this bulk create makes.
+  const [bulkVendorState, setBulkVendorState] = useState('');
   const [bulkVendorResult, setBulkVendorResult] = useState(null);
   const [showImportLeads, setShowImportLeads] = useState(false);
   const [importFile, setImportFile] = useState(null);
@@ -1034,8 +1036,8 @@ function AdminPage() {
     // "Phone number missing"); a list with no phones at all keeps the legacy name-only mode.
     const rowsMode = rows.some((row) => row.phone);
     const body = rowsMode
-      ? { rows }
-      : { names: parseBulkVendorNames(rows.map((row) => row.name).join('\n')), auto_password: bulkVendorAutoPassword };
+      ? { rows, state: bulkVendorState || undefined }
+      : { names: parseBulkVendorNames(rows.map((row) => row.name).join('\n')), auto_password: bulkVendorAutoPassword, state: bulkVendorState || undefined };
 
     setLoading(true);
     setMessage('');
@@ -1051,6 +1053,7 @@ function AdminPage() {
       setShowBulkCreateVendors(false);
       setBulkVendorNamesText('');
       setBulkVendorAutoPassword(false);
+      setBulkVendorState('');
 
       await loadAdminResource('vendors', adminPage, undefined, undefined, true);
     } catch (error) {
@@ -1531,6 +1534,12 @@ function AdminPage() {
       return;
     }
     setConfirmPayoutStatusKey(`${payout.id}:${status}`);
+  }
+
+  // Single reset path so a chosen state can never leak into the next batch, from any close point.
+  function closeBulkCreateVendors() {
+    setShowBulkCreateVendors(false);
+    setBulkVendorState('');
   }
 
   async function viewVendorBankDetails(vendor) {
@@ -2030,7 +2039,10 @@ function AdminPage() {
 
             <button
               className="admin-outline-button"
-              onClick={() => setShowBulkCreateVendors(true)}
+              onClick={() => {
+                setBulkVendorState('');
+                setShowBulkCreateVendors(true);
+              }}
             >
               <Icon path={ICONS.plus} />
               Bulk create
@@ -4832,7 +4844,7 @@ function AdminPage() {
     return (
       <div
         className="admin-modal-overlay"
-        onClick={() => setShowBulkCreateVendors(false)}
+        onClick={closeBulkCreateVendors}
       >
         <div
           className="admin-modal"
@@ -4848,7 +4860,7 @@ function AdminPage() {
             </div>
             <button
               className="admin-mini-button"
-              onClick={() => setShowBulkCreateVendors(false)}
+              onClick={closeBulkCreateVendors}
               aria-label="Close"
             >
               <Icon path={ICONS.close} />
@@ -4898,6 +4910,19 @@ function AdminPage() {
               <small>{detectedRows.length - rowsWithPhone} row(s) have no phone number and will be reported as failed.</small>
             )}
 
+            <label className="admin-form-field">
+              <span>State (optional) — applied to every Solar Mitra in this batch</span>
+              <select
+                value={bulkVendorState}
+                onChange={(event) => setBulkVendorState(event.target.value)}
+              >
+                <option value="">No state selected</option>
+                {INDIAN_STATES.map((state) => (
+                  <option key={state} value={state}>{state}</option>
+                ))}
+              </select>
+            </label>
+
             {!rowsMode && (
               <label className="admin-toggle-row">
                 <input
@@ -4918,7 +4943,7 @@ function AdminPage() {
                 type="button"
                 className="admin-outline-button"
                 disabled={loading}
-                onClick={() => setShowBulkCreateVendors(false)}
+                onClick={closeBulkCreateVendors}
               >
                 Cancel
               </button>

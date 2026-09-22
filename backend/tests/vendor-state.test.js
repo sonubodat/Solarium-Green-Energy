@@ -105,10 +105,60 @@ test('vendor state stays optional on edit (Admin\'s .partial() update schema)', 
 	assert.doesNotThrow(() => updateSchema.parse({ business_name: 'Renamed Store' }));
 });
 
-test('bulk create never requires (or even accepts through this schema) a state field', () => {
-	// Bulk create's own schemas (bulkCreateVendorsSchema / the rows-mode row shape in admin.js)
-	// have no `state` key at all — nothing to make required, and this change touched neither.
+test('bulk create rows have no per-row state field — state is batch metadata, not row data', () => {
+	// The per-row shape (name/phone/password) is untouched. A batch-level `state` lives one
+	// level up, on bulkCreateVendorsSchema itself — see the tests below.
 	const bulkRowSchema = z.object({ name: z.string(), phone: z.string(), password: z.string().optional() });
 	assert.doesNotThrow(() => bulkRowSchema.parse({ name: 'Ram Store', phone: '9876543210' }));
 	assert.equal('state' in bulkRowSchema.shape, false);
+});
+
+// Mirrors bulkCreateVendorsSchema in routes/admin.js: state is one optional, batch-level field,
+// validated once for the whole request — never per row.
+function bulkCreateSchemaLike() {
+	return z.object({
+		names: z.array(z.string().trim().min(2).max(160)).min(1).max(500).optional(),
+		rows: z.array(z.object({ name: z.string(), phone: z.string().optional(), password: z.string().optional() })).min(1).max(500).optional(),
+		auto_password: z.boolean().optional().default(false),
+		state: z.enum(INDIAN_STATES).optional(),
+	}).refine((value) => Boolean(value.names) !== Boolean(value.rows));
+}
+
+test('bulk create schema: batch state is optional, validated once, never per row', () => {
+	const schema = bulkCreateSchemaLike();
+	assert.doesNotThrow(() => schema.parse({ names: ['Ram Store'] }));
+	assert.doesNotThrow(() => schema.parse({ names: ['Ram Store'], state: 'Gujarat' }));
+	assert.throws(() => schema.parse({ names: ['Ram Store'], state: 'Narnia' }));
+	assert.throws(() => schema.parse({ names: ['Ram Store'], state: '' }));
+});
+
+// Mirrors the two places in routes/admin.js that actually write `state` into the insert data:
+// the rows-mode candidate mapping inside bulkCreateVendorsFromRows, and the names-mode mapping
+// inside the POST /vendors/bulk-create handler. Both must apply the SAME batch state uniformly —
+// this is exactly the class of bug where one path gets updated and the other is forgotten.
+function rowsModeInsertData(candidates, batchState) {
+	return candidates.map((candidate) => ({ businessName: candidate.name, mobileNumber: candidate.phone, state: batchState ?? null }));
+}
+function namesModeInsertData(names, batchState) {
+	return names.map((businessName) => ({ businessName, state: batchState ?? null }));
+}
+
+test('bulk create: a batch state is applied to every row, both rows-mode and names-mode', () => {
+	const candidates = [{ name: 'A', phone: '9876543210' }, { name: 'B', phone: '9876543211' }, { name: 'C', phone: '9876543212' }];
+	const rowsData = rowsModeInsertData(candidates, 'Gujarat');
+	assert.equal(rowsData.length, 3);
+	assert.ok(rowsData.every((row) => row.state === 'Gujarat'));
+
+	const namesData = namesModeInsertData(['A', 'B', 'C'], 'Gujarat');
+	assert.equal(namesData.length, 3);
+	assert.ok(namesData.every((row) => row.state === 'Gujarat'));
+});
+
+test('bulk create: an omitted batch state stores null (never undefined) for every row, both paths', () => {
+	const candidates = [{ name: 'A', phone: '9876543210' }, { name: 'B', phone: '9876543211' }];
+	const rowsData = rowsModeInsertData(candidates, undefined);
+	assert.ok(rowsData.every((row) => row.state === null));
+
+	const namesData = namesModeInsertData(['A', 'B'], undefined);
+	assert.ok(namesData.every((row) => row.state === null));
 });
