@@ -71,16 +71,27 @@ function Icon({ path, className = '' }) {
 // Bank details Sales fills in on the Solar Mitra's behalf (same fields/limits as the vendor's own form).
 const EMPTY_BANK = { upi_number: '', upi_id: '', account_holder_name: '', account_number: '', ifsc_code: '' };
 
+// Mirrors the backend's isBankDetailsSet() (backend/src/lib/vendor-bank-details.js): once
+// anything has been saved, Sales can no longer change it — only Admin can, from then on.
+function bankDetailsAreSet(d) {
+  return Boolean(d && (d.upiNumber || d.upiId || d.accountHolderName || d.accountNumber || d.ifscCode || d.passbookFileName || d.chequeFileName));
+}
+
 function SalesBankForm({ vendorId }) {
   const [bank, setBank] = useState(EMPTY_BANK);
   const [docs, setDocs] = useState({ passbook: '', cheque: '' });
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState({ text: '', error: false });
+  // Proactively disables the form once the loaded details are non-empty; the backend's own
+  // 403 BANK_DETAILS_LOCKED (checked at write time, so a stale/cached GET can't be used to get
+  // around it) also flips this on if save/upload gets there first.
+  const [locked, setLocked] = useState(false);
 
   useEffect(() => {
     setBank(EMPTY_BANK);
     setDocs({ passbook: '', cheque: '' });
     setNote({ text: '', error: false });
+    setLocked(false);
     if (!vendorId) return undefined;
     let active = true;
     apiRequest(`/sales/vendors/${vendorId}/bank-details`, { forceRefresh: true })
@@ -95,17 +106,24 @@ function SalesBankForm({ vendorId }) {
           ifsc_code: d.ifscCode || '',
         });
         setDocs({ passbook: d.passbookFileName || '', cheque: d.chequeFileName || '' });
+        setLocked(bankDetailsAreSet(d));
       })
       .catch(() => {});
     return () => { active = false; };
   }, [vendorId]);
+
+  function lockedByServer(error) {
+    if (error.code === 'BANK_DETAILS_LOCKED') setLocked(true);
+  }
 
   async function save() {
     setBusy(true);
     try {
       await apiRequest(`/sales/vendors/${vendorId}/bank-details`, { method: 'PATCH', body: JSON.stringify(bank) });
       setNote({ text: 'Bank details saved.', error: false });
+      setLocked(true);
     } catch (error) {
+      lockedByServer(error);
       setNote({ text: error.message || 'Unable to save bank details.', error: true });
     } finally {
       setBusy(false);
@@ -123,7 +141,9 @@ function SalesBankForm({ vendorId }) {
       await apiRequest(`/sales/vendors/${vendorId}/bank-details/${type}`, { method: 'POST', body });
       setDocs((current) => ({ ...current, [type]: file.name }));
       setNote({ text: `${type === 'passbook' ? 'Passbook' : 'Cancelled cheque'} uploaded.`, error: false });
+      setLocked(true);
     } catch (error) {
+      lockedByServer(error);
       setNote({ text: error.message || 'Unable to upload document.', error: true });
     } finally {
       setBusy(false);
@@ -137,29 +157,35 @@ function SalesBankForm({ vendorId }) {
     ['account_number', 'Account number', ''],
     ['ifsc_code', 'IFSC code', ''],
   ];
+  const disabled = !vendorId || busy || locked;
 
   return (
     <div className="sales-field-labeled">
       <span>Bank details (optional)</span>
+      {locked && (
+        <small className="sales-field-error" role="status">
+          Bank details are already set for this Solar Mitra. Ask an Admin to change them.
+        </small>
+      )}
       {fields.map(([key, label, placeholder]) => (
         <div className="sales-field-input" key={key}>
           <input
             aria-label={label}
             placeholder={placeholder || label}
-            disabled={!vendorId || busy}
+            disabled={disabled}
             value={bank[key]}
             onChange={(event) => setBank({ ...bank, [key]: key === 'ifsc_code' ? event.target.value.toUpperCase() : event.target.value })}
           />
         </div>
       ))}
-      <button type="button" className="sales-primary-button" disabled={!vendorId || busy} onClick={save}>
+      <button type="button" className="sales-primary-button" disabled={disabled} onClick={save}>
         Save bank details
       </button>
       {[['passbook', 'Passbook'], ['cheque', 'Cancelled cheque']].map(([type, label]) => (
         <label className="sales-field-labeled" key={type}>
           <span>{label} (PDF/JPG/PNG, max 200 KB){docs[type] ? ` - uploaded: ${docs[type]}` : ''}</span>
           <div className="sales-field-input">
-            <input type="file" accept="application/pdf,image/jpeg,image/png" disabled={!vendorId || busy} onChange={(event) => { upload(type, event.target.files?.[0]); event.target.value = ''; }} />
+            <input type="file" accept="application/pdf,image/jpeg,image/png" disabled={disabled} onChange={(event) => { upload(type, event.target.files?.[0]); event.target.value = ''; }} />
           </div>
         </label>
       ))}

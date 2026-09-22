@@ -1,6 +1,6 @@
 // AdminPage.js
 
-import { Fragment, useEffect, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
 import { parse as parseCsv } from 'csv-parse/browser/esm/sync';
 import { apiRequest, API_BASE_URL, downloadFile, clearApiCache } from '../api/client';
 import { INDIAN_STATES } from '../constants/indian-states';
@@ -61,6 +61,122 @@ function Icon({ path, className = '' }) {
     >
       <path d={path} />
     </svg>
+  );
+}
+
+// Admin's own bank-details editor, used inside the Solar Mitra Details modal. Unlike Sales'
+// equivalent form (SalesBankForm in SalesPage.js), Admin is never locked out once details exist —
+// this is the one place that can still fix a mistake or replace a document afterward.
+const EMPTY_ADMIN_BANK = { upi_number: '', upi_id: '', account_holder_name: '', account_number: '', ifsc_code: '' };
+
+function AdminBankForm({ vendorId }) {
+  const [bank, setBank] = useState(EMPTY_ADMIN_BANK);
+  const [docs, setDocs] = useState({ passbook: null, cheque: null });
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState({ text: '', error: false });
+
+  const load = useCallback(() => {
+    if (!vendorId) return undefined;
+    let active = true;
+    apiRequest(`/admin/vendors/${vendorId}/bank-details`, { forceRefresh: true })
+      .then((result) => {
+        if (!active) return;
+        const d = result.bank_details;
+        setBank(d ? {
+          upi_number: d.upiNumber || '',
+          upi_id: d.upiId || '',
+          account_holder_name: d.accountHolderName || '',
+          account_number: d.accountNumber || '',
+          ifsc_code: d.ifscCode || '',
+        } : EMPTY_ADMIN_BANK);
+        setDocs({
+          passbook: d?.passbookFileName ? { name: d.passbookFileName, url: d.passbookUrl } : null,
+          cheque: d?.chequeFileName ? { name: d.chequeFileName, url: d.chequeUrl } : null,
+        });
+      })
+      .catch(() => {});
+    return () => { active = false; };
+  }, [vendorId]);
+
+  useEffect(() => {
+    setBank(EMPTY_ADMIN_BANK);
+    setDocs({ passbook: null, cheque: null });
+    setNote({ text: '', error: false });
+    return load();
+  }, [load]);
+
+  async function save() {
+    setBusy(true);
+    try {
+      await apiRequest(`/admin/vendors/${vendorId}/bank-details`, { method: 'PATCH', body: JSON.stringify(bank) });
+      setNote({ text: 'Bank details saved.', error: false });
+    } catch (error) {
+      setNote({ text: error.message || 'Unable to save bank details.', error: true });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function upload(type, file) {
+    if (!file) return;
+    if (file.size > 200 * 1024) return setNote({ text: 'Documents must be 200 KB or smaller.', error: true });
+    if (!['application/pdf', 'image/jpeg', 'image/png'].includes(file.type)) return setNote({ text: 'Upload a PDF, JPG, or PNG document.', error: true });
+    const body = new FormData();
+    body.append('file', file);
+    setBusy(true);
+    try {
+      await apiRequest(`/admin/vendors/${vendorId}/bank-details/${type}`, { method: 'POST', body });
+      setNote({ text: `${type === 'passbook' ? 'Passbook' : 'Cancelled cheque'} uploaded.`, error: false });
+      load(); // refresh the filename and the signed "Open" link for the new document
+    } catch (error) {
+      setNote({ text: error.message || 'Unable to upload document.', error: true });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const fields = [
+    ['upi_number', 'UPI number', ''],
+    ['upi_id', 'UPI ID', 'name@bank'],
+    ['account_holder_name', 'Account holder name', ''],
+    ['account_number', 'Account number', ''],
+    ['ifsc_code', 'IFSC code', ''],
+  ];
+
+  return (
+    <div>
+      <div className="admin-form-grid">
+        {fields.map(([key, label, placeholder]) => (
+          <label className="admin-form-field" key={key}>
+            <span>{label}</span>
+            <input
+              placeholder={placeholder || label}
+              disabled={busy}
+              value={bank[key]}
+              onChange={(event) => setBank({ ...bank, [key]: key === 'ifsc_code' ? event.target.value.toUpperCase() : event.target.value })}
+            />
+          </label>
+        ))}
+      </div>
+      <div className="admin-form-actions">
+        <button type="button" className="admin-primary-button" disabled={busy} onClick={save}>
+          {busy ? 'Saving...' : 'Save bank details'}
+        </button>
+      </div>
+      {[['passbook', 'Passbook'], ['cheque', 'Cancelled cheque']].map(([type, label]) => (
+        <label className="admin-form-field" key={type} style={{ marginTop: '10px' }}>
+          <span>{label} (PDF/JPG/PNG, max 200 KB){docs[type] ? ` - uploaded: ${docs[type].name}` : ''}</span>
+          <input type="file" accept="application/pdf,image/jpeg,image/png" disabled={busy} onChange={(event) => { upload(type, event.target.files?.[0]); event.target.value = ''; }} />
+        </label>
+      ))}
+      {(docs.passbook || docs.cheque) && (
+        <div className="admin-row-actions" style={{ marginTop: '8px' }}>
+          {docs.passbook?.url && <a className="admin-mini-button" href={docs.passbook.url} target="_blank" rel="noreferrer">Open passbook</a>}
+          {docs.cheque?.url && <a className="admin-mini-button" href={docs.cheque.url} target="_blank" rel="noreferrer">Open cancelled cheque</a>}
+        </div>
+      )}
+      {note.text && <small className={note.error ? 'admin-field-error' : ''} role={note.error ? 'alert' : 'status'} style={{ display: 'block', marginTop: '8px' }}>{note.text}</small>}
+    </div>
   );
 }
 
@@ -2248,7 +2364,7 @@ function AdminPage() {
                     <td>
                       {editingVendorId === vendor.id ? (
                         <select
-                          className="admin-table-input"
+                          className="admin-table-select"
                           value={editVendorDraft.state || ''}
                           onChange={(event) =>
                             setEditVendorDraft({
@@ -2535,7 +2651,7 @@ function AdminPage() {
               ) : (
                 <tr>
                   <td
-                    colSpan="7"
+                    colSpan={8}
                     className="admin-empty"
                   >
                     {vendorSearch.trim() ? `No Solar Mitras match "${vendorSearch.trim()}".` : 'No Solar Mitras found.'}
@@ -4297,20 +4413,19 @@ function AdminPage() {
   }
 
   async function viewVendorDetails(vendor) {
-    setDetailVendor({ vendor, loading: true, bank: null, media: null, error: '' });
+    // Bank details are no longer fetched here — AdminBankForm below loads (and reloads) its own
+    // copy, since it now writes as well as reads.
+    setDetailVendor({ vendor, loading: true, media: null, error: '' });
     try {
-      const [bank, media] = await Promise.all([
-        apiRequest(`/admin/vendors/${vendor.id}/bank-details`, { forceRefresh: true }),
-        apiRequest(`/admin/vendors/${vendor.id}/onboarding-media`, { forceRefresh: true }),
-      ]);
-      setDetailVendor((current) => (current?.vendor.id === vendor.id ? { vendor, loading: false, bank: bank.bank_details, media: media.onboarding_media, error: '' } : current));
+      const media = await apiRequest(`/admin/vendors/${vendor.id}/onboarding-media`, { forceRefresh: true });
+      setDetailVendor((current) => (current?.vendor.id === vendor.id ? { vendor, loading: false, media: media.onboarding_media, error: '' } : current));
     } catch (error) {
       setDetailVendor((current) => (current?.vendor.id === vendor.id ? { ...current, loading: false, error: error.message } : current));
     }
   }
 
   function renderVendorDetailsModal() {
-    const { vendor, loading: detailLoading, bank, media, error } = detailVendor;
+    const { vendor, loading: detailLoading, media, error } = detailVendor;
     const dash = (value) => (value === null || value === undefined || value === '' ? '—' : value);
     return (
       <div className="admin-modal-overlay" onClick={() => setDetailVendor(null)}>
@@ -4335,26 +4450,13 @@ function AdminPage() {
               <dt>Leads</dt><dd>{vendor.leadCount ?? 0}</dd>
               <dt>Created</dt><dd>{vendor.createdAt ? new Date(vendor.createdAt).toLocaleString() : '—'}</dd>
             </dl>
-            {detailLoading && <p>Loading bank details and location…</p>}
+            <h3>Bank details</h3>
+            <AdminBankForm vendorId={vendor.id} />
+
+            {detailLoading && <p>Loading location…</p>}
             {error && <p className="admin-scan-assign-blocked" role="alert">{error}</p>}
             {!detailLoading && !error && (
               <>
-                <h3>Bank details</h3>
-                {bank ? (
-                  <>
-                    <dl className="admin-modal-fields">
-                      <dt>UPI number</dt><dd>{dash(bank.upiNumber)}</dd>
-                      <dt>UPI ID</dt><dd>{dash(bank.upiId)}</dd>
-                      <dt>Account holder</dt><dd>{dash(bank.accountHolderName)}</dd>
-                      <dt>Account number</dt><dd>{dash(bank.accountNumber)}</dd>
-                      <dt>IFSC code</dt><dd>{dash(bank.ifscCode)}</dd>
-                    </dl>
-                    <div className="admin-row-actions">
-                      {bank.passbookUrl && <a className="admin-mini-button" href={bank.passbookUrl} target="_blank" rel="noreferrer">Open passbook</a>}
-                      {bank.chequeUrl && <a className="admin-mini-button" href={bank.chequeUrl} target="_blank" rel="noreferrer">Open cancelled cheque</a>}
-                    </div>
-                  </>
-                ) : <p className="admin-scan-assign-blocked">No bank details submitted yet.</p>}
                 <h3>Shop location and photos</h3>
                 {media ? (
                   <>

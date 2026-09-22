@@ -8,6 +8,7 @@ import { assignUnassignedQr } from '../services/qr.js';
 import { uploadVendorPhoto, removeVendorPhoto, uploadVendorDocument, removeVendorDocument, createVendorDocumentUrl } from '../services/vendor-documents.js';
 import { geoTagFields, resolveGeoTag } from '../lib/geo-tag.js';
 import { INDIAN_STATES } from '../lib/indian-states.js';
+import { bankDetailsSchema, isBankDetailsSet } from '../lib/vendor-bank-details.js';
 import { vendorSearchWhere, pickerPagination, PICKER_VENDOR_SELECT } from '../lib/vendor-search.js';
 
 export const salesRoutes = Router();
@@ -311,14 +312,16 @@ salesRoutes.post('/vendors/:vendorId/photos/:photoType', requireAuth, requireSal
 
 // Sales fills bank details on the Solar Mitra's behalf (same fields and 200 KB documents as the
 // vendor's own form, stored in the same VendorBankDetails row). Same ownership rule as above.
-const bankDetailsSchema = z.object({
-	upi_number: z.string().trim().max(40).optional(),
-	upi_id: z.string().trim().max(120).optional(),
-	account_holder_name: z.string().trim().max(160).optional(),
-	account_number: z.string().trim().max(40).optional(),
-	ifsc_code: z.string().trim().max(20).optional(),
-});
+// Once anything has been saved, only Admin may change it (see isBankDetailsSet below) — Sales
+// gets a locked, read-only view instead of silently overwriting what may already be verified.
 const documentUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 200 * 1024 } });
+
+function bankDetailsLockedError() {
+	const error = new Error('Bank details are already set for this Solar Mitra. Ask an Admin to change them.');
+	error.statusCode = 403;
+	error.code = 'BANK_DETAILS_LOCKED';
+	return error;
+}
 
 async function ownedVendor(request) {
 	return prisma.vendor.findFirst({
@@ -352,6 +355,8 @@ salesRoutes.patch('/vendors/:vendorId/bank-details', requireAuth, requireSales, 
 		const input = bankDetailsSchema.parse(request.body);
 		const vendor = await ownedVendor(request);
 		if (!vendor) return vendorNotFound(response);
+		const existing = await prisma.vendorBankDetails.findUnique({ where: { vendorId: vendor.id } });
+		if (isBankDetailsSet(existing)) throw bankDetailsLockedError();
 		const fields = { upiNumber: input.upi_number, upiId: input.upi_id, accountHolderName: input.account_holder_name, accountNumber: input.account_number, ifscCode: input.ifsc_code };
 		const details = await prisma.$transaction(async (transaction) => {
 			const saved = await transaction.vendorBankDetails.upsert({ where: { vendorId: vendor.id }, create: { vendorId: vendor.id, ...fields }, update: fields });
@@ -375,6 +380,8 @@ salesRoutes.post('/vendors/:vendorId/bank-details/:documentType', requireAuth, r
 		}
 		const vendor = await ownedVendor(request);
 		if (!vendor) return vendorNotFound(response);
+		const existingBeforeUpload = await prisma.vendorBankDetails.findUnique({ where: { vendorId: vendor.id } });
+		if (isBankDetailsSet(existingBeforeUpload)) throw bankDetailsLockedError();
 		const uploaded = await uploadVendorDocument(vendor.id, type, request.file);
 		try {
 			const existing = await prisma.vendorBankDetails.findUnique({ where: { vendorId: vendor.id } });

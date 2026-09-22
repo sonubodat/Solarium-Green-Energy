@@ -207,6 +207,15 @@ Set or fix a Solar Mitra's shop geo-tag — Admin only. Unlike the Sales endpoin
 Sales fills bank details on a Solar Mitra's behalf (same fields as the Vendor's own form: `upi_number`, `upi_id`, `account_holder_name`, `account_number`, `ifsc_code`; `documentType` is `passbook` or `cheque`, PDF/JPG/PNG up to 200 KB).
 
 - Rules: same ownership as location/photos (`sales_user_id` is the caller or null); stored in the same `VendorBankDetails` row Admin and the Vendor see; the PATCH writes a `VENDOR_BANK_DETAILS_UPDATED` audit log
+- **Locked once set**: PATCH and the document upload both check `isBankDetailsSet()` (`backend/src/lib/vendor-bank-details.js` — true once any of the 5 text fields or a passbook/cheque object key is non-empty) *before* writing anything; if it is already set, both return `403 BANK_DETAILS_LOCKED` and change nothing. GET is unaffected — Sales can still view. Only `PATCH|POST /api/admin/vendors/:vendorId/bank-details...` (below) can change it after that.
+- Errors: `404 VENDOR_NOT_FOUND`, `400 INVALID_DOCUMENT_TYPE`, `413 DOCUMENT_TOO_LARGE`, `403 BANK_DETAILS_LOCKED`
+
+### `GET|PATCH /api/admin/vendors/:vendorId/bank-details` and `POST /api/admin/vendors/:vendorId/bank-details/:documentType`
+
+Admin's own bank-details routes for any Vendor — same fields, document types and size/type limits as the Sales/Vendor versions above, sharing the same `bankDetailsSchema` (`backend/src/lib/vendor-bank-details.js`) and the same `VendorBankDetails` row.
+
+- Authentication: Admin (no ownership restriction — any Vendor)
+- Rules: **never locked** — Admin can create or overwrite bank details at any time, including after Sales or the Vendor has already set them (the one place that can still fix a mistake or replace a document); the PATCH and the document upload each write a `VENDOR_BANK_DETAILS_UPDATED` audit log with `{ source: 'ADMIN' }`
 - Errors: `404 VENDOR_NOT_FOUND`, `400 INVALID_DOCUMENT_TYPE`, `413 DOCUMENT_TOO_LARGE`
 
 ### `POST /api/sales/vendors/:vendorId/photos/:photoType` and `POST /api/admin/vendors/:vendorId/photos/:photoType`

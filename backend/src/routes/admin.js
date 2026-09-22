@@ -22,6 +22,7 @@ import { artworkSizeWarning } from '../services/qr-artwork.js';
 import { vendorSearchWhere, normalizeSearchInput, pickerPagination, PICKER_VENDOR_SELECT } from '../lib/vendor-search.js';
 import { buildQrCodeSequence, normalizeQrCode, parseQrRange } from '../services/qr-print.js';
 import { INDIAN_STATES } from '../lib/indian-states.js';
+import { bankDetailsSchema } from '../lib/vendor-bank-details.js';
 import { env } from '../config/env.js';
 import { normalizePhone, customerHashFor, findExistingLeadByHash } from '../lib/customer-identity.js';
 import { geoTagFields, resolveGeoTag } from '../lib/geo-tag.js';
@@ -2641,6 +2642,65 @@ adminRoutes.get('/vendors/:vendorId/bank-details', requireAuth, requireAdmin, as
 			},
 		});
 	} catch (error) {
+		return next(error);
+	}
+});
+
+const bankDocumentUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 200 * 1024 } });
+
+// Admin can always create or overwrite a Vendor's bank details, unlike Sales' equivalent route
+// (routes/sales.js), which locks once anything has been saved — Admin is the one place that can
+// still fix a mistake or replace a document after that. Same fields/limits/upload pattern.
+adminRoutes.patch('/vendors/:vendorId/bank-details', requireAuth, requireAdmin, async (request, response, next) => {
+	try {
+		const input = bankDetailsSchema.parse(request.body);
+		const vendor = await prisma.vendor.findUnique({ where: { id: request.params.vendorId }, select: { id: true } });
+		if (!vendor) return response.status(404).json({ success: false, error: { code: 'VENDOR_NOT_FOUND', message: 'Vendor was not found.' } });
+		const fields = { upiNumber: input.upi_number, upiId: input.upi_id, accountHolderName: input.account_holder_name, accountNumber: input.account_number, ifscCode: input.ifsc_code };
+		const details = await prisma.$transaction(async (transaction) => {
+			const saved = await transaction.vendorBankDetails.upsert({ where: { vendorId: vendor.id }, create: { vendorId: vendor.id, ...fields }, update: fields });
+			await writeAudit(transaction, request, 'VENDOR_BANK_DETAILS_UPDATED', 'Vendor', vendor.id, { source: 'ADMIN' });
+			return saved;
+		});
+		return response.json({ success: true, bank_details: { ...details, passbookObjectKey: undefined, chequeObjectKey: undefined } });
+	} catch (error) {
+		return next(error);
+	}
+});
+
+adminRoutes.post('/vendors/:vendorId/bank-details/:documentType', requireAuth, requireAdmin, bankDocumentUpload.single('file'), async (request, response, next) => {
+	try {
+		const type = request.params.documentType;
+		if (!['passbook', 'cheque'].includes(type)) {
+			const error = new Error('Document type must be passbook or cheque.');
+			error.statusCode = 400;
+			error.code = 'INVALID_DOCUMENT_TYPE';
+			throw error;
+		}
+		const vendor = await prisma.vendor.findUnique({ where: { id: request.params.vendorId }, select: { id: true } });
+		if (!vendor) return response.status(404).json({ success: false, error: { code: 'VENDOR_NOT_FOUND', message: 'Vendor was not found.' } });
+		const uploaded = await uploadVendorDocument(vendor.id, type, request.file);
+		try {
+			const existing = await prisma.vendorBankDetails.findUnique({ where: { vendorId: vendor.id } });
+			const data = type === 'passbook'
+				? { passbookObjectKey: uploaded.objectKey, passbookFileName: uploaded.fileName, passbookFileSize: uploaded.fileSize, passbookContentType: uploaded.contentType }
+				: { chequeObjectKey: uploaded.objectKey, chequeFileName: uploaded.fileName, chequeFileSize: uploaded.fileSize, chequeContentType: uploaded.contentType };
+			await prisma.$transaction(async (transaction) => {
+				await transaction.vendorBankDetails.upsert({ where: { vendorId: vendor.id }, create: { vendorId: vendor.id, ...data }, update: data });
+				await writeAudit(transaction, request, 'VENDOR_BANK_DETAILS_UPDATED', 'Vendor', vendor.id, { source: 'ADMIN' });
+			});
+			await removeVendorDocument(type === 'passbook' ? existing?.passbookObjectKey : existing?.chequeObjectKey);
+		} catch (dbError) {
+			await removeVendorDocument(uploaded.objectKey);
+			throw dbError;
+		}
+		return response.json({ success: true, document: { type, fileName: uploaded.fileName, fileSize: uploaded.fileSize } });
+	} catch (error) {
+		if (error instanceof multer.MulterError && error.code === 'LIMIT_FILE_SIZE') {
+			error.statusCode = 413;
+			error.code = 'DOCUMENT_TOO_LARGE';
+			error.message = 'Documents must be 200 KB or smaller.';
+		}
 		return next(error);
 	}
 });

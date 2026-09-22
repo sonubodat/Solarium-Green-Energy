@@ -984,6 +984,33 @@
   width: 150px;
 }
 
+/* Indian state names run long ("Dadra and Nagar Haveli and Daman and Diu"), so the State edit
+   select needs more room than the 150px text inputs and must truncate instead of clipping
+   mid-glyph or overflowing the row. Custom arrow keeps it visually consistent across browsers
+   instead of falling back to inconsistent native OS chrome. */
+/* `select.admin-table-select` (not `.admin-table-select`) so this ties `.admin-table select`'s
+   specificity above and wins by source order — otherwise that rule's `background: #fff`
+   shorthand would silently reset the custom arrow's background-image to none. */
+select.admin-table-select {
+  width: 190px;
+  max-width: 190px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  appearance: none;
+  -webkit-appearance: none;
+  background-color: #fff;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2384939d' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 6px center;
+  background-size: 12px;
+  padding-right: 22px;
+}
+
+.admin-table-select option {
+  font-size: 12px;
+}
+
 .admin-qr-code {
   display: inline-flex;
   align-items: center;
