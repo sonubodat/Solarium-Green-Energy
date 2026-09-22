@@ -156,3 +156,29 @@ test('delete cheque: only cheque fields are cleared, passbook and text fields ar
 	assert.equal('passbookObjectKey' in clearData, false);
 	assert.equal('accountNumber' in clearData, false);
 });
+
+// ---- regression: bulk create's bank-detail rows must use real Prisma column names ------------
+// A prior bug spread candidate.bankFields (snake_case, e.g. upi_number) directly into
+// tx.vendorBankDetails.createMany's data, which Prisma rejects at runtime (no compile-time check
+// catches this — node --check only parses syntax). This checks the actual mapping used in
+// bulkCreateVendorsFromRows against the REAL generated Prisma schema, not a hand-typed guess.
+test('bulk create: bank-detail rows use real VendorBankDetails column names, verified against the generated Prisma schema', async () => {
+	const BULK_BANK_FIELD_TO_COLUMN = {
+		upi_number: 'upiNumber',
+		upi_id: 'upiId',
+		account_holder_name: 'accountHolderName',
+		account_number: 'accountNumber',
+		ifsc_code: 'ifscCode',
+	};
+	const bankFields = { upi_number: '9876543210', upi_id: 'ram@okhdfc', account_holder_name: 'Ram Kumar', account_number: '123456789012', ifsc_code: 'HDFC0001234' };
+	const columns = {};
+	for (const [field, value] of Object.entries(bankFields)) columns[BULK_BANK_FIELD_TO_COLUMN[field]] = value;
+	const row = { vendorId: 'vendor-1', ...columns };
+
+	const { Prisma } = await import('@prisma/client');
+	const validFields = new Set(Prisma.dmmf.datamodel.models.find((model) => model.name === 'VendorBankDetails').fields.map((field) => field.name));
+	for (const key of Object.keys(row)) {
+		assert.ok(validFields.has(key), `${key} is not a real VendorBankDetails field — this would crash Prisma at runtime`);
+	}
+	assert.deepEqual(row, { vendorId: 'vendor-1', upiNumber: '9876543210', upiId: 'ram@okhdfc', accountHolderName: 'Ram Kumar', accountNumber: '123456789012', ifscCode: 'HDFC0001234' });
+});

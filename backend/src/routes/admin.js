@@ -610,6 +610,17 @@ adminRoutes.post('/vendors/bulk-delete', requireAuth, requireAdmin, async (reque
 // Per-row bank fields validated independently (routes/admin.js bulk-create): a malformed one is
 // dropped and reported as a warning, never a row failure — see bulkCreateVendorsFromRows below.
 const BULK_BANK_FORMAT_FIELDS = ['upi_number', 'upi_id', 'account_number', 'ifsc_code'];
+// Prisma's VendorBankDetails fields are camelCase; the request/CSV fields (and validateBankField's
+// keys) are snake_case, matching every other bank-details route in this file. Bulk create is the
+// only place that builds a VendorBankDetails row straight from those keys, so the rename has to
+// happen explicitly here.
+const BULK_BANK_FIELD_TO_COLUMN = {
+	upi_number: 'upiNumber',
+	upi_id: 'upiId',
+	account_holder_name: 'accountHolderName',
+	account_number: 'accountNumber',
+	ifsc_code: 'ifscCode',
+};
 
 async function bulkCreateVendorsFromRows(request, response, rows, batchState) {
 	const failures = [];
@@ -713,7 +724,11 @@ async function bulkCreateVendorsFromRows(request, response, rows, batchState) {
 				.map((row) => {
 					const candidate = candidateByPhone.get(row.mobileNumber);
 					if (!candidate || Object.keys(candidate.bankFields).length === 0) return null;
-					return { vendorId: row.id, ...candidate.bankFields };
+					const columns = {};
+					for (const [field, value] of Object.entries(candidate.bankFields)) {
+						columns[BULK_BANK_FIELD_TO_COLUMN[field]] = value;
+					}
+					return { vendorId: row.id, ...columns };
 				})
 				.filter(Boolean);
 			if (bankDetailsData.length) {
