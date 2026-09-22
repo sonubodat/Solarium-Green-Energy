@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { z } from 'zod';
 import { INDIAN_STATES } from '../src/lib/indian-states.js';
 
 test('INDIAN_STATES: 36 entries, alphabetical, no duplicates', () => {
@@ -81,4 +82,33 @@ test('leads export CSV: Vendor State column sits next to the other vendor column
 	assert.ok(header.split(',').includes('Vendor State'));
 	assert.equal(header.split(',')[13], 'Vendor State');
 	assert.equal(row.split(',')[13], 'Maharashtra');
+});
+
+// Mirrors the exact `state` field declaration now in routes/admin.js's vendorSchema and
+// routes/sales.js's vendorCreateSchema: required on create, and — for admin.js only — optional
+// again on update because vendorUpdateSchema is `vendorSchema.partial()`.
+test('vendor state is required for single/manual creation (Admin and Sales)', () => {
+	const createLikeSchema = z.object({
+		business_name: z.string().trim().min(2).max(160),
+		state: z.enum(INDIAN_STATES),
+	});
+	assert.throws(() => createLikeSchema.parse({ business_name: 'Ram Store' }));
+	assert.throws(() => createLikeSchema.parse({ business_name: 'Ram Store', state: '' }));
+	assert.throws(() => createLikeSchema.parse({ business_name: 'Ram Store', state: 'Narnia' }));
+	assert.doesNotThrow(() => createLikeSchema.parse({ business_name: 'Ram Store', state: 'Maharashtra' }));
+});
+
+test('vendor state stays optional on edit (Admin\'s .partial() update schema)', () => {
+	const baseSchema = z.object({ business_name: z.string().trim().min(2).max(160), state: z.enum(INDIAN_STATES) });
+	const updateSchema = baseSchema.partial();
+	assert.doesNotThrow(() => updateSchema.parse({}));
+	assert.doesNotThrow(() => updateSchema.parse({ business_name: 'Renamed Store' }));
+});
+
+test('bulk create never requires (or even accepts through this schema) a state field', () => {
+	// Bulk create's own schemas (bulkCreateVendorsSchema / the rows-mode row shape in admin.js)
+	// have no `state` key at all — nothing to make required, and this change touched neither.
+	const bulkRowSchema = z.object({ name: z.string(), phone: z.string(), password: z.string().optional() });
+	assert.doesNotThrow(() => bulkRowSchema.parse({ name: 'Ram Store', phone: '9876543210' }));
+	assert.equal('state' in bulkRowSchema.shape, false);
 });

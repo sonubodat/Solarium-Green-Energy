@@ -30,7 +30,7 @@ const vendorCreateSchema = z.object({
 	login_identifier: z.string().trim().min(3).max(120),
 	mobile_number: z.string().trim().min(10).max(20),
 	password: optionalPassword,
-	state: z.enum(INDIAN_STATES).optional(),
+	state: z.enum(INDIAN_STATES),
 	...geoTagFields,
 });
 

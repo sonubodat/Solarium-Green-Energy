@@ -447,7 +447,6 @@ function SalesPage() {
             }
           : {}),
       };
-      if (!body.state) delete body.state;
       const result = await apiRequest('/sales/vendors', {
         method: 'POST',
         body: JSON.stringify(body),
@@ -1127,11 +1126,12 @@ function SalesPage() {
                     </label>
 
                     <label className="sales-field-labeled">
-                      <span>State (optional)</span>
+                      <span>State</span>
                       <div className="sales-field-input">
                         <select
                           id="sales-new-vendor-state"
                           name="state"
+                          required
                           value={newVendor.state}
                           onChange={(event) => setNewVendor({ ...newVendor, state: event.target.value })}
                         >

@@ -180,9 +180,9 @@ Complete onboarding for an eligible registration.
 Create a Vendor directly — the third onboarding path, alongside self-registration-then-onboard and Admin's direct create (`POST /api/admin/vendors`).
 
 - Authentication: Sales
-- Request: `business_name`, `owner_name`, `login_identifier`, `mobile_number`, `password` (temporary — no OTP/mobile verification, matching the rest of this app's vendor-creation paths), optional `state` (one of the fixed India state/UT names, `backend/src/lib/indian-states.js`; omit to leave blank); optional `latitude`, `longitude`, `accuracy`, `captured_at` (the Solar Mitra's shop geo-tag — same validation as `POST /api/public/leads`'s location fields: both-or-neither, `400 INVALID_LOCATION` otherwise)
+- Request: `business_name`, `owner_name`, `login_identifier`, `mobile_number`, `password` (temporary — no OTP/mobile verification, matching the rest of this app's vendor-creation paths), **`state`** (required — one of the fixed India state/UT names, `backend/src/lib/indian-states.js`); optional `latitude`, `longitude`, `accuracy`, `captured_at` (the Solar Mitra's shop geo-tag — same validation as `POST /api/public/leads`'s location fields: both-or-neither, `400 INVALID_LOCATION` otherwise)
 - Rules: normalize identifiers, `password` optional (blank = the mobile number), store only a password hash, set `must_change_password = true`, set ownership to the creating Sales user (`sales_user_id`), write an audit log (`VENDOR_CREATED`); a valid geo-tag creates a `VendorOnboardingMedia` row in the same transaction — never blocks creation if omitted
-- Errors: a duplicate `login_identifier` or `mobile_number` returns `409 VENDOR_ALREADY_EXISTS`; an invalid mobile number returns `400 INVALID_MOBILE_NUMBER`
+- Errors: a duplicate `login_identifier` or `mobile_number` returns `409 VENDOR_ALREADY_EXISTS`; an invalid mobile number returns `400 INVALID_MOBILE_NUMBER`; a missing/unrecognized `state` returns `400 VALIDATION_ERROR`
 
 ### `PATCH /api/sales/vendors/:vendorId/location`
 
@@ -278,9 +278,9 @@ Export every matching Vendor as CSV (`solarium-solar-mitras.csv`), same shape as
 Create a Vendor directly.
 
 - Authentication: Admin
-- Request: business details, optional initial password, optional `state` (one of the fixed India state/UT names; omit to leave blank), and optional `latitude`, `longitude`, `accuracy`, `captured_at` (the Solar Mitra's shop geo-tag — same both-or-neither validation as the Sales equivalent, `400 INVALID_LOCATION` otherwise)
+- Request: business details, optional initial password, **`state`** (required — one of the fixed India state/UT names), and optional `latitude`, `longitude`, `accuracy`, `captured_at` (the Solar Mitra's shop geo-tag — same both-or-neither validation as the Sales equivalent, `400 INVALID_LOCATION` otherwise)
 - Rules: normalize identifiers, store only a password hash, and audit the creation; a valid geo-tag creates a `VendorOnboardingMedia` row in the same transaction — never blocks creation if omitted
-- `state` is **not** offered by bulk create (CSV rows or names-only) — a bulk-created Vendor's `state` is blank until edited
+- `state` is **not** offered by bulk create (CSV rows or names-only) — a bulk-created Vendor's `state` is blank until edited. It is also optional again on `PATCH` (edit) — this requirement is creation-only.
 
 ### `PATCH /api/admin/vendors/:vendorId`
 

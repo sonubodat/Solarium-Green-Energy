@@ -10,7 +10,7 @@ import PDFDocument from 'pdfkit';
 import { randomUUID } from 'node:crypto';
 import { hashPassword, verifyPassword, normalizeLoginIdentifier, publicVendor, slugifyVendorName, autoPasswordFor } from '../services/auth.js';
 import { z } from 'zod';
-import { createQrArtworkUrl, createVendorDocumentUrl, removeQrArtwork, removeVendorDocument, uploadQrArtwork, uploadQrProof, uploadVendorPhoto, removeVendorPhoto, createVendorPhotoUrl } from '../services/vendor-documents.js';
+import { createQrArtworkUrl, createVendorDocumentUrl, removeQrArtwork, removeVendorDocument, uploadQrArtwork, uploadQrProof, uploadVendorDocument, uploadVendorPhoto, removeVendorPhoto, createVendorPhotoUrl } from '../services/vendor-documents.js';
 import { generateQrProof, generateQrTemplatePdf, generateQrPrintChunks, PDF_CHUNK_PAGES } from '../services/qr-proof.js';
 import { streamZipResponse } from '../services/stream-zip-response.js';
 import { runHeavy } from '../lib/heavy-queue.js';
@@ -35,13 +35,15 @@ const generateQrSchema = z.object({ quantity: z.number().int().min(1).max(5000) 
 const reassignQrSchema = z.object({ vendor_id: z.string().trim().min(1) });
 // Admin's own create/edit form; Sales' own (separate) create form has the same state field —
 // see routes/sales.js. Bulk create never asks for a state (see bulkCreateVendorsSchema below).
+// `state` is required here (creation), but vendorUpdateSchema below applies .partial() to this
+// same object, which makes every field — state included — optional again for editing.
 const vendorSchema = z.object({
 	business_name: z.string().trim().min(2).max(160),
 	owner_name: z.string().trim().min(2).max(120),
 	login_identifier: z.string().trim().min(3).max(120),
 	mobile_number: z.string().trim().min(10).max(20),
 	password: z.string().min(8).optional(),
-	state: z.enum(INDIAN_STATES).optional(),
+	state: z.enum(INDIAN_STATES),
 });
 const vendorCreateSchema = vendorSchema.extend(geoTagFields);
 const vendorUpdateSchema = vendorSchema.partial().extend({

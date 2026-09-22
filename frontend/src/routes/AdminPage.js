@@ -972,9 +972,6 @@ function AdminPage() {
       if (!body.password) {
         delete body.password;
       }
-      if (!body.state) {
-        delete body.state;
-      }
       if (newVendorLocation) {
         body.latitude = newVendorLocation.latitude;
         body.longitude = newVendorLocation.longitude;
@@ -2153,10 +2150,11 @@ function AdminPage() {
               </label>
 
               <label className="admin-form-field">
-                <span>State (optional)</span>
+                <span>State</span>
                 <select
                   id="new-vendor-state"
                   name="state"
+                  required
                   value={newVendor.state}
                   onChange={(event) =>
                     setNewVendor({
