@@ -18,6 +18,8 @@ Success responses return JSON with the resource or operation result. Validation 
 
 Do not expose password hashes, session tokens, reset tokens, raw customer hashes, internal database IDs where a public identifier is sufficient, or protected customer phone numbers to unauthorized roles.
 
+Every CSV export (`toCsv`/`csvCell` in `backend/src/routes/admin.js`, used by leads/vendors/print-history/audit-logs export) neutralizes a cell that starts with `=`, `+`, `-`, or `@` by prefixing it with `'`, before the existing quote/newline escaping — defusing Excel/Sheets formula injection from any pasted or stored value (a UPI ID, an account holder name, a lead's name field, etc.) that later gets exported and opened in a spreadsheet.
+
 ## Authentication
 
 ### `POST /api/auth/login`
@@ -216,7 +218,17 @@ Admin's own bank-details routes for any Vendor — same fields, document types a
 
 - Authentication: Admin (no ownership restriction — any Vendor)
 - Rules: **never locked** — Admin can create or overwrite bank details at any time, including after Sales or the Vendor has already set them (the one place that can still fix a mistake or replace a document); the PATCH and the document upload each write a `VENDOR_BANK_DETAILS_UPDATED` audit log with `{ source: 'ADMIN' }`
+- **Format validation** (`bankDetailsSchema`, applies to this route and the Sales/Vendor ones above): `ifsc_code` is normalized to uppercase then checked against the standard 11-character IFSC pattern; `upi_id` is checked as a `name@bank`-shaped VPA (case preserved); `upi_number` and `account_number` are digits-only, 10-18 and 6-18 digits respectively — a **character/length sanity check only, not verification** that the account/IFSC/UPI actually exists or belongs to the Vendor. A malformed value on these routes returns `400 VALIDATION_ERROR`; `account_holder_name` has no format check (free text). A blank field clears it; an omitted key leaves it unchanged.
 - Errors: `404 VENDOR_NOT_FOUND`, `400 INVALID_DOCUMENT_TYPE`, `413 DOCUMENT_TOO_LARGE`
+
+### `POST /api/admin/vendors/:vendorId/bank-details/:documentType/delete`
+
+Removes one uploaded bank document (passbook or cheque). Admin only — Sales has no equivalent.
+
+- Authentication: Admin
+- Rules: clears only that document type's 4 fields (object key, file name, size, content type); the other document and all 5 text fields are untouched. Idempotent — a no-op success if nothing was uploaded for that type. Writes a `VENDOR_BANK_DETAILS_UPDATED` audit log with `{ source: 'ADMIN', action: 'DOCUMENT_DELETED', documentType, vendorId }`.
+- **Ordering**: the database is cleared and audited first, then the storage object is removed. If storage cleanup fails (logged server-side), the response is still `200 { success: true, warning: 'Document metadata was deleted, but storage cleanup failed.' }` — the DB is already consistent; a leftover storage object is a harmless cleanup-later concern rather than a dangling reference to a missing file.
+- Errors: `404 VENDOR_NOT_FOUND`, `400 INVALID_DOCUMENT_TYPE`
 
 ### `POST /api/sales/vendors/:vendorId/photos/:photoType` and `POST /api/admin/vendors/:vendorId/photos/:photoType`
 
@@ -330,20 +342,22 @@ Soft-delete multiple Vendors from the current Admin selection.
 Create up to 500 Solar Mitras at once. Two mutually exclusive request shapes (sending both or neither returns `400`).
 
 - Authentication: Admin
-- **Rows mode (real phone numbers).** `{ "rows": [{ "name": "Ram Store", "phone": "9876543210", "password": "" }] }` — 1 to 500 rows; `phone` and `password` optional in the schema but enforced per row below. Built for the CSV upload/paste in the Admin UI (columns `name, phone, password`; template at `GET /api/admin/vendors/bulk-import-template`).
+- Optional `state`, applied to **every** Vendor in the batch (not a per-row field) — batch metadata, e.g. "this whole paste is Gujarat". Works with either mode below.
+- **Rows mode (real phone numbers).** `{ "rows": [{ "name": "Ram Store", "phone": "9876543210", "password": "", "upi_number": "", "upi_id": "", "account_holder_name": "", "account_number": "", "ifsc_code": "" }] }` — 1 to 500 rows; every field but `name` is optional in the schema, enforced per row below. Built for the CSV upload/paste in the Admin UI (columns `name, phone, password` plus the 5 bank columns; template at `GET /api/admin/vendors/bulk-import-template`).
   - Per row, in order: the phone is normalized (`+91`/`91`/`0091`/spaces handled) and must be a valid Indian mobile (`MOBILE_REQUIRED`, `INVALID_MOBILE_NUMBER`); the password is the trimmed `password`, or the normalized phone when blank, and must be at least 8 characters (`PASSWORD_TOO_SHORT`); a phone repeated later in the same batch, or already held by a non-deleted Solar Mitra, or equal to any existing `login_identifier` (including a deleted vendor's), is skipped (`PHONE_ALREADY_USED`). A deleted vendor's *mobile number* may be reused unless its `login_identifier` equals that number.
-  - Created fields: `business_name` = `owner_name` = `name`; `login_identifier` = `mobile_number` = the normalized phone (so the phone is literally the username, backed by the unique constraint); `must_change_password = true`.
+  - **Bank fields, per row, all optional.** Each of `upi_number`/`upi_id`/`account_number`/`ifsc_code` is validated and normalized independently with the same `bankDetailsSchema` rules as the single-entry bank-details routes above (format sanity checks only, never verification). A malformed field is **not saved and does not fail the row** — it's dropped and reported in `summary.warnings[]` (`{ row, field, code: 'INVALID_FORMAT', reason }`); the Solar Mitra is still created. `account_holder_name` is free text (trimmed, no format check). A row with no valid bank fields gets no `VendorBankDetails` row at all.
+  - Created fields: `business_name` = `owner_name` = `name`; `login_identifier` = `mobile_number` = the normalized phone (so the phone is literally the username, backed by the unique constraint); `must_change_password = true`. Vendor creation and any bank-details rows for the batch are written in one transaction — if the bank-details insert fails, the vendor insert rolls back too. A bank-details row is only ever attached to a vendor this same batch verified it created (matched by phone **and** name) — never to a pre-existing or unrelated Vendor.
   - One row's problem never fails the batch; `summary.failures[].row` is the row's original 1-based position in the request.
-- **Names mode (legacy).** `{ "names": ["Ram Store"], "auto_password": false }` — `owner_name` defaults to the business name, `login_identifier` is a slug of the name (`-2`/`-3` on collision), `mobile_number` is a placeholder from a reserved band (`9000010001` upward) for the Admin to correct later. With `auto_password` the password is `<slug-without-hyphens>@123`, otherwise `password_hash` stays `null`.
+- **Names mode (legacy).** `{ "names": ["Ram Store"], "auto_password": false }` — `owner_name` defaults to the business name, `login_identifier` is a slug of the name (`-2`/`-3` on collision), `mobile_number` is a placeholder from a reserved band (`9000010001` upward) for the Admin to correct later. With `auto_password` the password is `<slug-without-hyphens>@123`, otherwise `password_hash` stays `null`. No per-row bank fields (names mode has no per-row structure for them; only batch-level `state` applies here too).
 - Rows are written with a small fixed number of bulk statements, never one transaction per row (measured ~0.8 s/row that way). One `VENDOR_BULK_CREATED` audit entry per created vendor; passwords are never logged or audited.
-- Success: `{ success: true, summary: { totalRows, created, failed, failures: [{ row, businessName, reason }] } }`
+- Success: `{ success: true, summary: { totalRows, created, failed, failures: [{ row, businessName, reason }], warnings: [{ row, field, code, reason }] } }`
 
 ### `GET /api/admin/vendors/bulk-import-template`
 
 Download the blank CSV for rows mode.
 
 - Authentication: Admin
-- Response: `text/csv`, header `name,phone,password=phonenumber` and one example row. The parser matches the password column by prefix, so a plain `password` header also works. A blank password cell means "use the phone number".
+- Response: `text/csv`, header `name,phone,password=phonenumber,upi_number,upi_id,account_holder_name,account_number,ifsc_code` and one valid-format example row. The parser matches the password column by prefix (a plain `password` header also works); the 5 bank columns are matched by exact header alias only (e.g. `ifsc_code`, `ifsc`, or `ifsc code`), not by prefix or position — a header like `account_number_backup` is never misread as the real column. A blank password cell means "use the phone number"; a blank bank cell means that field is simply not provided.
 
 ### `POST /api/admin/vendors/:vendorId/reset-password`
 

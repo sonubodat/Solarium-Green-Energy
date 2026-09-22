@@ -74,6 +74,7 @@ function AdminBankForm({ vendorId }) {
   const [docs, setDocs] = useState({ passbook: null, cheque: null });
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState({ text: '', error: false });
+  const [confirmDeleteDoc, setConfirmDeleteDoc] = useState(null); // 'passbook' | 'cheque' | null
 
   const load = useCallback(() => {
     if (!vendorId) return undefined;
@@ -102,6 +103,7 @@ function AdminBankForm({ vendorId }) {
     setBank(EMPTY_ADMIN_BANK);
     setDocs({ passbook: null, cheque: null });
     setNote({ text: '', error: false });
+    setConfirmDeleteDoc(null);
     return load();
   }, [load]);
 
@@ -130,6 +132,22 @@ function AdminBankForm({ vendorId }) {
       load(); // refresh the filename and the signed "Open" link for the new document
     } catch (error) {
       setNote({ text: error.message || 'Unable to upload document.', error: true });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function deleteDoc(type) {
+    setConfirmDeleteDoc(null);
+    setBusy(true);
+    try {
+      const result = await apiRequest(`/admin/vendors/${vendorId}/bank-details/${type}/delete`, { method: 'POST', body: '{}' });
+      setNote(result.warning
+        ? { text: result.warning, error: true } // DB was cleared; the storage file may be orphaned — see server logs
+        : { text: `${type === 'passbook' ? 'Passbook' : 'Cancelled cheque'} deleted.`, error: false });
+      load(); // the deleted doc's filename/"Open" link disappear once this resolves
+    } catch (error) {
+      setNote({ text: error.message || 'Unable to delete document.', error: true });
     } finally {
       setBusy(false);
     }
@@ -170,9 +188,26 @@ function AdminBankForm({ vendorId }) {
         </label>
       ))}
       {(docs.passbook || docs.cheque) && (
-        <div className="admin-row-actions" style={{ marginTop: '8px' }}>
-          {docs.passbook?.url && <a className="admin-mini-button" href={docs.passbook.url} target="_blank" rel="noreferrer">Open passbook</a>}
-          {docs.cheque?.url && <a className="admin-mini-button" href={docs.cheque.url} target="_blank" rel="noreferrer">Open cancelled cheque</a>}
+        <div className="admin-row-actions" style={{ marginTop: '8px', flexWrap: 'wrap' }}>
+          {[['passbook', 'Open passbook'], ['cheque', 'Open cancelled cheque']].map(([type, openLabel]) => (
+            docs[type] && (
+              <span key={type} className="admin-row-actions" style={{ padding: 0 }}>
+                {docs[type].url && <a className="admin-mini-button" href={docs[type].url} target="_blank" rel="noreferrer">{openLabel}</a>}
+                {confirmDeleteDoc === type ? (
+                  <span className="admin-inline-confirm">
+                    <button type="button" className="admin-mini-button danger solid" disabled={busy} onClick={() => deleteDoc(type)}>Confirm</button>
+                    <button type="button" className="admin-mini-button admin-inline-confirm-cancel" disabled={busy} onClick={() => setConfirmDeleteDoc(null)} aria-label="Cancel delete">
+                      <Icon path={ICONS.close} />
+                    </button>
+                  </span>
+                ) : (
+                  <button type="button" className="admin-mini-button danger" disabled={busy} onClick={() => setConfirmDeleteDoc(type)}>
+                    Delete {type === 'passbook' ? 'passbook' : 'cancelled cheque'}
+                  </button>
+                )}
+              </span>
+            )
+          ))}
         </div>
       )}
       {note.text && <small className={note.error ? 'admin-field-error' : ''} role={note.error ? 'alert' : 'status'} style={{ display: 'block', marginTop: '8px' }}>{note.text}</small>}
@@ -214,11 +249,24 @@ function fetchAssignableVendors(search, page, limit) {
 
 const BULK_VENDOR_NAME_HEADERS = ['name', 'business_name', 'business name', 'solar mitra', 'solar mitra name'];
 
-// Parses a pasted or uploaded list into { name, phone, password } rows. Handles CSV and the
-// tab-separated text a spreadsheet paste produces, quoted cells (a name may contain a comma),
-// an optional header row, and a header like `password=phonenumber` (matched by prefix). A line
-// with a single cell is a name with no phone. Rows are not de-duplicated here — the backend
-// reports duplicates with their row numbers.
+// Unlike phone/password (matched by prefix, forgiving of e.g. "phone number"), these financial
+// columns are matched by exact alias only — a prefix match risks misreading a near-miss header
+// like "account_number_backup" as the real column.
+const BULK_VENDOR_BANK_FIELD_ALIASES = {
+  upi_number: ['upi_number', 'upi number'],
+  upi_id: ['upi_id', 'upi id'],
+  account_holder_name: ['account_holder_name', 'account holder name', 'account holder'],
+  account_number: ['account_number', 'account number'],
+  ifsc_code: ['ifsc_code', 'ifsc', 'ifsc code'],
+};
+
+// Parses a pasted or uploaded list into { name, phone, password, upi_number, upi_id,
+// account_holder_name, account_number, ifsc_code } rows. Handles CSV and the tab-separated text
+// a spreadsheet paste produces, quoted cells (a name may contain a comma), an optional header
+// row, and a header like `password=phonenumber` (matched by prefix). A line with a single cell
+// is a name with no phone. The 5 bank fields are only ever read from a matching header column —
+// there is no positional fallback for them, so a CSV with no header simply leaves them blank.
+// Rows are not de-duplicated here — the backend reports duplicates with their row numbers.
 function parseBulkVendorRows(text) {
   let records;
   try {
@@ -237,20 +285,30 @@ function parseBulkVendorRows(text) {
   let nameIndex = 0;
   let phoneIndex = 1;
   let passwordIndex = 2;
+  const bankIndex = { upi_number: -1, upi_id: -1, account_holder_name: -1, account_number: -1, ifsc_code: -1 };
   if (records.length && BULK_VENDOR_NAME_HEADERS.includes(String(records[0][0] || '').toLowerCase())) {
-    const header = records.shift().map((cell) => String(cell || '').toLowerCase());
+    const header = records.shift().map((cell) => String(cell || '').trim().toLowerCase());
     const phoneColumn = header.findIndex((cell) => cell.startsWith('phone') || cell.startsWith('mobile'));
     const passwordColumn = header.findIndex((cell) => cell.startsWith('password'));
     if (phoneColumn !== -1) phoneIndex = phoneColumn;
     if (passwordColumn !== -1) passwordIndex = passwordColumn;
+    for (const field of Object.keys(bankIndex)) {
+      bankIndex[field] = header.findIndex((cell) => BULK_VENDOR_BANK_FIELD_ALIASES[field].includes(cell));
+    }
   }
 
   const rows = records
-    .map((cells) => ({
-      name: String(cells[nameIndex] || '').trim(),
-      phone: String(cells[phoneIndex] || '').trim(),
-      password: String(cells[passwordIndex] || '').trim(),
-    }))
+    .map((cells) => {
+      const row = {
+        name: String(cells[nameIndex] || '').trim(),
+        phone: String(cells[phoneIndex] || '').trim(),
+        password: String(cells[passwordIndex] || '').trim(),
+      };
+      for (const [field, index] of Object.entries(bankIndex)) {
+        row[field] = index === -1 ? '' : String(cells[index] || '').trim();
+      }
+      return row;
+    })
     .filter((row) => row.name || row.phone)
     // A second uploaded file appended below the first repeats its header row mid-list.
     .filter((row) => !(BULK_VENDOR_NAME_HEADERS.includes(row.name.toLowerCase()) && /^(phone|mobile)/i.test(row.phone)));
@@ -263,6 +321,14 @@ const BULK_VENDOR_FAILURE_LABELS = {
   PHONE_ALREADY_USED: 'Phone number already used',
   PASSWORD_TOO_SHORT: 'Password under 8 characters',
   LOGIN_IDENTIFIER_TAKEN: 'Login ID already taken',
+};
+
+const BULK_VENDOR_BANK_FIELD_LABELS = {
+  upi_number: 'UPI number',
+  upi_id: 'UPI ID',
+  account_holder_name: 'Account holder name',
+  account_number: 'Account number',
+  ifsc_code: 'IFSC code',
 };
 
 const NAV_ITEMS = [
@@ -4869,10 +4935,13 @@ function AdminPage() {
 
           <form onSubmit={bulkCreateVendors} className="admin-modal-body">
             <p>
-              Columns: <strong>name, phone, password</strong>. Paste rows from a
-              spreadsheet or upload a .csv file — up to 500 at a time. Leave
-              password blank to use the phone number as the initial password;
-              each Solar Mitra must set a new one on first login.
+              Columns: <strong>name, phone, password</strong>, plus optional bank
+              details — <strong>upi_number, upi_id, account_holder_name, account_number,
+              ifsc_code</strong>. Paste rows from a spreadsheet or upload a .csv
+              file — up to 500 at a time. Leave password blank to use the phone
+              number as the initial password (changing it later is optional).
+              Bank fields are format-checked only, not verified — a malformed
+              one is skipped with a warning, the Solar Mitra is still created.
             </p>
 
             <button
@@ -4963,6 +5032,7 @@ function AdminPage() {
   function renderBulkVendorResultModal() {
     if (!bulkVendorResult) return null;
     const failures = bulkVendorResult.failures || [];
+    const warnings = bulkVendorResult.warnings || [];
     return (
       <div className="admin-modal-overlay" onClick={() => setBulkVendorResult(null)}>
         <div className="admin-modal admin-deletion-modal" role="dialog" aria-modal="true" aria-label="Bulk Solar Mitra creation result" onClick={(event) => event.stopPropagation()}>
@@ -4985,6 +5055,19 @@ function AdminPage() {
                     <div className="admin-deletion-blocked-item" key={`bulk-vendor-fail-${item.row}`}>
                       <strong>Row {item.row}: {item.businessName}</strong>
                       <small>{BULK_VENDOR_FAILURE_LABELS[item.reason] || item.reason}</small>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
+            {warnings.length > 0 && (
+              <>
+                <p>{warnings.length} bank field(s) were skipped — the Solar Mitra was still created:</p>
+                <div className="admin-deletion-blocked-list">
+                  {warnings.map((item) => (
+                    <div className="admin-deletion-blocked-item" key={`bulk-vendor-warn-${item.row}-${item.field}`}>
+                      <strong>Row {item.row}: {BULK_VENDOR_BANK_FIELD_LABELS[item.field] || item.field}</strong>
+                      <small>{item.reason}</small>
                     </div>
                   ))}
                 </div>

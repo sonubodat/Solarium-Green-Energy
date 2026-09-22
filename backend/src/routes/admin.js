@@ -22,7 +22,7 @@ import { artworkSizeWarning } from '../services/qr-artwork.js';
 import { vendorSearchWhere, normalizeSearchInput, pickerPagination, PICKER_VENDOR_SELECT } from '../lib/vendor-search.js';
 import { buildQrCodeSequence, normalizeQrCode, parseQrRange } from '../services/qr-print.js';
 import { INDIAN_STATES } from '../lib/indian-states.js';
-import { bankDetailsSchema } from '../lib/vendor-bank-details.js';
+import { bankDetailsSchema, validateBankField } from '../lib/vendor-bank-details.js';
 import { env } from '../config/env.js';
 import { normalizePhone, customerHashFor, findExistingLeadByHash } from '../lib/customer-identity.js';
 import { geoTagFields, resolveGeoTag } from '../lib/geo-tag.js';
@@ -79,6 +79,15 @@ const bulkCreateVendorsSchema = z.object({
 		name: z.string().trim().min(2).max(160),
 		phone: z.string().max(40).optional(),
 		password: z.string().max(200).optional(),
+		// Per-vendor bank fields — unlike `state` above, these genuinely differ per row. Kept loose
+		// here (no format regex at the schema level): each is validated independently in
+		// bulkCreateVendorsFromRows, so one malformed field skips-with-warning instead of a schema
+		// error rejecting the whole row.
+		upi_number: z.string().max(40).optional(),
+		upi_id: z.string().max(120).optional(),
+		account_holder_name: z.string().max(160).optional(),
+		account_number: z.string().max(40).optional(),
+		ifsc_code: z.string().max(20).optional(),
 	})).min(1).max(500).optional(),
 	auto_password: z.boolean().optional().default(false),
 	// Batch metadata, not row data: one state applied to every Vendor in this batch (e.g. "this
@@ -598,8 +607,13 @@ adminRoutes.post('/vendors/bulk-delete', requireAuth, requireAdmin, async (reque
 // unique constraint on login_identifier backs up the duplicate check. The password is the
 // row's own (trimmed) password, or the phone number when blank. must_change_password keeps
 // its schema default (true), and the vendor routes refuse data access until it is cleared.
+// Per-row bank fields validated independently (routes/admin.js bulk-create): a malformed one is
+// dropped and reported as a warning, never a row failure — see bulkCreateVendorsFromRows below.
+const BULK_BANK_FORMAT_FIELDS = ['upi_number', 'upi_id', 'account_number', 'ifsc_code'];
+
 async function bulkCreateVendorsFromRows(request, response, rows, batchState) {
 	const failures = [];
+	const warnings = [];
 	const candidates = [];
 	const seenPhones = new Set();
 
@@ -613,7 +627,23 @@ async function bulkCreateVendorsFromRows(request, response, rows, batchState) {
 		if (password.length < 8) return fail('PASSWORD_TOO_SHORT');
 		if (seenPhones.has(phone)) return fail('PHONE_ALREADY_USED');
 		seenPhones.add(phone);
-		return candidates.push({ rowNumber, name: row.name, phone, password });
+
+		// Each bank field is optional and validated on its own: a malformed one is skipped (not
+		// saved) and reported as a warning, so one bad IFSC/UPI value never loses an otherwise
+		// valid row. account_holder_name has no format to check, just trimmed.
+		const bankFields = {};
+		for (const field of BULK_BANK_FORMAT_FIELDS) {
+			const result = validateBankField(field, row[field]);
+			if (!result.ok) {
+				warnings.push({ row: rowNumber, field, code: result.code, reason: result.reason });
+			} else if (result.value !== undefined) {
+				bankFields[field] = result.value;
+			}
+		}
+		const holderName = row.account_holder_name?.trim();
+		if (holderName) bankFields.account_holder_name = holderName;
+
+		return candidates.push({ rowNumber, name: row.name, phone, password, bankFields });
 	});
 
 	if (candidates.length) {
@@ -651,24 +681,46 @@ async function bulkCreateVendorsFromRows(request, response, rows, batchState) {
 			state: batchState ?? null,
 		})));
 
-		const result = await prisma.vendor.createMany({ data, skipDuplicates: true });
-		createdCount = result.count;
+		// Vendors and their bank-details rows are written in one transaction: if the bank-details
+		// insert fails, the vendor insert rolls back too. Every call below uses `tx`, never the
+		// module-level `prisma`, so nothing in here can escape the transaction.
+		const created = await prisma.$transaction(async (tx) => {
+			const insertedCount = (await tx.vendor.createMany({ data, skipDuplicates: true })).count;
 
-		// Attribute rows to this request by phone + name so a row that lost a race to another
-		// request claiming the same phone is reported rather than mistaken for ours.
-		const inserted = await prisma.vendor.findMany({
-			where: { loginIdentifier: { in: data.map((row) => row.loginIdentifier) } },
-			select: { id: true, loginIdentifier: true, businessName: true, mobileNumber: true },
-		});
-		const insertedByPhone = new Map(inserted.map((row) => [row.loginIdentifier, row]));
-		const created = [];
-		candidates.forEach((candidate) => {
-			const row = insertedByPhone.get(candidate.phone);
-			if (row && row.businessName === candidate.name && row.mobileNumber === candidate.phone && created.length < createdCount) {
-				created.push(row);
-			} else {
-				failures.push({ row: candidate.rowNumber, businessName: candidate.name, reason: 'PHONE_ALREADY_USED' });
+			// Attribute rows to this request by phone + name so a row that lost a race to another
+			// request claiming the same phone is reported rather than mistaken for ours.
+			const inserted = await tx.vendor.findMany({
+				where: { loginIdentifier: { in: data.map((row) => row.loginIdentifier) } },
+				select: { id: true, loginIdentifier: true, businessName: true, mobileNumber: true },
+			});
+			const insertedByPhone = new Map(inserted.map((row) => [row.loginIdentifier, row]));
+			const rowsCreated = [];
+			candidates.forEach((candidate) => {
+				const row = insertedByPhone.get(candidate.phone);
+				if (row && row.businessName === candidate.name && row.mobileNumber === candidate.phone && rowsCreated.length < insertedCount) {
+					rowsCreated.push(row);
+				} else {
+					failures.push({ row: candidate.rowNumber, businessName: candidate.name, reason: 'PHONE_ALREADY_USED' });
+				}
+			});
+
+			// Bank rows are built ONLY from rowsCreated — the set this batch just verified it
+			// created (matched by phone AND name, above) — never from a broader/global vendor
+			// lookup. A phone collision or stale match can therefore never attach bank details to
+			// a vendor this request didn't create.
+			const candidateByPhone = new Map(candidates.map((candidate) => [candidate.phone, candidate]));
+			const bankDetailsData = rowsCreated
+				.map((row) => {
+					const candidate = candidateByPhone.get(row.mobileNumber);
+					if (!candidate || Object.keys(candidate.bankFields).length === 0) return null;
+					return { vendorId: row.id, ...candidate.bankFields };
+				})
+				.filter(Boolean);
+			if (bankDetailsData.length) {
+				await tx.vendorBankDetails.createMany({ data: bankDetailsData });
 			}
+
+			return rowsCreated;
 		});
 
 		if (created.length) {
@@ -688,9 +740,10 @@ async function bulkCreateVendorsFromRows(request, response, rows, batchState) {
 	}
 
 	failures.sort((first, second) => first.row - second.row);
+	warnings.sort((first, second) => first.row - second.row);
 	return response.status(201).json({
 		success: true,
-		summary: { totalRows: rows.length, created: createdCount, failed: failures.length, failures },
+		summary: { totalRows: rows.length, created: createdCount, failed: failures.length, failures, warnings },
 	});
 }
 
@@ -1901,7 +1954,12 @@ adminRoutes.post('/qr/:qrId/assign', requireAuth, requireAdmin, async (request, 
 adminRoutes.get('/vendors/bulk-import-template', requireAuth, requireAdmin, (request, response) => {
 	// The password column header carries its own rule; the parser matches it by prefix, so a
 	// plain "password" header works too. A blank password cell means "use the phone number".
-	const csv = toCsv(['name', 'phone', 'password=phonenumber'], [['Ram Store', '9876543210', '']]);
+	// The 5 bank columns are all optional — leave any of them blank to skip that field. Example
+	// values below are valid-format (not real accounts), so they parse cleanly if pasted as-is.
+	const csv = toCsv(
+		['name', 'phone', 'password=phonenumber', 'upi_number', 'upi_id', 'account_holder_name', 'account_number', 'ifsc_code'],
+		[['Ram Store', '9876543210', '', '9123456780', 'ramstore@okhdfc', 'Ram Kumar', '123456789012', 'HDFC0001234']],
+	);
 	response.setHeader('Content-Type', 'text/csv; charset=utf-8');
 	response.setHeader('Content-Disposition', 'attachment; filename="solar-mitras-import-template.csv"');
 	return response.send(csv);
@@ -2259,8 +2317,15 @@ adminRoutes.get('/leads', requireAuth, requireAdmin, async (request, response, n
 	}
 });
 
+// A cell starting with =/+/-/@ can execute as a formula when the CSV is opened in Excel/Sheets
+// (e.g. a pasted UPI ID or account holder name). Prefixing with ' defuses it while keeping the
+// value readable; done before the existing quote/newline escaping, which is unaffected by it.
+function neutralizeFormula(text) {
+	return /^[=+\-@]/.test(text) ? `'${text}` : text;
+}
+
 function csvCell(value) {
-	const text = value === null || value === undefined ? '' : String(value);
+	const text = neutralizeFormula(value === null || value === undefined ? '' : String(value));
 	return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
 }
 
@@ -2708,6 +2773,52 @@ adminRoutes.post('/vendors/:vendorId/bank-details/:documentType', requireAuth, r
 			error.code = 'DOCUMENT_TOO_LARGE';
 			error.message = 'Documents must be 200 KB or smaller.';
 		}
+		return next(error);
+	}
+});
+
+// Removes one uploaded bank document (passbook or cheque) and clears only that type's 4 DB
+// fields — the other document and every text field (UPI/IFSC/account) are untouched. Admin only;
+// Sales has no equivalent (matches the Sales-lock-once-set / Admin-never-locked model already in
+// place for the rest of bank details).
+//
+// Storage and Postgres can't be one atomic transaction, so the order is deliberate: clear the DB
+// first (so a partial failure never leaves a live UI pointing at a deleted file), audit it, THEN
+// attempt the storage delete. A storage-delete failure is logged and still reported to the admin
+// as a warning (not hidden as a plain success) — the DB is already correct; the file becomes an
+// orphan to clean up later, not a broken reference.
+adminRoutes.post('/vendors/:vendorId/bank-details/:documentType/delete', requireAuth, requireAdmin, async (request, response, next) => {
+	try {
+		const type = request.params.documentType;
+		if (!['passbook', 'cheque'].includes(type)) {
+			const error = new Error('Document type must be passbook or cheque.');
+			error.statusCode = 400;
+			error.code = 'INVALID_DOCUMENT_TYPE';
+			throw error;
+		}
+		const vendor = await prisma.vendor.findUnique({ where: { id: request.params.vendorId }, select: { id: true } });
+		if (!vendor) return response.status(404).json({ success: false, error: { code: 'VENDOR_NOT_FOUND', message: 'Vendor was not found.' } });
+
+		const existing = await prisma.vendorBankDetails.findUnique({ where: { vendorId: vendor.id } });
+		const objectKey = type === 'passbook' ? existing?.passbookObjectKey : existing?.chequeObjectKey;
+		if (!objectKey) return response.json({ success: true }); // idempotent: nothing to delete
+
+		const clearData = type === 'passbook'
+			? { passbookObjectKey: null, passbookFileName: null, passbookFileSize: null, passbookContentType: null }
+			: { chequeObjectKey: null, chequeFileName: null, chequeFileSize: null, chequeContentType: null };
+		await prisma.$transaction(async (transaction) => {
+			await transaction.vendorBankDetails.update({ where: { vendorId: vendor.id }, data: clearData });
+			await writeAudit(transaction, request, 'VENDOR_BANK_DETAILS_UPDATED', 'Vendor', vendor.id, { source: 'ADMIN', action: 'DOCUMENT_DELETED', documentType: type, vendorId: vendor.id });
+		});
+
+		try {
+			await removeVendorDocument(objectKey);
+			return response.json({ success: true });
+		} catch (storageError) {
+			console.error(`[BankDetails] storage cleanup failed for vendor ${vendor.id} (${type}):`, storageError);
+			return response.json({ success: true, warning: 'Document metadata was deleted, but storage cleanup failed.' });
+		}
+	} catch (error) {
 		return next(error);
 	}
 });
