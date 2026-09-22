@@ -2670,6 +2670,10 @@ function AdminPage() {
                               </button>
                             ))}
                             {!isProtectedDirectVendor(vendor) && (confirmPurgeVendorId === vendor.id ? (
+                              <>
+                              <small className="admin-field-error" style={{ display: 'block', width: '100%' }}>
+                                This also permanently deletes the Solar Mitra "{vendor.businessName}" itself, not just its history.
+                              </small>
                               <span className="admin-inline-confirm">
                                 <input
                                   type="text"
@@ -2699,6 +2703,7 @@ function AdminPage() {
                                   <Icon path={ICONS.close} />
                                 </button>
                               </span>
+                              </>
                             ) : (
                               <button
                                 className="admin-mini-button danger"
