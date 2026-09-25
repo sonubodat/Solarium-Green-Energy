@@ -13,11 +13,15 @@ const PAGE_SIZE = 10;
 //
 // valueLabel (optional) names a `value` the parent set without going through the list.
 // fetchPage(search, page, limit) must resolve to { vendors, pagination: { page, limit, total } }.
+// recentCount (optional) is for pickers whose fetchPage returns newest-first: it is the page size,
+// and while the search box is empty only that first page is shown (no paging through the whole
+// list) — typing a search brings normal paging back, so every Solar Mitra stays reachable.
 // This component only narrows what a user is OFFERED; it is not an authorization boundary —
 // the server re-checks every id it receives.
-function VendorPicker({ fetchPage, value, valueLabel, onChange, placeholder = 'Select Solar Mitra', disabled = false, ariaLabel }) {
+function VendorPicker({ fetchPage, value, valueLabel, onChange, placeholder = 'Select Solar Mitra', disabled = false, ariaLabel, recentCount }) {
   const instanceId = useId();
   const listId = `${instanceId}-list`;
+  const pageSize = recentCount || PAGE_SIZE;
 
   const [open, setOpen] = useState(false);
   const [selected, setSelected] = useState(null);
@@ -25,7 +29,7 @@ function VendorPicker({ fetchPage, value, valueLabel, onChange, placeholder = 'S
   // search + page live in ONE object and change together, so a new search can never be paired
   // with the previous search's page number (no request is made for a page-5 of the new query).
   const [query, setQuery] = useState({ search: '', page: 1 });
-  const [result, setResult] = useState({ vendors: [], total: 0, limit: PAGE_SIZE, loading: false, error: '' });
+  const [result, setResult] = useState({ vendors: [], total: 0, limit: pageSize, loading: false, error: '' });
   const [activeIndex, setActiveIndex] = useState(-1);
   const [position, setPosition] = useState(null);
 
@@ -71,13 +75,13 @@ function VendorPicker({ fetchPage, value, valueLabel, onChange, placeholder = 'S
     const seq = requestSeq.current + 1;
     requestSeq.current = seq;
     setResult((current) => ({ ...current, loading: true, error: '' }));
-    fetchPageRef.current(query.search, query.page, PAGE_SIZE)
+    fetchPageRef.current(query.search, query.page, pageSize)
       .then((data) => {
         if (seq !== requestSeq.current) return;
         setResult({
           vendors: data.vendors || [],
           total: data.pagination?.total ?? 0,
-          limit: data.pagination?.limit ?? PAGE_SIZE,
+          limit: data.pagination?.limit ?? pageSize,
           loading: false,
           error: '',
         });
@@ -91,7 +95,7 @@ function VendorPicker({ fetchPage, value, valueLabel, onChange, placeholder = 'S
       // Invalidate an in-flight request when the picker closes or the query changes again.
       requestSeq.current += 1;
     };
-  }, [open, query]);
+  }, [open, query, pageSize]);
 
   // Portalled to <body> with fixed positioning: the QR table sits inside an overflow container
   // that would otherwise clip an absolutely-positioned dropdown.
@@ -162,6 +166,10 @@ function VendorPicker({ fetchPage, value, valueLabel, onChange, placeholder = 'S
   const totalPages = Math.max(1, Math.ceil(result.total / result.limit));
   const firstShown = result.total === 0 ? 0 : (query.page - 1) * result.limit + 1;
   const lastShown = Math.min(query.page * result.limit, result.total);
+  const recentOnly = Boolean(recentCount) && !query.search;
+  const footerText = recentOnly && result.total > lastShown
+    ? `Newest ${lastShown} of ${result.total} · type to search the rest`
+    : `Showing ${firstShown}–${lastShown} of ${result.total}`;
   // valueLabel lets a parent that set `value` itself (e.g. just after creating a Solar Mitra)
   // show that name before anything has been picked from the list.
   const label = selected?.businessName || (value ? valueLabel || 'Selected Solar Mitra' : placeholder);
@@ -253,24 +261,26 @@ function VendorPicker({ fetchPage, value, valueLabel, onChange, placeholder = 'S
 
             <div className="vendor-picker-footer">
               <span aria-live="polite">
-                {result.total ? `Showing ${firstShown}–${lastShown} of ${result.total}` : ' '}
+                {result.total ? footerText :' '}
               </span>
-              <span className="vendor-picker-pager">
-                <button
-                  type="button"
-                  disabled={query.page <= 1 || result.loading}
-                  onClick={() => setQuery((current) => ({ ...current, page: current.page - 1 }))}
-                >
-                  Prev
-                </button>
-                <button
-                  type="button"
-                  disabled={query.page >= totalPages || result.loading}
-                  onClick={() => setQuery((current) => ({ ...current, page: current.page + 1 }))}
-                >
-                  Next
-                </button>
-              </span>
+              {!recentOnly && (
+                <span className="vendor-picker-pager">
+                  <button
+                    type="button"
+                    disabled={query.page <= 1 || result.loading}
+                    onClick={() => setQuery((current) => ({ ...current, page: current.page - 1 }))}
+                  >
+                    Prev
+                  </button>
+                  <button
+                    type="button"
+                    disabled={query.page >= totalPages || result.loading}
+                    onClick={() => setQuery((current) => ({ ...current, page: current.page + 1 }))}
+                  >
+                    Next
+                  </button>
+                </span>
+              )}
             </div>
           </div>
         </>,

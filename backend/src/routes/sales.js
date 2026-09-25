@@ -119,7 +119,7 @@ salesRoutes.get('/vendors', requireAuth, requireSales, async (request, response,
 			],
 		};
 		const [vendors, total] = await Promise.all([
-			prisma.vendor.findMany({ where, orderBy: [{ businessName: 'asc' }, { id: 'asc' }], skip, take: limit, select: PICKER_VENDOR_SELECT }),
+			prisma.vendor.findMany({ where, orderBy: [{ createdAt: 'desc' }, { id: 'desc' }], skip, take: limit, select: PICKER_VENDOR_SELECT }),
 			prisma.vendor.count({ where }),
 		]);
 		return response.json({ success: true, vendors, pagination: { page, limit, total } });

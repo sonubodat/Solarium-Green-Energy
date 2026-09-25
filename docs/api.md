@@ -164,7 +164,7 @@ Search and page through Solar Mitras available to the authenticated Sales user. 
 - Authentication: Sales
 - Query: `search` (optional), `page` (default 1), `limit` (default 10, capped at 50), `include_assigned` (`true` only for the "Complete onboarding" picker)
 - Search: substring, case-insensitive, over business name, owner name, login ID and mobile number; a phone-shaped query (`+91 98765 43210`, `98765-43210`, `919876543210`) is normalized to digits first. See `backend/src/lib/vendor-search.js` for the exact rules — `%` and `_` are matched literally, and a bare `91` is an ordinary substring, never "every Indian number"
-- Response: `vendors: [{ id, businessName, ownerName, loginIdentifier, mobileNumber }]` name-sorted, plus `pagination: { page, limit, total }`. The old hard cap of 100 is gone: every eligible Solar Mitra is reachable by paging or searching
+- Response: `vendors: [{ id, businessName, ownerName, loginIdentifier, mobileNumber }]` **newest first** (`createdAt desc`, `id` as tie-break; the Sales UI shows the first 3 and finds the rest through `search`), plus `pagination: { page, limit, total }`. The old hard cap of 100 is gone: every eligible Solar Mitra is reachable by paging or searching
 - Rules: scope results by Sales ownership (owned by this user, or by nobody), ACTIVE only; excludes any Vendor already holding an active QR assignment unless `include_assigned=true`, so one active QR per Solar Mitra is still enforced at the assign picker
 - **This only narrows what the UI offers.** The ownership checks on `POST /api/sales/qr/assign`, `PATCH /api/sales/vendors/:vendorId/location` and the photo endpoints remain the real authorization boundary and are unchanged
 

@@ -23,6 +23,9 @@ function salesVendorFetcher(includeAssigned) {
 }
 const fetchAssignableVendors = salesVendorFetcher(false);
 const fetchOnboardingVendors = salesVendorFetcher(true);
+// GET /sales/vendors is newest-first: the pickers show only this many (a just-created Solar Mitra
+// is row 1) and everything else is found through the search box.
+const SALES_PICKER_RECENT = 3;
 
 const ICONS = {
   user: 'M12 12a4.5 4.5 0 1 0 0-9 4.5 4.5 0 0 0 0 9Zm0 2c-4.2 0-7.5 2.1-7.5 4.7V21h15v-2.3c0-2.6-3.3-4.7-7.5-4.7Z',
@@ -985,6 +988,7 @@ function SalesPage() {
 
                     <VendorPicker
                       fetchPage={fetchAssignableVendors}
+                      recentCount={SALES_PICKER_RECENT}
                       value={selectedVendorId}
                       valueLabel={selectedVendorLabel}
                       onChange={(id, vendor) => {
@@ -1245,6 +1249,7 @@ function SalesPage() {
                         <Icon path={ICONS.store} className="sales-field-icon" />
                         <VendorPicker
                           fetchPage={fetchOnboardingVendors}
+                          recentCount={SALES_PICKER_RECENT}
                           value={completeVendorId}
                           onChange={(id) => setCompleteVendorId(id)}
                           ariaLabel="Solar Mitra to complete onboarding for"

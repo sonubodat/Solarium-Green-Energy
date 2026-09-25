@@ -47,7 +47,9 @@ function PublicPage() {
   const [referral, setReferral] = useState(null);
   const [referralMessage, setReferralMessage] = useState('');
   const [lead, setLead] = useState(EMPTY_LEAD);
-  const [consent, setConsent] = useState(true);
+  // Starts unticked: DPDP Act s.6 needs a clear affirmative action, a pre-ticked box is not consent.
+  const [consent, setConsent] = useState(false);
+  const noticeRef = useRef(null);
   const [message, setMessage] = useState('');
   const [loading, setLoading] = useState(false);
   const [submitted, setSubmitted] = useState(null);
@@ -149,7 +151,7 @@ function PublicPage() {
       await apiRequest('/public/leads', { method: 'POST', body: JSON.stringify(body) });
       setSubmitted({ name: lead.customer_name });
       setLead(EMPTY_LEAD);
-      setConsent(true);
+      setConsent(false);
       setPhoneCheck('idle');
       setCapturedCoords(null);
     } catch (error) {
@@ -376,7 +378,11 @@ function PublicPage() {
 
           <label className="enquiry-consent">
             <input type="checkbox" required checked={consent} onChange={(event) => setConsent(event.target.checked)} />
-            <span>I agree to be contacted by Solarium Energy regarding my enquiry.</span>
+            <span>
+              I consent to Solarium Energy processing the personal data I have entered, and sharing it with the Solar Mitra who referred me, to contact me about my solar enquiry, as described in the{' '}
+              <button type="button" className="enquiry-consent-link" onClick={() => noticeRef.current?.showModal()}>Privacy Notice</button>
+              {' '}(Digital Personal Data Protection Act, 2023).
+            </span>
           </label>
 
           <button className="enquiry-submit" disabled={loading || phoneCheck === 'taken' || phoneCheck === 'checking'}>
@@ -386,6 +392,26 @@ function PublicPage() {
 
           <p className="enquiry-security"><Icon path={ICONS.lock} className="enquiry-security-icon" /> Your information is safe with us.</p>
         </form>
+
+        <dialog ref={noticeRef} className="enquiry-notice" aria-labelledby="enquiry-notice-title">
+          <h2 id="enquiry-notice-title">Privacy Notice</h2>
+          <p className="enquiry-notice-sub">Under the Digital Personal Data Protection Act, 2023 (India)</p>
+          <dl>
+            <dt>What we collect</dt>
+            <dd>Your name, phone number, and the optional details you fill in: email, city, pincode, average electricity bill, preferred system size and, only if you tap "Use my location", your GPS location.</dd>
+            <dt>Why</dt>
+            <dd>To contact you about your solar enquiry and give you a quote. Nothing else, and we do not sell your data.</dd>
+            <dt>Who sees it</dt>
+            <dd>Solarium Energy, and the Solar Mitra (partner) whose QR code or link brought you here.</dd>
+            <dt>Cookies and browser storage</dt>
+            <dd>This page uses only essential browser storage needed for the form to work. No advertising or tracking cookies.</dd>
+            <dt>How long</dt>
+            <dd>Only as long as needed for your enquiry, or as the law requires.</dd>
+            <dt>Your rights</dt>
+            <dd>You can withdraw consent, and ask to access, correct or erase your data, by emailing <a href={`mailto:${SUPPORT_EMAIL}`}>{SUPPORT_EMAIL}</a>. You may also complain to the Data Protection Board of India.</dd>
+          </dl>
+          <button type="button" className="enquiry-notice-close" onClick={() => noticeRef.current?.close()}>Close</button>
+        </dialog>
 
         {message && <p className="enquiry-message" role="status">{message}</p>}
 
