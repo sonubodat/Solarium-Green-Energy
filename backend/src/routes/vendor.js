@@ -16,6 +16,11 @@ import {
 	verifyPassword,
 } from '../services/auth.js';
 import { createVendorDocumentUrl, removeVendorDocument, uploadVendorDocument } from '../services/vendor-documents.js';
+import { ensureVendorQrWithin } from '../services/qr.js';
+import { generateQrPng, generateQrSvg, publicReferralUrl } from '../services/qr-image.js';
+import { generateQrTemplatePdf } from '../services/qr-proof.js';
+import { buildTemplateSnapshot } from '../lib/auto-poster.js';
+import { runHeavy } from '../lib/heavy-queue.js';
 
 export const vendorRoutes = Router();
 
@@ -119,6 +124,11 @@ vendorRoutes.post('/change-password', requireAuth, requireVendor, async (request
 	}
 });
 
+// Runs on every login and session restore (the workspace loads it first), so it is also the lazy
+// trigger for automatic QR provisioning: a Solar Mitra with no active QR gets a brand-new one
+// (ensureVendorQr never touches an existing QR). That makes this GET perform an idempotent write,
+// on purpose: no extra login API, and a failed attempt is simply retried by the next load.
+// Provisioning failure NEVER blocks the profile: qrProvisioning reports 'failed' and the rest is normal.
 vendorRoutes.get('/profile', requireAuth, requireVendor, async (request, response, next) => {
 	try {
 		const { vendor } = request.auth;
@@ -126,12 +136,80 @@ vendorRoutes.get('/profile', requireAuth, requireVendor, async (request, respons
 			where: { vendorId: vendor.id, unassignedAt: null },
 			select: { qrCode: { select: { code: true } } },
 		});
+		let code = assignment?.qrCode.code || null;
+		let qrProvisioning = 'ok';
+		if (!code) {
+			try {
+				code = (await ensureVendorQrWithin(vendor.id)).code;
+			} catch (error) {
+				qrProvisioning = 'failed'; // failures are logged by the provisioning code; a slow run keeps going and the next load finds its QR
+			}
+		}
 		return response.json({
 			success: true,
 			vendor: publicVendor(vendor),
-			currentQr: assignment?.qrCode.code || null,
-			qrAssigned: Boolean(assignment),
+			currentQr: code,
+			qrAssigned: Boolean(code),
+			qrProvisioning,
+			...(code ? { referralUrl: publicReferralUrl(code), qrSvg: await generateQrSvg(code) } : {}),
 		});
+	} catch (error) {
+		return next(error);
+	}
+});
+
+// The caller's OWN active QR as a poster-ready PNG download (2048 px). There is deliberately no code
+// parameter: the QR comes from the authenticated vendor's assignment, so no vendor can ever fetch
+// another vendor's, or any inventory, QR. (SVG was removed from the vendor side on request.)
+vendorRoutes.get('/qr/image', requireAuth, requireVendorReady, async (request, response, next) => {
+	try {
+		if (request.query.format !== 'png') {
+			return response.status(400).json({ success: false, error: { code: 'INVALID_FORMAT', message: 'format must be png.' } });
+		}
+		const assignment = await prisma.qrAssignment.findFirst({
+			where: { vendorId: request.auth.vendor.id, unassignedAt: null },
+			select: { qrCode: { select: { code: true } } },
+		});
+		if (!assignment) {
+			return response.status(404).json({ success: false, error: { code: 'QR_NOT_ASSIGNED', message: 'You do not have a QR yet.' } });
+		}
+		const { code } = assignment.qrCode;
+		response.setHeader('Content-Disposition', `attachment; filename="Solarium-QR-${code.replace(/[^A-Za-z0-9._-]/g, '-')}.png"`);
+		response.setHeader('Content-Type', 'image/png');
+		return response.send(await generateQrPng(code, 2048));
+	} catch (error) {
+		return next(error);
+	}
+});
+
+// The caller's OWN QR placed on the poster template Admin published (newest published one, the same
+// default the Admin "Auto-QR posters" panel uses), as a one-page PDF. Same rules as /qr/image: no code
+// parameter, so a vendor can only ever get their own QR. It records no print job: this is a vendor
+// self-download, and a job would count as "poster produced" for the QR replace rule.
+vendorRoutes.get('/qr/poster', requireAuth, requireVendorReady, async (request, response, next) => {
+	try {
+		const assignment = await prisma.qrAssignment.findFirst({
+			where: { vendorId: request.auth.vendor.id, unassignedAt: null },
+			select: { qrCode: { select: { code: true } } },
+		});
+		if (!assignment) {
+			return response.status(404).json({ success: false, error: { code: 'QR_NOT_ASSIGNED', message: 'You do not have a QR yet.' } });
+		}
+		const template = await prisma.qrPrintTemplate.findFirst({
+			where: { status: 'PUBLISHED' },
+			orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+		});
+		if (!template) {
+			return response.status(404).json({ success: false, error: { code: 'POSTER_TEMPLATE_NOT_AVAILABLE', message: 'The poster is not available yet. Please try again later.' } });
+		}
+		const { code } = assignment.qrCode;
+		const pdf = await runHeavy(null, () => generateQrTemplatePdf({
+			templateSnapshot: buildTemplateSnapshot(template),
+			items: [{ sequence: 1, expectedCode: code, expectedUrl: publicReferralUrl(code) }],
+		}));
+		response.setHeader('Content-Disposition', `attachment; filename="Solarium-Poster-${code.replace(/[^A-Za-z0-9._-]/g, '-')}.pdf"`);
+		response.setHeader('Content-Type', 'application/pdf');
+		return response.send(pdf);
 	} catch (error) {
 		return next(error);
 	}

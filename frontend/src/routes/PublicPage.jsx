@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { apiRequest } from '../api/client';
 import { SkeletonBlock } from '../components/Skeleton';
+import { cleanQrCodeParam } from '../lib/qr-link';
 import './PublicPage.css';
 
 const ICONS = {
@@ -105,7 +106,8 @@ function PublicPage() {
     (async () => {
       setReferralStatus('loading');
       try {
-        const result = await apiRequest(`/public/qr/${encodeURIComponent(decodeURIComponent(pathQrCode))}`);
+        // Only the first token is the code: a link a share app mangled (text glued on) still resolves.
+        const result = await apiRequest(`/public/qr/${encodeURIComponent(cleanQrCodeParam(pathQrCode))}`);
         if (cancelled) return;
         setReferral(result.referral);
         setReferralStatus('active');

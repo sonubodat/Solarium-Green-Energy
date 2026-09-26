@@ -1,10 +1,21 @@
 import { useEffect, useRef, useState } from 'react';
-import { apiRequest } from '../api/client';
+import { apiRequest, downloadFile } from '../api/client';
 import { SkeletonBlock } from '../components/Skeleton';
 import SessionExpiryGuard from '../components/SessionExpiryGuard';
+import LanguageSwitcher from '../components/LanguageSwitcher';
+import { mailtoHref, shareBody, smsHref, whatsappHref } from '../lib/qr-link';
+import { loadLanguage, saveLanguage, translate, translateStatus } from '../lib/vendor-i18n';
 import './VendorPage.css';
 
+// The password prompt (Solar Mitra still on the phone-number password) closes by itself after this many
+// seconds, the same as choosing "Keep phone number". It shows the countdown; nothing is locked meanwhile.
+const PASSWORD_PROMPT_SECONDS = 60;
+
 const ICONS = {
+  home: 'M3 11.5 12 4l9 7.5M5 10v10h5v-6h4v6h5V10',
+  external: 'M14 4h6v6M20 4l-9 9M10 6H6a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-4',
+  qr: 'M4 4h6v6H4V4Zm10 0h6v6h-6V4ZM4 14h6v6H4v-6Zm10 1h2v2h-2v-2Zm3-1h3v3h-3v-3Zm-3 4h2v2h-2v-2Z',
+  share: 'M8.6 13.5l6.8 4M15.4 6.5l-6.8 4M18 8a3 3 0 1 0 0-6 3 3 0 0 0 0 6ZM6 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Zm12 7a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z',
   store: 'M3 9 5 4h14l2 5M4 9v10a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1V9M3 9h18M8 9v3m8-3v3M9 20v-5h6v5',
   person: 'M12 12a4.5 4.5 0 1 0 0-9 4.5 4.5 0 0 0 0 9Zm0 2c-4.2 0-7.5 2.1-7.5 4.7V21h15v-2.3c0-2.6-3.3-4.7-7.5-4.7Z',
   users: 'M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm7-7a4 4 0 0 1 0 7.8M22 21v-2a4 4 0 0 0-3-3.9',
@@ -79,7 +90,20 @@ function statusClass(status = '') {
   return 'vendor-status vendor-status-neutral';
 }
 
+// Selected language (English by default), remembered in this browser. `t('key', { name })` looks the
+// text up in ../lib/vendor-i18n.
+function useVendorLanguage() {
+  const [language, setLanguageState] = useState(loadLanguage);
+  const setLanguage = (code) => {
+    setLanguageState(code);
+    saveLanguage(code);
+  };
+  const t = (key, params) => translate(language, key, params);
+  return { language, setLanguage, t };
+}
+
 function VendorPage() {
+  const { language, setLanguage, t } = useVendorLanguage();
   const [login, setLogin] = useState({
     identifier: '',
     password: '',
@@ -102,6 +126,14 @@ function VendorPage() {
     upi_number: '', upi_id: '', account_holder_name: '', account_number: '', ifsc_code: '',
   });
   const [bankMessage, setBankMessage] = useState('');
+  const [showQrModal, setShowQrModal] = useState(false);
+  // Direct share options (WhatsApp, SMS, email, copy) for browsers without a system share sheet.
+  const [showShareOptions, setShowShareOptions] = useState(false);
+  const [promptSeconds, setPromptSeconds] = useState(PASSWORD_PROMPT_SECONDS);
+  // Phones show the password notice collapsed; this opens its form. Larger screens always show the form.
+  const [passwordFormOpen, setPasswordFormOpen] = useState(false);
+  // Result of the last "Share link" / QR download / "Try again" action, shown next to the QR card.
+  const [linkNotice, setLinkNotice] = useState('');
 
   const mountedRef = useRef(true);
   const hasScrolledToDashboardRef = useRef(false);
@@ -142,7 +174,7 @@ function VendorPage() {
     // specifically to avoid grabbing 3 pooled connections at once under the old transaction-mode
     // pooler; that root cause was fixed separately — see prisma.js/env.js — and this codebase's
     // Admin dashboard was parallelized the same way once that fix landed.)
-    const profile = await apiRequest('/vendor/profile');
+    const profile = await apiRequest('/vendor/profile', { forceRefresh: true });
 
     const [leads, payouts, bank] = await Promise.all([
       apiRequest('/vendor/leads'),
@@ -223,8 +255,9 @@ function VendorPage() {
 
       setPortalData(data);
       setMessage('');
+      setLinkNotice('');
     } catch (error) {
-      setMessage(error.message || 'Unable to sign in.');
+      setMessage(error.message || t('login.failed'));
     } finally {
       if (mountedRef.current) {
         setLoading(false);
@@ -250,6 +283,13 @@ function VendorPage() {
         password: '',
       });
       setActiveSection('overview');
+      // Nothing from one Solar Mitra's QR card may carry over to the next person who signs in.
+      setShowQrModal(false);
+      setShowShareOptions(false);
+      setLinkNotice('');
+      setPasswordBannerDismissed(false);
+      setPasswordFormOpen(false);
+      setPromptSeconds(PASSWORD_PROMPT_SECONDS);
     }
   }
 
@@ -280,9 +320,9 @@ function VendorPage() {
       }));
 
       setNewPassword('');
-      setMessage('Password changed successfully.');
+      setMessage(t('pw.changed'));
     } catch (error) {
-      setMessage(error.message || 'Unable to change password.');
+      setMessage(error.message || t('pw.failed'));
     } finally {
       setLoading(false);
     }
@@ -294,9 +334,9 @@ function VendorPage() {
     setBankMessage('');
     try {
       await apiRequest('/vendor/bank-details', { method: 'PATCH', body: JSON.stringify(bankDetails) });
-      setBankMessage('Bank details saved.');
+      setBankMessage(t('set.saved'));
     } catch (error) {
-      setBankMessage(error.message || 'Unable to save bank details.');
+      setBankMessage(error.message || t('set.saveFailed'));
     } finally {
       setLoading(false);
     }
@@ -307,11 +347,11 @@ function VendorPage() {
     event.target.value = '';
     if (!file) return;
     if (file.size > 200 * 1024) {
-      setBankMessage('Documents must be 200 KB or smaller.');
+      setBankMessage(t('set.tooBig'));
       return;
     }
     if (!['application/pdf', 'image/jpeg', 'image/png'].includes(file.type)) {
-      setBankMessage('Upload a PDF, JPG, or PNG document.');
+      setBankMessage(t('set.badType'));
       return;
     }
     const body = new FormData();
@@ -320,7 +360,7 @@ function VendorPage() {
     setBankMessage('');
     try {
       await apiRequest(`/vendor/bank-details/${type}`, { method: 'POST', body });
-      setBankMessage(`${type === 'passbook' ? 'Passbook' : 'Cancelled cheque'} uploaded.`);
+      setBankMessage(t('set.uploaded', { doc: t(type === 'passbook' ? 'set.passbook' : 'set.cheque') }));
       const bank = await apiRequest('/vendor/bank-details', { forceRefresh: true });
       setPortalData((current) => {
         const data = [...current.data];
@@ -328,7 +368,7 @@ function VendorPage() {
         return { ...current, data };
       });
     } catch (error) {
-      setBankMessage(error.message || 'Unable to upload document.');
+      setBankMessage(error.message || t('set.uploadFailed'));
     } finally {
       setLoading(false);
     }
@@ -336,25 +376,23 @@ function VendorPage() {
 
   function renderLogin() {
     return (
-      <div className="vendor-auth-page">
+      <div className="vendor-auth-page" lang={language}>
         <div className="vendor-auth-brand">
           <img className="vendor-logo" src="/Sol_logo.jpg" alt="Solarium" />
+          <LanguageSwitcher language={language} onChange={setLanguage} label={t('lang.label')} />
         </div>
 
         <div className="vendor-auth-layout">
           <section className="vendor-auth-intro">
-            <span className="vendor-eyebrow">PARTNER PORTAL</span>
+            <span className="vendor-eyebrow">{t('login.eyebrow')}</span>
 
             <h1>
-              Grow your business
+              {t('login.headTop')}
               <br />
-              with <span>solar.</span>
+              <span>{t('login.headAccent')}</span>
             </h1>
 
-            <p>
-              Share genuine solar opportunities with Solarium Energy
-              and track your referrals and payouts from one simple place.
-            </p>
+            <p>{t('login.intro')}</p>
 
             <div className="vendor-auth-points">
               <div>
@@ -362,8 +400,8 @@ function VendorPage() {
                   <Icon path={ICONS.users} />
                 </span>
                 <div>
-                  <strong>Customer referrals</strong>
-                  <small>Track every enquiry you send.</small>
+                  <strong>{t('login.point1')}</strong>
+                  <small>{t('login.point1Body')}</small>
                 </div>
               </div>
 
@@ -372,8 +410,8 @@ function VendorPage() {
                   <Icon path={ICONS.wallet} />
                 </span>
                 <div>
-                  <strong>Transparent payouts</strong>
-                  <small>Know exactly where your earnings stand.</small>
+                  <strong>{t('login.point2')}</strong>
+                  <small>{t('login.point2Body')}</small>
                 </div>
               </div>
 
@@ -382,8 +420,8 @@ function VendorPage() {
                   <Icon path={ICONS.headset} />
                 </span>
                 <div>
-                  <strong>Dedicated support</strong>
-                  <small>Our team helps move opportunities forward.</small>
+                  <strong>{t('login.point3')}</strong>
+                  <small>{t('login.point3Body')}</small>
                 </div>
               </div>
             </div>
@@ -396,20 +434,20 @@ function VendorPage() {
               </div>
 
               <div>
-                <h2>Solar Mitra login</h2>
-                <p>Access your partner workspace</p>
+                <h2>{t('login.title')}</h2>
+                <p>{t('login.subtitle')}</p>
               </div>
             </div>
 
             <form onSubmit={signIn} className="vendor-form">
               <label>
-                Login ID
+                {t('login.id')}
                 <div className="vendor-input-wrap">
                   <Icon path={ICONS.person} />
                   <input
                     required
                     autoComplete="username"
-                    placeholder="Enter your login ID"
+                    placeholder={t('login.idPlaceholder')}
                     value={login.identifier}
                     onChange={(event) =>
                       setLogin({
@@ -422,14 +460,14 @@ function VendorPage() {
               </label>
 
               <label>
-                Password
+                {t('login.password')}
                 <div className="vendor-input-wrap">
                   <Icon path={ICONS.lock} />
                   <input
                     required
                     type="password"
                     autoComplete="current-password"
-                    placeholder="Enter your password"
+                    placeholder={t('login.passwordPlaceholder')}
                     value={login.password}
                     onChange={(event) =>
                       setLogin({
@@ -446,7 +484,7 @@ function VendorPage() {
                 className="vendor-primary-button"
                 disabled={loading}
               >
-                {loading ? 'Signing in...' : 'Sign in'}
+                {loading ? t('login.submitting') : t('login.submit')}
                 {!loading && <Icon path={ICONS.arrow} />}
               </button>
             </form>
@@ -459,7 +497,7 @@ function VendorPage() {
 
             <div className="vendor-login-security">
               <Icon path={ICONS.lock} />
-              <span>Your account information is securely protected.</span>
+              <span>{t('login.secure')}</span>
             </div>
           </section>
         </div>
@@ -471,17 +509,26 @@ function VendorPage() {
     if (!vendor?.mustChangePassword || passwordBannerDismissed) return null;
 
     return (
-      <div className="vendor-password-banner">
+      <div className={`vendor-password-banner${passwordFormOpen ? ' is-open' : ''}`}>
         <div className="vendor-password-banner-icon">
           <Icon path={ICONS.lock} />
         </div>
 
         <div className="vendor-password-banner-copy">
-          <strong>Your password is your phone number</strong>
-          <span>
-            You can keep it or set a new one below. This is optional.
-          </span>
+          <strong>{t('pw.title')}</strong>
+          <span>{t('pw.body')}</span>
+          {promptSeconds > 0 && <small className="vendor-password-timer">{t('pw.closesIn', { seconds: promptSeconds })}</small>}
         </div>
+
+        {/* Phones only: the form below stays collapsed until this is tapped. */}
+        <button
+          type="button"
+          className="vendor-password-toggle"
+          aria-expanded={passwordFormOpen}
+          onClick={() => setPasswordFormOpen(true)}
+        >
+          {t('pw.set')}
+        </button>
 
         <form
           onSubmit={changeVendorPassword}
@@ -493,7 +540,7 @@ function VendorPage() {
               required
               type="password"
               autoComplete="current-password"
-              placeholder="Current password (your phone number)"
+              placeholder={t('pw.current')}
               value={currentPasswordInput}
               onChange={(event) => setCurrentPasswordInput(event.target.value)}
             />
@@ -502,7 +549,7 @@ function VendorPage() {
             required
             minLength={8}
             type="password"
-            placeholder="New password"
+            placeholder={t('pw.new')}
             value={newPassword}
             onChange={(event) => setNewPassword(event.target.value)}
           />
@@ -512,17 +559,211 @@ function VendorPage() {
             className="vendor-primary-button vendor-small-button"
             disabled={loading}
           >
-            {loading ? 'Updating...' : 'Set password'}
+            {loading ? t('pw.updating') : t('pw.set')}
           </button>
 
           <button
             type="button"
-            className="vendor-text-button"
+            className="vendor-text-button vendor-keep-button"
             onClick={() => setPasswordBannerDismissed(true)}
           >
-            Keep phone number
+            {t('pw.keep')}
           </button>
         </form>
+      </div>
+    );
+  }
+
+  // Phones with a system share sheet get it (it lists WhatsApp, Messages, Telegram and whatever else is
+  // installed). Only the URL is handed over: with a title or text as well, some apps glue that text onto
+  // the link and the recipient gets an address like /v/V-1148%20Interested%20in%20solar. Anywhere else
+  // (a desktop, or a page without https) the direct options open under the buttons. Closing the share
+  // sheet is not an error.
+  async function shareReferralLink(vendor) {
+    setLinkNotice('');
+    if (navigator.share) {
+      try {
+        await navigator.share({ url: vendor.referralUrl });
+        setShowShareOptions(false);
+        return;
+      } catch (error) {
+        if (error?.name === 'AbortError') return;
+      }
+    }
+    setShowShareOptions((open) => !open);
+  }
+
+  async function copyReferralLink(url) {
+    try {
+      await navigator.clipboard.writeText(url);
+      setLinkNotice(t('qr.copied'));
+    } catch (error) {
+      setLinkNotice(t('qr.copyFailed'));
+    }
+  }
+
+  // The vendor's QR on the poster template Admin published (PDF). The plain QR image is not offered for download.
+  async function downloadPoster(code) {
+    setLinkNotice('');
+    try {
+      await downloadFile('/vendor/qr/poster', `Solarium-Poster-${code}.pdf`, t('qr.preparingPoster'));
+    } catch (error) {
+      setLinkNotice(error.message);
+    }
+  }
+
+  // Reloads the profile, which is what asks the server to create the QR again after a failure.
+  async function retryQrSetup() {
+    setLoading(true);
+    setLinkNotice('');
+    try {
+      const data = await loadVendorData(portalData.account);
+      if (mountedRef.current) setPortalData(data);
+    } catch (error) {
+      if (mountedRef.current) setLinkNotice(error.message || t('qr.reloadFailed'));
+    } finally {
+      if (mountedRef.current) setLoading(false);
+    }
+  }
+
+  // The password prompt is showing while the account still uses its phone number as password.
+  const passwordPromptShown = Boolean(portalData?.data?.[0]?.vendor?.mustChangePassword ?? portalData?.account?.mustChangePassword) && !passwordBannerDismissed;
+  useEffect(() => {
+    if (!passwordPromptShown) return undefined;
+    setPromptSeconds(PASSWORD_PROMPT_SECONDS);
+    const timer = setInterval(() => setPromptSeconds((seconds) => Math.max(0, seconds - 1)), 1000);
+    return () => clearInterval(timer);
+  }, [passwordPromptShown]);
+
+  // Time is up: close the prompt, unless a password is half typed (then it stays until sent or dismissed).
+  useEffect(() => {
+    if (passwordPromptShown && promptSeconds === 0 && !newPassword && !currentPasswordInput) {
+      setPasswordBannerDismissed(true);
+    }
+  }, [passwordPromptShown, promptSeconds, newPassword, currentPasswordInput]);
+
+  useEffect(() => {
+    if (!showQrModal) return undefined;
+    const closeOnEscape = (event) => {
+      if (event.key === 'Escape') setShowQrModal(false);
+    };
+    window.addEventListener('keydown', closeOnEscape);
+    return () => window.removeEventListener('keydown', closeOnEscape);
+  }, [showQrModal]);
+
+  function renderQrCard(vendor) {
+    if (vendor.qrProvisioning === 'failed' && !vendor.currentQr) {
+      return (
+        <section className="vendor-qr-card">
+          <div className="vendor-qr-info">
+            <span className="vendor-section-kicker">{t('qr.kicker')}</span>
+            <h2>{t('qr.settingUp')}</h2>
+            <p>{t('qr.setupFailed')}</p>
+            {linkNotice && <small role="status" className="vendor-qr-notice">{linkNotice}</small>}
+          </div>
+          <div className="vendor-qr-actions">
+            <button type="button" className="vendor-qr-button primary" onClick={retryQrSetup} disabled={loading}>
+              {t('qr.tryAgain')}
+            </button>
+          </div>
+        </section>
+      );
+    }
+    if (!vendor.currentQr || !vendor.referralUrl) return null;
+    return (
+      <section className="vendor-qr-card">
+        <div className="vendor-qr-info">
+          <span className="vendor-section-kicker">{t('qr.kicker')}</span>
+          <h2>{vendor.currentQr}</h2>
+          <p>{t('qr.counted')}</p>
+          <div className="vendor-qr-linkrow">
+            <button
+              type="button"
+              className="vendor-qr-link"
+              onClick={() => copyReferralLink(vendor.referralUrl)}
+              title={t('qr.copyTitle')}
+              aria-label={t('qr.copyAria', { url: vendor.referralUrl })}
+            >
+              {vendor.referralUrl}
+            </button>
+            <a
+              className="vendor-qr-open"
+              href={vendor.referralUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              aria-label={t('qr.openAria')}
+            >
+              <Icon path={ICONS.external} />
+              {t('qr.open')}
+            </a>
+          </div>
+          {linkNotice && !showQrModal && <small role="status" className="vendor-qr-notice">{linkNotice}</small>}
+        </div>
+        <div className="vendor-qr-actions">
+          <button
+            type="button"
+            className="vendor-qr-button primary"
+            onClick={() => { setLinkNotice(''); setShowQrModal(true); }}
+          >
+            <Icon path={ICONS.qr} />
+            {t('qr.show')}
+          </button>
+          <button type="button" className="vendor-qr-button" onClick={() => shareReferralLink(vendor)} aria-expanded={showShareOptions}>
+            <Icon path={ICONS.share} />
+            {t('qr.share')}
+          </button>
+        </div>
+        {showShareOptions && (
+          <div className="vendor-share-options" role="group" aria-label={t('qr.shareAria')}>
+            <a
+              href={whatsappHref(shareBody(vendor.businessName, vendor.referralUrl))}
+              target="_blank"
+              rel="noopener noreferrer"
+              onClick={() => setShowShareOptions(false)}
+            >
+              WhatsApp
+            </a>
+            <a href={smsHref(shareBody(vendor.businessName, vendor.referralUrl))} onClick={() => setShowShareOptions(false)}>
+              SMS
+            </a>
+            <a
+              href={mailtoHref(shareBody(vendor.businessName, vendor.referralUrl))}
+              onClick={() => setShowShareOptions(false)}
+            >
+              {t('qr.email')}
+            </a>
+            <button type="button" onClick={() => copyReferralLink(vendor.referralUrl)}>{t('qr.copyLink')}</button>
+          </div>
+        )}
+      </section>
+    );
+  }
+
+  function renderQrModal(vendor) {
+    // Shown as an <img> data URL, never injected as HTML.
+    const source = `data:image/svg+xml;utf8,${encodeURIComponent(vendor.qrSvg)}`;
+    return (
+      <div className="vendor-qr-overlay" onClick={() => setShowQrModal(false)}>
+        <div
+          className="vendor-qr-modal"
+          role="dialog"
+          aria-modal="true"
+          aria-label={t('qr.modalAria')}
+          onClick={(event) => event.stopPropagation()}
+        >
+          <button type="button" className="vendor-qr-close" aria-label={t('qr.close')} onClick={() => setShowQrModal(false)}>
+            ×
+          </button>
+          <img className="vendor-qr-image" src={source} alt={t('qr.alt', { code: vendor.currentQr })} />
+          <strong>{vendor.currentQr}</strong>
+          <p>{t('qr.modalBody')}</p>
+          <div className="vendor-qr-actions">
+            <button type="button" className="vendor-qr-button primary" onClick={() => downloadPoster(vendor.currentQr)}>
+              {t('qr.downloadPoster')}
+            </button>
+          </div>
+          {linkNotice && <small role="status" className="vendor-qr-notice">{linkNotice}</small>}
+        </div>
       </div>
     );
   }
@@ -547,16 +788,21 @@ function VendorPage() {
       <>
         <div className="vendor-welcome">
           <div>
-            <span className="vendor-section-kicker">SOLAR MITRA DASHBOARD</span>
+            <span className="vendor-section-kicker">{t('welcome.kicker')}</span>
 
             <h1>
-              Welcome back,{' '}
-              <span>{vendor.ownerName || vendor.businessName || 'Partner'}</span>
+              <span className="vendor-welcome-label vendor-desktop-only">{t('welcome.back')}</span>
+              <span className="vendor-welcome-label vendor-mobile-only">{t('welcome.short')}</span>{' '}
+              <span className="vendor-welcome-name">{vendor.ownerName || vendor.businessName || t('welcome.partner')}</span>
             </h1>
 
-            <p>
-              Here is a quick look at your referrals and payout activity.
-            </p>
+            <p className="vendor-welcome-sub">{t('welcome.sub')}</p>
+
+            {/* Phones: one line of status in place of the business card on the right. */}
+            <div className="vendor-welcome-status">
+              <Icon path={ICONS.check} />
+              {t('welcome.active')}
+            </div>
           </div>
 
           <div className="vendor-business-badge">
@@ -565,12 +811,15 @@ function VendorPage() {
             </span>
 
             <div>
-              <strong>{vendor.businessName || 'Solar Mitra Partner'}</strong>
-              <small>Active partner</small>
+              <strong>{vendor.businessName || t('role')}</strong>
+              <small>{t('welcome.active')}</small>
             </div>
           </div>
         </div>
 
+        {renderQrCard(vendor)}
+
+        <h2 className="vendor-stats-title">{t('stats.title')}</h2>
         <div className="vendor-stat-grid">
           <div className="vendor-stat-card">
             <span className="vendor-stat-icon">
@@ -578,9 +827,9 @@ function VendorPage() {
             </span>
 
             <div>
-              <small>Total referrals</small>
+              <small>{t('stats.total')}</small>
               <strong>{totalLeads}</strong>
-              <span>Customer enquiries</span>
+              <span>{t('stats.totalSub')}</span>
             </div>
           </div>
 
@@ -590,9 +839,9 @@ function VendorPage() {
             </span>
 
             <div>
-              <small>In progress</small>
+              <small>{t('stats.progress')}</small>
               <strong>{pendingLeads}</strong>
-              <span>Need attention</span>
+              <span>{t('stats.progressSub')}</span>
             </div>
           </div>
 
@@ -602,9 +851,9 @@ function VendorPage() {
             </span>
 
             <div>
-              <small>Paid referrals</small>
+              <small>{t('stats.paid')}</small>
               <strong>{paidPayouts}</strong>
-              <span>Completed payouts</span>
+              <span>{t('stats.paidSub')}</span>
             </div>
           </div>
         </div>
@@ -613,8 +862,8 @@ function VendorPage() {
           <section className="vendor-panel">
             <div className="vendor-panel-heading">
               <div>
-                <span className="vendor-panel-kicker">RECENT ACTIVITY</span>
-                <h2>Customer referrals</h2>
+                <span className="vendor-panel-kicker">{t('ref.kicker')}</span>
+                <h2>{t('ref.title')}</h2>
               </div>
 
               {leads.length > 0 && (
@@ -623,7 +872,7 @@ function VendorPage() {
                   className="vendor-text-button"
                   onClick={() => setActiveSection('referrals')}
                 >
-                  View all
+                  {t('ref.viewAll')}
                   <Icon path={ICONS.arrow} />
                 </button>
               )}
@@ -638,15 +887,15 @@ function VendorPage() {
                     </span>
 
                     <div className="vendor-referral-main">
-                      <strong>{item.customerName || 'Customer'}</strong>
+                      <strong>{item.customerName || t('common.customer')}</strong>
 
                       <small>
-                        {item.phone || item.email || 'Contact details available'}
+                        {item.phone || item.email || t('ref.contact')}
                       </small>
                     </div>
 
                     <span className={statusClass(item.status)}>
-                      {item.status || 'New'}
+                      {translateStatus(language, item.status || 'New')}
                     </span>
                   </div>
                 ))}
@@ -657,11 +906,8 @@ function VendorPage() {
                   <Icon path={ICONS.users} />
                 </span>
 
-                <strong>No referrals yet</strong>
-                <p>
-                  Your customer enquiries will appear here once they are
-                  submitted.
-                </p>
+                <strong>{t('ref.emptyTitle')}</strong>
+                <p>{t('ref.emptyBody')}</p>
               </div>
             )}
           </section>
@@ -669,8 +915,8 @@ function VendorPage() {
           <section className="vendor-panel vendor-quick-panel">
             <div className="vendor-panel-heading">
               <div>
-                <span className="vendor-panel-kicker">PARTNER STATUS</span>
-                <h2>Your account</h2>
+                <span className="vendor-panel-kicker">{t('acct.kicker')}</span>
+                <h2>{t('acct.title')}</h2>
               </div>
             </div>
 
@@ -680,33 +926,33 @@ function VendorPage() {
               </span>
 
               <div>
-                <strong>Account active</strong>
-                <p>You can continue sending customer referrals.</p>
+                <strong>{t('acct.active')}</strong>
+                <p>{t('acct.activeBody')}</p>
               </div>
             </div>
 
             <div className="vendor-account-details">
               <div>
-                <small>Business</small>
+                <small>{t('acct.business')}</small>
                 <strong>{vendor.businessName || '—'}</strong>
               </div>
 
               <div>
-                <small>Owner</small>
+                <small>{t('acct.owner')}</small>
                 <strong>{vendor.ownerName || '—'}</strong>
               </div>
 
               <div>
-                <small>Access</small>
-                <strong>Solar Mitra Partner</strong>
+                <small>{t('acct.access')}</small>
+                <strong>{t('role')}</strong>
               </div>
 
               <div>
-                <small>QR code</small>
+                <small>{t('acct.qr')}</small>
                 <strong>
                   {vendor.qrAssigned
-                    ? `Assigned (${vendor.currentQr})`
-                    : 'Unassigned'}
+                    ? t('acct.assigned', { code: vendor.currentQr })
+                    : t('acct.unassigned')}
                 </strong>
               </div>
             </div>
@@ -725,7 +971,7 @@ function VendorPage() {
 
     return (
       <div className="vendor-pagination">
-        <span>{`Showing ${start}–${end} of ${total}`}</span>
+        <span>{t('common.showing', { start, end, total })}</span>
         <div>
           <button
             type="button"
@@ -733,7 +979,7 @@ function VendorPage() {
             disabled={loading || page <= 1}
             onClick={() => onPageChange(page - 1)}
           >
-            Previous
+            {t('common.previous')}
           </button>
           <button
             type="button"
@@ -741,7 +987,7 @@ function VendorPage() {
             disabled={loading || end >= total}
             onClick={() => onPageChange(page + 1)}
           >
-            Next
+            {t('common.next')}
           </button>
         </div>
       </div>
@@ -753,9 +999,9 @@ function VendorPage() {
       <section className="vendor-panel vendor-full-panel">
         <div className="vendor-panel-heading">
           <div>
-            <span className="vendor-panel-kicker">CUSTOMERS</span>
-            <h2>All referrals</h2>
-            <p>Track the customers you have referred to Solarium Energy.</p>
+            <span className="vendor-panel-kicker">{t('refs.kicker')}</span>
+            <h2>{t('refs.title')}</h2>
+            <p>{t('refs.sub')}</p>
           </div>
         </div>
 
@@ -764,9 +1010,9 @@ function VendorPage() {
             <table className="vendor-table">
               <thead>
                 <tr>
-                  <th>Customer</th>
-                  <th>Contact</th>
-                  <th>Status</th>
+                  <th>{t('refs.customer')}</th>
+                  <th>{t('refs.contact')}</th>
+                  <th>{t('refs.status')}</th>
                 </tr>
               </thead>
 
@@ -779,7 +1025,7 @@ function VendorPage() {
                           {getInitials(item.customerName)}
                         </span>
 
-                        <strong>{item.customerName || 'Customer'}</strong>
+                        <strong>{item.customerName || t('common.customer')}</strong>
                       </div>
                     </td>
 
@@ -800,7 +1046,7 @@ function VendorPage() {
 
                     <td>
                       <span className={statusClass(item.status)}>
-                        {item.status || 'New'}
+                        {translateStatus(language, item.status || 'New')}
                       </span>
                     </td>
                   </tr>
@@ -814,11 +1060,8 @@ function VendorPage() {
               <Icon path={ICONS.users} />
             </span>
 
-            <strong>No customer referrals yet</strong>
-            <p>
-              Once you start referring customers, their enquiries will
-              appear here.
-            </p>
+            <strong>{t('refs.emptyTitle')}</strong>
+            <p>{t('refs.emptyBody')}</p>
           </div>
         )}
 
@@ -832,9 +1075,9 @@ function VendorPage() {
       <section className="vendor-panel vendor-full-panel">
         <div className="vendor-panel-heading">
           <div>
-            <span className="vendor-panel-kicker">EARNINGS</span>
-            <h2>Payouts</h2>
-            <p>Track the status of your referral commissions.</p>
+            <span className="vendor-panel-kicker">{t('pay.kicker')}</span>
+            <h2>{t('pay.title')}</h2>
+            <p>{t('pay.sub')}</p>
           </div>
         </div>
 
@@ -848,14 +1091,14 @@ function VendorPage() {
 
                 <div className="vendor-payout-info">
                   <strong>
-                    Referral #{item.leadId || item.id}
+                    {t('pay.referral', { id: item.leadId || item.id })}
                   </strong>
 
-                  <small>Commission payout</small>
+                  <small>{t('pay.commission')}</small>
                 </div>
 
                 <span className={statusClass(item.status)}>
-                  {item.status || 'Pending'}
+                  {translateStatus(language, item.status || 'Pending')}
                 </span>
               </div>
             ))}
@@ -866,11 +1109,8 @@ function VendorPage() {
               <Icon path={ICONS.wallet} />
             </span>
 
-            <strong>No payout records yet</strong>
-            <p>
-              Your commission records will appear here as referrals
-              progress.
-            </p>
+            <strong>{t('pay.emptyTitle')}</strong>
+            <p>{t('pay.emptyBody')}</p>
           </div>
         )}
 
@@ -884,9 +1124,9 @@ function VendorPage() {
       <section className="vendor-panel vendor-full-panel">
         <div className="vendor-panel-heading">
           <div>
-            <span className="vendor-panel-kicker">ACCOUNT</span>
-            <h2>Business account</h2>
-            <p>Review your Solar Mitra account information.</p>
+            <span className="vendor-panel-kicker">{t('account.kicker')}</span>
+            <h2>{t('account.title')}</h2>
+            <p>{t('account.sub')}</p>
           </div>
         </div>
 
@@ -896,45 +1136,45 @@ function VendorPage() {
           </div>
 
           <div>
-            <strong>{vendor.businessName || 'Solar Mitra Partner'}</strong>
-            <span>{vendor.ownerName || 'Business Owner'}</span>
+            <strong>{vendor.businessName || t('role')}</strong>
+            <span>{vendor.ownerName || t('account.ownerFallback')}</span>
           </div>
 
           <span className="vendor-active-pill">
             <i />
-            Active
+            {t('account.active')}
           </span>
         </div>
 
         <div className="vendor-detail-grid">
           <div>
-            <small>Business name</small>
+            <small>{t('account.businessName')}</small>
             <strong>{vendor.businessName || '—'}</strong>
           </div>
 
           <div>
-            <small>Owner name</small>
+            <small>{t('account.ownerName')}</small>
             <strong>{vendor.ownerName || '—'}</strong>
           </div>
 
           <div>
-            <small>Login identifier</small>
+            <small>{t('account.loginId')}</small>
             <strong>
               {vendor.loginIdentifier || vendor.login_identifier || '—'}
             </strong>
           </div>
 
           <div>
-            <small>Account access</small>
-            <strong>Solar Mitra Partner</strong>
+            <small>{t('account.access')}</small>
+            <strong>{t('role')}</strong>
           </div>
 
           <div>
-            <small>QR code</small>
+            <small>{t('acct.qr')}</small>
             <strong>
               {vendor.qrAssigned
-                ? `Assigned (${vendor.currentQr})`
-                : 'Unassigned'}
+                ? t('acct.assigned', { code: vendor.currentQr })
+                : t('acct.unassigned')}
             </strong>
           </div>
         </div>
@@ -945,12 +1185,22 @@ function VendorPage() {
           </div>
 
           <div>
-            <strong>Account security</strong>
-            <p>
-              Keep your password private. Solarium Energy will never ask
-              you to share your password.
-            </p>
+            <strong>{t('account.securityTitle')}</strong>
+            <p>{t('account.securityBody')}</p>
           </div>
+        </div>
+
+        {/* Phones: Settings is not in the bottom bar, and the header has no Sign out. */}
+        <div className="vendor-account-actions">
+          <button type="button" onClick={() => setActiveSection('settings')}>
+            <Icon path={ICONS.wallet} />
+            <span>{t('account.bankLink')}</span>
+            <Icon path={ICONS.arrow} />
+          </button>
+          <button type="button" className="danger" onClick={signOutCurrent} disabled={loading}>
+            <Icon path={ICONS.logout} />
+            <span>{t('header.signOut')}</span>
+          </button>
         </div>
       </section>
     );
@@ -962,28 +1212,33 @@ function VendorPage() {
       <section className="vendor-panel vendor-full-panel">
         <div className="vendor-panel-heading">
           <div>
-            <span className="vendor-panel-kicker">PAYOUT SETTINGS</span>
-            <h2>Bank details</h2>
-            <p>Add the account information used for commission payouts.</p>
+            {/* Phones: Settings sits under Account, so give the way back. */}
+            <button type="button" className="vendor-back-button" onClick={() => setActiveSection('account')}>
+              <Icon path={ICONS.arrow} />
+              {t('nav.account')}
+            </button>
+            <span className="vendor-panel-kicker">{t('set.kicker')}</span>
+            <h2>{t('set.title')}</h2>
+            <p>{t('set.sub')}</p>
           </div>
         </div>
         <form className="vendor-bank-form" onSubmit={saveBankDetails}>
-          <label><span>UPI number</span><input value={bankDetails.upi_number} onChange={(event) => setBankDetails({ ...bankDetails, upi_number: event.target.value })} /></label>
-          <label><span>UPI ID</span><input value={bankDetails.upi_id} onChange={(event) => setBankDetails({ ...bankDetails, upi_id: event.target.value })} placeholder="name@bank" /></label>
-          <label><span>Account holder name</span><input value={bankDetails.account_holder_name} onChange={(event) => setBankDetails({ ...bankDetails, account_holder_name: event.target.value })} /></label>
-          <label><span>Account number</span><input value={bankDetails.account_number} onChange={(event) => setBankDetails({ ...bankDetails, account_number: event.target.value })} /></label>
-          <label><span>IFSC code</span><input value={bankDetails.ifsc_code} onChange={(event) => setBankDetails({ ...bankDetails, ifsc_code: event.target.value.toUpperCase() })} /></label>
-          <button type="submit" className="vendor-primary-button" disabled={loading}>Save bank details</button>
+          <label><span>{t('set.upiNumber')}</span><input value={bankDetails.upi_number} onChange={(event) => setBankDetails({ ...bankDetails, upi_number: event.target.value })} /></label>
+          <label><span>{t('set.upiId')}</span><input value={bankDetails.upi_id} onChange={(event) => setBankDetails({ ...bankDetails, upi_id: event.target.value })} placeholder="name@bank" /></label>
+          <label><span>{t('set.holder')}</span><input value={bankDetails.account_holder_name} onChange={(event) => setBankDetails({ ...bankDetails, account_holder_name: event.target.value })} /></label>
+          <label><span>{t('set.accountNumber')}</span><input value={bankDetails.account_number} onChange={(event) => setBankDetails({ ...bankDetails, account_number: event.target.value })} /></label>
+          <label><span>{t('set.ifsc')}</span><input value={bankDetails.ifsc_code} onChange={(event) => setBankDetails({ ...bankDetails, ifsc_code: event.target.value.toUpperCase() })} /></label>
+          <button type="submit" className="vendor-primary-button" disabled={loading}>{t('set.save')}</button>
         </form>
         <div className="vendor-document-grid">
           {['passbook', 'cheque'].map((type) => {
             const uploaded = type === 'passbook' ? details?.passbookFileName : details?.chequeFileName;
             return (
               <label className="vendor-document-upload" key={type}>
-                <strong>{type === 'passbook' ? 'Passbook' : 'Cancelled cheque'}</strong>
-                <span>{uploaded || 'PDF, JPG, or PNG up to 200 KB'}</span>
+                <strong>{t(type === 'passbook' ? 'set.passbook' : 'set.cheque')}</strong>
+                <span>{uploaded || t('set.fileHint')}</span>
                 <input type="file" accept="application/pdf,image/jpeg,image/png" onChange={(event) => uploadBankDocument(type, event)} disabled={loading} />
-                <em>{uploaded ? 'Replace document' : 'Choose document'}</em>
+                <em>{uploaded ? t('set.replace') : t('set.choose')}</em>
               </label>
             );
           })}
@@ -1000,6 +1255,10 @@ function VendorPage() {
       ...(profileResult.vendor || portalData.account || {}),
       currentQr: profileResult.currentQr || null,
       qrAssigned: Boolean(profileResult.qrAssigned),
+      // 'failed' only when the server tried to create this Solar Mitra's QR and could not.
+      qrProvisioning: profileResult.qrProvisioning || 'ok',
+      referralUrl: profileResult.referralUrl || '',
+      qrSvg: profileResult.qrSvg || '',
     };
 
     const leads = leadsResult.leads || [];
@@ -1010,7 +1269,7 @@ function VendorPage() {
     const totalLeads = leadsResult.pagination?.total ?? leads.length;
 
     return (
-      <div className="vendor-app">
+      <div className="vendor-app" lang={language}>
         <header className="vendor-header">
           <div className="vendor-header-inner">
             <div className="vendor-brand">
@@ -1025,19 +1284,21 @@ function VendorPage() {
 
                 <div>
                   <strong>{vendor.businessName || 'Solar Mitra'}</strong>
-                  <small>Solar Mitra Partner</small>
+                  <small>{t('role')}</small>
                 </div>
               </div>
+
+              <LanguageSwitcher language={language} onChange={setLanguage} label={t('lang.label')} />
 
               <button
                 type="button"
                 className="vendor-logout-button"
                 onClick={signOutCurrent}
                 disabled={loading}
-                aria-label="Sign out"
+                aria-label={t('header.signOut')}
               >
                 <Icon path={ICONS.logout} />
-                <span>Sign out</span>
+                <span>{t('header.signOut')}</span>
               </button>
             </div>
           </div>
@@ -1048,14 +1309,14 @@ function VendorPage() {
 
           {(
             <>
-          <nav className="vendor-tabs" aria-label="Solar Mitra navigation">
+          <nav className="vendor-tabs" aria-label={t('nav.aria')}>
             <button
               type="button"
               className={activeSection === 'overview' ? 'active' : ''}
               onClick={() => setActiveSection('overview')}
             >
               <Icon path={ICONS.chart} />
-              Overview
+              {t('nav.overview')}
             </button>
 
             <button
@@ -1064,7 +1325,7 @@ function VendorPage() {
               onClick={() => setActiveSection('settings')}
             >
               <Icon path={ICONS.lock} />
-              Settings
+              {t('nav.settings')}
             </button>
 
             <button
@@ -1073,7 +1334,7 @@ function VendorPage() {
               onClick={() => setActiveSection('referrals')}
             >
               <Icon path={ICONS.users} />
-              Referrals
+              {t('nav.referrals')}
               {totalLeads > 0 && (
                 <span className="vendor-tab-count">{totalLeads}</span>
               )}
@@ -1085,7 +1346,7 @@ function VendorPage() {
               onClick={() => setActiveSection('payouts')}
             >
               <Icon path={ICONS.wallet} />
-              Payouts
+              {t('nav.payouts')}
             </button>
 
             <button
@@ -1094,7 +1355,7 @@ function VendorPage() {
               onClick={() => setActiveSection('account')}
             >
               <Icon path={ICONS.person} />
-              Account
+              {t('nav.account')}
             </button>
           </nav>
 
@@ -1122,19 +1383,46 @@ function VendorPage() {
           )}
         </main>
 
+        {showQrModal && vendor.qrSvg && renderQrModal(vendor)}
+
         <footer className="vendor-footer">
           <div>
             <img className="vendor-logo" src="/Sol_logo.jpg" alt="Solarium" />
           </div>
 
-          <span>
-            Partner portal · India's Leading Solar Solutions Provider
-          </span>
+          <span>{t('footer.tagline')}</span>
 
           <span>
             © {new Date().getFullYear()} Solarium Energy
           </span>
         </footer>
+
+        {/* Phones only (hidden by CSS on larger screens). Settings is reached from Account. */}
+        <nav className="vendor-bottom-nav" aria-label={t('nav.bottomAria')}>
+          {[
+            { section: 'overview', icon: ICONS.home, label: t('nav.home') },
+            { section: 'referrals', icon: ICONS.users, label: t('nav.referrals'), count: totalLeads },
+            { section: 'payouts', icon: ICONS.wallet, label: t('nav.payouts') },
+            { section: 'account', icon: ICONS.person, label: t('nav.account') },
+          ].map((item) => {
+            const active = item.section === activeSection || (item.section === 'account' && activeSection === 'settings');
+            return (
+              <button
+                key={item.section}
+                type="button"
+                className={active ? 'active' : ''}
+                aria-current={active ? 'page' : undefined}
+                onClick={() => setActiveSection(item.section)}
+              >
+                <span className="vendor-bottom-nav-icon">
+                  <Icon path={item.icon} />
+                  {item.count > 0 && <span className="vendor-tab-count">{item.count}</span>}
+                </span>
+                <span className="vendor-bottom-nav-label">{item.label}</span>
+              </button>
+            );
+          })}
+        </nav>
       </div>
     );
   }

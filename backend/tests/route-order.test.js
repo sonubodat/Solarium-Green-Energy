@@ -21,6 +21,7 @@ test('real sales/admin routes are reachable, unknown paths hit the 501 catch-all
 			['PATCH', '/api/admin/vendors/x/bank-details'],
 			['POST', '/api/admin/vendors/x/bank-details/passbook'],
 			['POST', '/api/admin/vendors/x/bank-details/passbook/delete'],
+			['GET', '/api/vendor/qr/poster'],
 		]) {
 			assert.equal(await status(method, path), 401, `${method} ${path} should be reachable (401), not swallowed by the catch-all`);
 		}

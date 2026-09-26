@@ -98,6 +98,10 @@
 .vendor-auth-brand {
   width: min(1180px, 100%);
   margin: 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
 }
 
 .vendor-auth-layout {
@@ -482,6 +486,14 @@
   font-size: 11px;
 }
 
+.vendor-password-banner-copy .vendor-password-timer {
+  display: block;
+  margin-top: 3px;
+  color: #8d7734;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
 .vendor-password-form {
   display: flex;
   align-items: center;
@@ -594,7 +606,7 @@
   letter-spacing: -0.8px;
 }
 
-.vendor-welcome h1 span {
+.vendor-welcome h1 .vendor-welcome-name {
   color: var(--vendor-blue);
 }
 
@@ -1725,3 +1737,1153 @@
   opacity: .45;
 }
 
+
+
+/* ---- Your customer QR card + QR modal ---- */
+.vendor-qr-card {
+  align-items: center;
+  background: var(--vendor-white);
+  border: 1px solid var(--vendor-border);
+  border-radius: 14px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 18px;
+  justify-content: space-between;
+  margin-bottom: 22px;
+  padding: 18px 20px;
+}
+
+.vendor-qr-info h2 {
+  color: var(--vendor-text);
+  font-size: 22px;
+  letter-spacing: .02em;
+  margin: 4px 0 6px;
+}
+
+.vendor-qr-info p {
+  color: var(--vendor-muted);
+  font-size: 13px;
+  margin: 0 0 6px;
+}
+
+.vendor-qr-link {
+  background: none;
+  border: 0;
+  color: var(--vendor-blue);
+  cursor: copy;
+  display: block;
+  font: inherit;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+  padding: 0;
+  text-align: left;
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
+}
+
+.vendor-qr-notice {
+  color: var(--vendor-orange);
+  display: block;
+  font-weight: 600;
+  margin-top: 6px;
+}
+
+.vendor-qr-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.vendor-qr-button {
+  align-items: center;
+  background: var(--vendor-white);
+  border: 1px solid var(--vendor-border);
+  border-radius: 10px;
+  color: var(--vendor-text);
+  cursor: pointer;
+  display: inline-flex;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  gap: 8px;
+  padding: 10px 16px;
+}
+
+.vendor-qr-button svg {
+  height: 17px;
+  width: 17px;
+}
+
+.vendor-qr-button.primary {
+  background: var(--vendor-orange);
+  border-color: var(--vendor-orange);
+  color: #fff;
+}
+
+.vendor-qr-button:disabled {
+  opacity: .6;
+  cursor: not-allowed;
+}
+
+.vendor-qr-overlay {
+  align-items: center;
+  background: rgba(4, 20, 31, .55);
+  display: flex;
+  inset: 0;
+  justify-content: center;
+  padding: 20px;
+  position: fixed;
+  z-index: 60;
+}
+
+.vendor-qr-modal {
+  align-items: center;
+  background: var(--vendor-white);
+  border-radius: 16px;
+  box-shadow: 0 30px 70px rgba(4, 20, 31, .3);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: calc(100vh - 40px);
+  max-width: 380px;
+  overflow-y: auto;
+  padding: 26px 22px 22px;
+  position: relative;
+  text-align: center;
+  width: 100%;
+}
+
+.vendor-qr-modal p {
+  color: var(--vendor-muted);
+  font-size: 13px;
+  margin: 0 0 8px;
+}
+
+.vendor-qr-modal .vendor-qr-actions {
+  justify-content: center;
+}
+
+.vendor-qr-image {
+  background: #fff;
+  border: 1px solid var(--vendor-border);
+  border-radius: 12px;
+  height: auto;
+  max-height: 45vh;
+  max-width: 260px;
+  object-fit: contain;
+  width: 100%;
+}
+
+.vendor-qr-close {
+  background: none;
+  border: 0;
+  color: var(--vendor-muted);
+  cursor: pointer;
+  font-size: 26px;
+  line-height: 1;
+  position: absolute;
+  right: 12px;
+  top: 8px;
+}
+
+@media (max-width: 640px) {
+  .vendor-qr-card {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .vendor-qr-actions .vendor-qr-button {
+    flex: 1;
+    justify-content: center;
+  }
+}
+
+
+/* ---- link row with Open button, and direct share options ---- */
+.vendor-qr-linkrow {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.vendor-qr-linkrow .vendor-qr-link {
+  min-width: 0;
+}
+
+.vendor-qr-open {
+  align-items: center;
+  border: 1px solid var(--vendor-border);
+  border-radius: 999px;
+  color: var(--vendor-blue);
+  display: inline-flex;
+  font-size: 12px;
+  font-weight: 700;
+  gap: 5px;
+  padding: 3px 10px;
+  text-decoration: none;
+}
+
+.vendor-qr-open svg {
+  height: 13px;
+  width: 13px;
+}
+
+.vendor-share-options {
+  display: flex;
+  flex-basis: 100%;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.vendor-share-options a,
+.vendor-share-options button {
+  background: var(--vendor-white);
+  border: 1px solid var(--vendor-border);
+  border-radius: 999px;
+  color: var(--vendor-text);
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  padding: 7px 16px;
+  text-decoration: none;
+}
+
+.vendor-text-button:disabled {
+  cursor: not-allowed;
+  opacity: .6;
+}
+
+
+/* =========================================================
+   LANGUAGE SWITCHER, MOBILE PIECES, FOCUS
+   Phone-only pieces are hidden here and switched on by the max-width: 767px block below, so one
+   set of components serves phone and desktop.
+========================================================= */
+
+.vendor-mobile-only,
+.vendor-bottom-nav,
+.vendor-password-toggle,
+.vendor-welcome-status,
+.vendor-stats-title,
+.vendor-account-actions,
+.vendor-back-button {
+  display: none;
+}
+
+/* A grid column defaults to its widest content, so a long nowrap customer name pushed the row past the screen. */
+.vendor-referral-list {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.vendor-app :focus-visible,
+.vendor-auth-page :focus-visible {
+  outline: 3px solid rgba(0, 105, 168, 0.45);
+  outline-offset: 2px;
+}
+
+.vendor-input-wrap input:focus-visible {
+  outline: none;
+}
+
+/* Letter-spacing and forced capitals break the letter shapes of Gujarati and Hindi. */
+.vendor-app[lang="gu"] *,
+.vendor-app[lang="hi"] *,
+.vendor-auth-page[lang="gu"] *,
+.vendor-auth-page[lang="hi"] * {
+  letter-spacing: 0 !important;
+  text-transform: none !important;
+}
+
+.vendor-lang {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.vendor-lang .vendor-lang-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 40px;
+  padding: 0 10px;
+  border: 1px solid var(--vendor-border);
+  border-radius: 8px;
+  color: var(--vendor-text);
+  background: #fff;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.vendor-lang .vendor-lang-button:hover {
+  color: var(--vendor-blue);
+  border-color: var(--vendor-blue);
+}
+
+.vendor-lang-button svg {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+}
+
+.vendor-lang-button .vendor-lang-chevron {
+  width: 14px;
+  height: 14px;
+  flex-basis: 14px;
+}
+
+.vendor-lang .vendor-lang-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 45;
+  min-width: 170px;
+  padding: 4px;
+  border: 1px solid var(--vendor-border);
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: 0 12px 30px rgba(20, 45, 65, 0.16);
+}
+
+.vendor-lang-menu button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  min-height: 44px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 7px;
+  color: var(--vendor-text);
+  background: transparent;
+  cursor: pointer;
+  font-size: 15px;
+  font-weight: 600;
+  text-align: left;
+}
+
+.vendor-lang-menu button:hover {
+  background: #f3f6f8;
+}
+
+.vendor-lang-menu button[aria-checked="true"] {
+  color: var(--vendor-blue);
+  background: var(--vendor-blue-light);
+}
+
+.vendor-lang-menu button svg {
+  width: 17px;
+  height: 17px;
+  flex: 0 0 17px;
+}
+
+/* =========================================================
+   PHONES (under 768px): bottom navigation, compact header, stacked layout
+========================================================= */
+
+@media (max-width: 767px) {
+  .vendor-mobile-only {
+    display: inline;
+  }
+
+  .vendor-desktop-only {
+    display: none;
+  }
+
+  .vendor-app {
+    box-sizing: border-box;
+    padding-bottom: calc(64px + env(safe-area-inset-bottom, 0px));
+  }
+
+  /* ---- header: logo left, language right; who is signed in is on Account ---- */
+  .vendor-header {
+    height: 60px;
+  }
+
+  .vendor-header-inner,
+  .vendor-main,
+  .vendor-footer {
+    width: calc(100% - 32px);
+  }
+
+  .vendor-header .vendor-logo {
+    width: 138px;
+    height: 34px;
+  }
+
+  .vendor-header-business,
+  .vendor-header .vendor-logout-button,
+  .vendor-tabs {
+    display: none;
+  }
+
+  .vendor-lang .vendor-lang-button {
+    min-height: 44px;
+    padding: 0 12px;
+    font-size: 14px;
+  }
+
+  .vendor-lang-menu button {
+    min-height: 48px;
+    font-size: 16px;
+  }
+
+  .vendor-auth-page {
+    padding: 12px 16px 24px;
+  }
+
+  .vendor-main {
+    padding: 16px 0 24px;
+  }
+
+  /* ---- password notice: small until asked ---- */
+  .vendor-password-banner {
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: start;
+    gap: 2px 12px;
+    margin-bottom: 16px;
+    padding: 12px 14px;
+  }
+
+  .vendor-password-banner-icon {
+    width: 36px;
+    height: 36px;
+  }
+
+  .vendor-password-banner-copy strong {
+    margin-bottom: 2px;
+    font-size: 15px;
+  }
+
+  .vendor-password-banner-copy span {
+    font-size: 13px;
+    line-height: 1.4;
+  }
+
+  .vendor-password-banner-copy .vendor-password-timer {
+    font-size: 13px;
+  }
+
+  .vendor-password-banner .vendor-password-toggle {
+    display: inline-flex;
+    grid-column: 2;
+    justify-self: start;
+    align-items: center;
+    min-height: 44px;
+    margin-top: 6px;
+    padding: 0 16px;
+    border: 1px solid #e0cb7b;
+    border-radius: 8px;
+    color: #674d00;
+    background: #fff;
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: 700;
+  }
+
+  .vendor-password-banner:not(.is-open) .vendor-password-form,
+  .vendor-password-banner.is-open .vendor-password-toggle {
+    display: none;
+  }
+
+  .vendor-password-form {
+    grid-column: 1 / -1;
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 10px;
+    margin-top: 8px;
+  }
+
+  .vendor-password-form input {
+    width: 100%;
+    height: 48px;
+    font-size: 16px;
+  }
+
+  .vendor-password-form .vendor-primary-button {
+    width: 100%;
+    min-height: 48px;
+    font-size: 15px;
+  }
+
+  /* Present but quiet: a text link, not a second button. */
+  .vendor-password-form .vendor-keep-button {
+    justify-content: center;
+    width: 100%;
+    min-height: 44px;
+    color: var(--vendor-muted);
+    font-size: 13px;
+    font-weight: 600;
+    text-decoration: underline;
+  }
+
+  /* ---- welcome: name and one status line ---- */
+  .vendor-welcome {
+    display: block;
+    margin-bottom: 16px;
+  }
+
+  .vendor-welcome .vendor-section-kicker,
+  .vendor-welcome .vendor-welcome-sub,
+  .vendor-business-badge {
+    display: none;
+  }
+
+  .vendor-welcome h1 {
+    margin: 0 0 4px;
+    font-size: 24px;
+    line-height: 1.2;
+    letter-spacing: -0.4px;
+    overflow-wrap: anywhere;
+  }
+
+  .vendor-welcome .vendor-welcome-status {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--vendor-green);
+    font-size: 14px;
+    font-weight: 700;
+  }
+
+  .vendor-welcome-status svg {
+    width: 16px;
+    height: 16px;
+  }
+
+  /* ---- QR card: code, one sentence, big buttons, link last ---- */
+  .vendor-qr-card {
+    flex-direction: column;
+    flex-wrap: nowrap;
+    align-items: stretch;
+    gap: 12px;
+    margin-bottom: 16px;
+    padding: 18px 16px;
+    border-radius: var(--vendor-radius);
+    box-shadow: var(--vendor-shadow);
+  }
+
+  .vendor-qr-info {
+    display: contents;
+  }
+
+  .vendor-qr-info .vendor-section-kicker {
+    order: 0;
+    font-size: 12px;
+    letter-spacing: 1px;
+  }
+
+  .vendor-qr-info h2 {
+    order: 1;
+    margin: 0;
+    font-size: 30px;
+    overflow-wrap: anywhere;
+  }
+
+  .vendor-qr-info p {
+    order: 2;
+    margin: 0;
+    font-size: 14px;
+    line-height: 1.5;
+  }
+
+  .vendor-qr-card > .vendor-qr-actions {
+    order: 3;
+    flex-direction: column;
+    flex-wrap: nowrap;
+    gap: 10px;
+  }
+
+  .vendor-qr-actions .vendor-qr-button {
+    width: 100%;
+    min-height: 48px;
+    justify-content: center;
+    font-size: 16px;
+  }
+
+  .vendor-qr-actions .vendor-qr-button svg {
+    width: 20px;
+    height: 20px;
+  }
+
+  .vendor-qr-card > .vendor-share-options {
+    order: 4;
+    margin: 0;
+  }
+
+  .vendor-share-options a,
+  .vendor-share-options button {
+    min-height: 44px;
+    display: inline-flex;
+    align-items: center;
+    padding: 0 18px;
+    font-size: 15px;
+  }
+
+  .vendor-qr-info .vendor-qr-linkrow {
+    order: 5;
+  }
+
+  .vendor-qr-info .vendor-qr-notice {
+    order: 6;
+    font-size: 14px;
+  }
+
+  .vendor-qr-linkrow .vendor-qr-link {
+    flex: 1 1 180px;
+    min-height: 44px;
+    display: flex;
+    align-items: center;
+    font-size: 13px;
+  }
+
+  .vendor-qr-linkrow .vendor-qr-open {
+    min-height: 44px;
+    padding: 0 14px;
+    font-size: 14px;
+  }
+
+  .vendor-qr-close {
+    top: 4px;
+    right: 4px;
+    width: 44px;
+    height: 44px;
+    font-size: 28px;
+  }
+
+  /* ---- stats: three compact cards, number first ---- */
+  .vendor-stats-title {
+    display: block;
+    margin: 0 0 10px;
+    color: var(--vendor-text);
+    font-size: 17px;
+  }
+
+  .vendor-stat-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px;
+    margin-bottom: 16px;
+  }
+
+  .vendor-stat-card {
+    flex-direction: column;
+    justify-content: center;
+    gap: 0;
+    padding: 12px 6px;
+    text-align: center;
+    box-shadow: none;
+  }
+
+  .vendor-stat-card .vendor-stat-icon,
+  .vendor-stat-card > div > span {
+    display: none;
+  }
+
+  .vendor-stat-card > div {
+    width: 100%;
+    display: flex;
+    flex-direction: column-reverse;
+    align-items: center;
+  }
+
+  .vendor-stat-card strong {
+    font-size: 28px;
+  }
+
+  .vendor-stat-card small {
+    margin: 4px 0 0;
+    font-size: 12px;
+    line-height: 1.25;
+    overflow-wrap: anywhere;
+  }
+
+  /* ---- panels: plain titles, readable text ---- */
+  .vendor-content-grid {
+    gap: 16px;
+  }
+
+  .vendor-panel {
+    padding: 16px;
+  }
+
+  .vendor-panel-kicker {
+    display: none;
+  }
+
+  .vendor-panel-heading {
+    align-items: center;
+    margin-bottom: 12px;
+  }
+
+  .vendor-panel-heading h2 {
+    margin: 0;
+    font-size: 18px;
+  }
+
+  .vendor-panel-heading p {
+    font-size: 14px;
+    line-height: 1.5;
+  }
+
+  .vendor-app .vendor-text-button {
+    min-height: 44px;
+    font-size: 14px;
+  }
+
+  .vendor-referral-row {
+    min-height: 64px;
+    gap: 12px;
+    padding: 8px 0;
+  }
+
+  .vendor-referral-avatar {
+    width: 40px;
+    height: 40px;
+    flex-basis: 40px;
+    font-size: 12px;
+  }
+
+  .vendor-referral-main strong {
+    font-size: 15px;
+  }
+
+  .vendor-referral-main small {
+    max-width: none;
+    font-size: 13px;
+  }
+
+  .vendor-status {
+    min-height: 26px;
+    padding: 0 10px;
+    font-size: 12px;
+  }
+
+  .vendor-empty {
+    padding: 12px 4px 4px;
+  }
+
+  .vendor-empty-large {
+    padding: 28px 8px;
+  }
+
+  .vendor-empty .vendor-empty-icon {
+    margin-bottom: 8px;
+  }
+
+  .vendor-empty strong {
+    font-size: 16px;
+  }
+
+  .vendor-empty p {
+    font-size: 14px;
+    line-height: 1.5;
+  }
+
+  /* ---- account status: quiet, below the referrals ---- */
+  .vendor-account-status {
+    padding: 12px;
+  }
+
+  .vendor-account-status strong {
+    font-size: 15px;
+  }
+
+  .vendor-account-status p {
+    font-size: 13px;
+  }
+
+  .vendor-account-details {
+    gap: 0;
+    margin-top: 8px;
+  }
+
+  .vendor-account-details > div {
+    align-items: center;
+    padding: 12px 0;
+  }
+
+  .vendor-account-details small {
+    font-size: 14px;
+  }
+
+  .vendor-account-details strong {
+    max-width: 60%;
+    font-size: 14px;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  /* ---- referrals table becomes one card per customer ---- */
+  .vendor-table {
+    min-width: 0;
+  }
+
+  .vendor-table thead {
+    display: none;
+  }
+
+  .vendor-table,
+  .vendor-table tbody {
+    display: block;
+  }
+
+  .vendor-table tr {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 6px 10px;
+    padding: 12px 0;
+    border-bottom: 1px solid #eef1f3;
+  }
+
+  .vendor-table tr:last-child {
+    border-bottom: 0;
+  }
+
+  .vendor-table td {
+    display: block;
+    padding: 0;
+    border: 0;
+    font-size: 15px;
+  }
+
+  .vendor-table td:nth-child(2) {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    padding-left: 43px;
+  }
+
+  .vendor-table td:nth-child(3) {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .vendor-table-person strong {
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  .vendor-contact-cell {
+    font-size: 13px;
+    overflow-wrap: anywhere;
+  }
+
+  .vendor-contact-cell svg {
+    width: 13px;
+    height: 13px;
+  }
+
+  /* ---- payouts, account, settings ---- */
+  .vendor-payout-row {
+    padding: 12px 0;
+  }
+
+  .vendor-payout-info {
+    min-width: 0;
+  }
+
+  .vendor-payout-info strong {
+    font-size: 15px;
+  }
+
+  .vendor-payout-info small {
+    font-size: 13px;
+  }
+
+  .vendor-profile-card strong {
+    font-size: 16px;
+    overflow-wrap: anywhere;
+  }
+
+  .vendor-profile-card > div:nth-child(2) span {
+    font-size: 14px;
+  }
+
+  .vendor-active-pill {
+    font-size: 12px !important;
+  }
+
+  .vendor-detail-grid small {
+    font-size: 13px;
+  }
+
+  .vendor-detail-grid strong {
+    font-size: 15px;
+    overflow-wrap: anywhere;
+  }
+
+  .vendor-security-box strong {
+    font-size: 14px;
+  }
+
+  .vendor-security-box p {
+    font-size: 13px;
+  }
+
+  .vendor-account-actions {
+    display: grid;
+    gap: 10px;
+    margin-top: 16px;
+  }
+
+  .vendor-account-actions button {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-height: 52px;
+    padding: 0 14px;
+    border: 1px solid var(--vendor-border);
+    border-radius: 10px;
+    color: var(--vendor-text);
+    background: #fff;
+    cursor: pointer;
+    font-size: 15px;
+    font-weight: 700;
+    text-align: left;
+  }
+
+  .vendor-account-actions button span {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .vendor-account-actions button svg {
+    width: 20px;
+    height: 20px;
+    flex: 0 0 20px;
+    color: var(--vendor-blue);
+  }
+
+  .vendor-account-actions button.danger,
+  .vendor-account-actions button.danger svg {
+    color: var(--vendor-red);
+  }
+
+  .vendor-account-actions button.danger {
+    border-color: #efcccc;
+  }
+
+  .vendor-account-actions button:disabled {
+    opacity: 0.6;
+  }
+
+  .vendor-panel-heading .vendor-back-button {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 44px;
+    margin: -6px 0 4px -6px;
+    padding: 0 10px 0 6px;
+    border: 0;
+    color: var(--vendor-blue);
+    background: transparent;
+    cursor: pointer;
+    font-size: 15px;
+    font-weight: 700;
+  }
+
+  .vendor-back-button svg {
+    width: 18px;
+    height: 18px;
+    transform: rotate(180deg);
+  }
+
+  .vendor-bank-form,
+  .vendor-document-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .vendor-bank-form label {
+    font-size: 14px;
+  }
+
+  .vendor-bank-form input {
+    min-height: 48px;
+    font-size: 16px;
+  }
+
+  .vendor-bank-form button {
+    min-height: 48px;
+  }
+
+  .vendor-document-upload {
+    padding: 16px;
+  }
+
+  .vendor-document-upload strong {
+    font-size: 15px;
+  }
+
+  .vendor-document-upload span,
+  .vendor-document-upload em {
+    font-size: 13px;
+  }
+
+  .vendor-pagination span {
+    font-size: 14px;
+  }
+
+  .vendor-pagination .vendor-pagination-button {
+    min-height: 44px;
+    font-size: 14px;
+  }
+
+  .vendor-footer {
+    padding: 16px 0 20px;
+  }
+
+  .vendor-footer span {
+    font-size: 12px;
+  }
+
+  /* The app-wide "Wake / Refresh" pill (App.css, fixed top-right) would sit on the language button, so on
+     the signed-in phone view it moves to the bottom-left, above the bar. Needs :has(); without it the pill
+     stays where it always was. */
+  body:has(.vendor-app) .wake-button {
+    top: auto;
+    right: auto;
+    bottom: calc(72px + env(safe-area-inset-bottom, 0px));
+    left: 8px;
+  }
+
+  /* Sign-in page: same pill, no bottom bar, so it sits in the corner. */
+  body:has(.vendor-auth-page) .wake-button {
+    top: auto;
+    right: auto;
+    bottom: 8px;
+    left: 8px;
+  }
+
+  /* ---- toast sits above the bottom bar ---- */
+  .vendor-success-message {
+    bottom: calc(104px + env(safe-area-inset-bottom, 0px));
+    font-size: 14px;
+  }
+
+  /* ---- bottom navigation ---- */
+  .vendor-bottom-nav {
+    position: fixed;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 30;
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+    border-top: 1px solid var(--vendor-border);
+    background: #fff;
+    box-shadow: 0 -2px 10px rgba(20, 45, 65, 0.06);
+  }
+
+  .vendor-bottom-nav button {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 3px;
+    min-height: 56px;
+    padding: 6px 2px;
+    border: 0;
+    color: var(--vendor-muted);
+    background: transparent;
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 700;
+    line-height: 1.15;
+  }
+
+  .vendor-bottom-nav button.active {
+    color: var(--vendor-blue);
+    background: var(--vendor-blue-light);
+  }
+
+  .vendor-bottom-nav button.active::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    right: 22%;
+    left: 22%;
+    height: 3px;
+    border-radius: 0 0 3px 3px;
+    background: var(--vendor-blue);
+  }
+
+  .vendor-bottom-nav-icon {
+    position: relative;
+    display: inline-flex;
+  }
+
+  .vendor-bottom-nav-icon svg {
+    width: 22px;
+    height: 22px;
+  }
+
+  .vendor-bottom-nav-icon .vendor-tab-count {
+    position: absolute;
+    top: -6px;
+    left: 14px;
+  }
+
+  .vendor-bottom-nav-label {
+    max-width: 100%;
+    text-align: center;
+    overflow-wrap: anywhere;
+  }
+
+  /* ---- sign-in form: no iOS zoom, bigger targets ---- */
+  .vendor-input-wrap {
+    height: 52px;
+  }
+
+  .vendor-input-wrap input {
+    font-size: 16px;
+  }
+
+  .vendor-form label {
+    font-size: 14px;
+  }
+
+  .vendor-form .vendor-primary-button {
+    min-height: 52px;
+    font-size: 16px;
+  }
+
+  .vendor-login-heading p {
+    font-size: 13px;
+  }
+
+  .vendor-login-security {
+    font-size: 12px;
+  }
+
+  .vendor-auth-points strong {
+    font-size: 14px;
+  }
+
+  .vendor-auth-points small {
+    font-size: 13px;
+  }
+}
+
+/* Very narrow phones: stack the three stats instead of squeezing them. */
+@media (max-width: 339px) {
+  .vendor-stat-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .vendor-stat-card {
+    flex-direction: row;
+    justify-content: space-between;
+    padding: 12px 16px;
+  }
+
+  .vendor-stat-card > div {
+    flex-direction: row-reverse;
+    justify-content: space-between;
+  }
+}

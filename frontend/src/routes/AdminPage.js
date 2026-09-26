@@ -7,6 +7,7 @@ import { INDIAN_STATES } from '../constants/indian-states';
 import { SkeletonBlock } from '../components/Skeleton';
 import VendorPicker from '../components/VendorPicker';
 import BatchProgressModal from '../components/BatchProgressModal';
+import AutoPosterModal from '../components/AutoPosterModal';
 import SessionExpiryGuard from '../components/SessionExpiryGuard';
 import {
   BATCH_TIMEOUT_MS,
@@ -431,6 +432,7 @@ function AdminPage() {
 
   const [showCreateVendor, setShowCreateVendor] = useState(false);
   const [showBulkCreateVendors, setShowBulkCreateVendors] = useState(false);
+  const [showAutoPosters, setShowAutoPosters] = useState(false);
   const [bulkVendorNamesText, setBulkVendorNamesText] = useState('');
   const [bulkVendorAutoPassword, setBulkVendorAutoPassword] = useState(false);
   // Batch metadata, not row data: one state applied to every Vendor this bulk create makes.
@@ -2190,6 +2192,14 @@ function AdminPage() {
             >
               <Icon path={ICONS.plus} />
               Bulk create
+            </button>
+
+            <button
+              className="admin-outline-button"
+              onClick={() => setShowAutoPosters(true)}
+            >
+              <Icon path={ICONS.qr} />
+              Auto-QR posters
             </button>
           </div>
         </div>
@@ -5664,6 +5674,7 @@ function AdminPage() {
         {deletionResult && renderDeletionResultModal()}
         {importResult && renderImportResultModal()}
         {showBulkCreateVendors && renderBulkCreateVendorsModal()}
+        {showAutoPosters && <AutoPosterModal onClose={() => setShowAutoPosters(false)} />}
         {bulkVendorResult && renderBulkVendorResultModal()}
         {batchProgress && <BatchProgressModal title={batchProgress.title} progress={batchProgress} />}
         <SessionExpiryGuard portal="admin" onSignOut={signOutCurrent} />

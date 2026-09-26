@@ -30,6 +30,8 @@ import { billBands, solarSizeBands } from './public.js';
 import { checkAuditLogRetention, acknowledgeAuditLogRetentionWarning } from '../lib/audit-retention.js';
 import { BULK_TRANSACTION_OPTIONS, MAX_LEAD_BATCH_ROWS, MAX_VENDOR_REQUEST_ROWS, VENDOR_ROW_FIELD_MAX } from '../lib/bulk-limits.js';
 import { isCustomerIdentityRace, leadImportBatchSchema, prepareLeadRows } from '../lib/lead-import.js';
+import { VENDOR_WITHOUT_LOCKED_QR_WHERE } from '../lib/qr-provisioning.js';
+import { registerAutoPosterRoutes } from './admin-auto-posters.js';
 
 export const adminRoutes = Router();
 
@@ -1967,9 +1969,11 @@ adminRoutes.get('/vendors/lookup', requireAuth, requireAdmin, async (request, re
 		const search = vendorSearchWhere(request.query.search);
 		// A Vendor already holding an active QR is excluded — the picker is for choosing a
 		// vendor to assign/reassign an active QR to, and one active QR per Vendor is enforced here.
+		// The one exception: a vendor whose only QR is an automatic, unused one stays listed, because
+		// staff may replace it with a printed QR (same definition the assign/reassign rule uses).
 		const where = {
 			status: 'ACTIVE',
-			assignments: { none: { unassignedAt: null } },
+			...VENDOR_WITHOUT_LOCKED_QR_WHERE,
 			...(search ? { AND: [search] } : {}),
 		};
 		const [vendors, total] = await Promise.all([
@@ -3004,5 +3008,8 @@ adminRoutes.post('/payouts/:payoutId/status', requireAuth, requireAdmin, async (
 		return next(error);
 	}
 });
+
+// Admin "Auto-QR posters" (Solar Mitras page): must be registered before the catch-all below.
+registerAutoPosterRoutes(adminRoutes);
 
 adminRoutes.use((_request, response) => response.status(501).json({ success: false, error: { code: 'NOT_IMPLEMENTED', message: 'Admin route is scaffolded but not implemented.' } }));

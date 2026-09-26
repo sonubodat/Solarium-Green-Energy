@@ -263,6 +263,7 @@ Assign and activate an unassigned QR.
 - Request: QR code and authorized vendor reference
 - Rules: verify Sales ownership, require `UNASSIGNED`, create the assignment and activate the QR transactionally, and write an audit log
 - Errors: active or unavailable QR returns `409`
+- Automatic QR replacement: a Solar Mitra whose only active QR was created automatically at login (see `GET /api/vendor/profile`) and has **zero scans, zero leads and no produced poster** (a batch from Auto-QR posters whose job is `APPROVED`, `GENERATING` or `COMPLETED`; a batch that was only created or proofed does not count) may be given this printed QR: the automatic QR is retired (`RETIRED`, assignment ended) and an audit row `QR_AUTO_REPLACED` is written, all in the same transaction as the new assignment (any failure rolls back, the vendor keeps the original QR). Any other active QR, or an automatic one with a scan or lead, still returns `409 VENDOR_ALREADY_HAS_ACTIVE_QR`. The vendor's QR lock (below) serializes this against automatic provisioning.
 
 Sales has no endpoint for directly reassigning an active QR, reading payouts, reading unrestricted leads, or reading audit logs.
 
@@ -381,7 +382,7 @@ Generate a batch of unique QR inventory records, continuing sequentially from th
 
 - Authentication: Admin
 - Request: `{ quantity }` (1–5000)
-- Rules: enforce unique codes in the database and audit the batch
+- Rules: enforce unique codes in the database and audit the batch. Takes the same transaction-scoped advisory lock (`solar-mitra-qr-numbering`) as automatic provisioning before reading the highest number, so bulk generation and vendor logins can never pick the same `V-####`.
 - Response: `201 { success: true, count, codes }`
 - Exposed directly in QR Management's "Generate QR codes" panel (build up inventory — e.g. 100–200 codes — before printing), with a "Print these codes" shortcut that pre-fills the Print QR Codes wizard's Step 1 with the just-generated range
 
@@ -412,6 +413,7 @@ Assign and activate an unassigned QR directly (the Admin equivalent of the Sales
 - Request: `vendor_id`
 - Rules: require `UNASSIGNED`, create the assignment and activate the QR transactionally, and write an audit log (`QR_ASSIGNED`)
 - Errors: unknown `qrId` returns `404 QR_NOT_FOUND`; a QR that is not `UNASSIGNED` returns `409 QR_NOT_UNASSIGNED`
+- Same automatic-QR replacement rule as `POST /api/sales/qr/assign` (an unused automatic QR is retired and replaced; otherwise `409 VENDOR_ALREADY_HAS_ACTIVE_QR`).
 
 ### `POST /api/admin/qr/:qrId/reassign`
 
@@ -419,7 +421,7 @@ Reassign an active QR.
 
 - Authentication: Admin
 - Request: new vendor reference
-- Rules: close the old assignment, create the new assignment, preserve all historical attribution, and audit in one transaction
+- Rules: close the old assignment, create the new assignment, preserve all historical attribution, and audit in one transaction. It changes the active QR of TWO vendors (the one losing it and the receiving one), so it takes both vendors' QR locks in sorted vendor-id order and re-verifies under the locks (`409 QR_CHANGED` if the QR moved in the meantime). If the receiving vendor holds an unused automatic QR it is retired and replaced (same rule as assign); otherwise `409 VENDOR_ALREADY_HAS_ACTIVE_QR`.
 
 ### `POST /api/admin/qr/:qrId/delete`
 
@@ -443,7 +445,7 @@ Search and page through Solar Mitras that can be assigned a QR (the Admin QR-tab
 - Authentication: Admin
 - Query: `search` (optional), `page` (default 1), `limit` (default 10, capped at 50)
 - Response: `vendors: [{ id, businessName, ownerName, loginIdentifier, mobileNumber }]` name-sorted, plus `pagination: { page, limit, total }`. The old hard cap of 200 is gone: with hundreds of bulk-created Solar Mitras, everything past the 200th was previously impossible to choose
-- Rules: read-only, no audit log; ACTIVE vendors only; excludes any Vendor already holding an active QR assignment — one active QR per Vendor is enforced at this picker, not just in the reassignment logic. The pickers are fetched when opened (never preloaded), so opening the QR page no longer requests this endpoint
+- Rules: read-only, no audit log; ACTIVE vendors only; excludes any Vendor already holding an active QR assignment that staff cannot replace — one active QR per Vendor is enforced at this picker, not just in the reassignment logic. A vendor whose only QR is an automatic, unused one (no scans, no leads) stays listed, because assign/reassign may replace it; one shared definition (`lib/qr-provisioning.js`) drives the Sales picker, this picker and the replace rule. The pickers are fetched when opened (never preloaded), so opening the QR page no longer requests this endpoint
 
 ### `GET /api/admin/qr/:qrId/image`
 
@@ -653,7 +655,45 @@ Authenticate using a login identifier or registered mobile number and password.
 
 - Authentication: Vendor
 - Rules: return only the authenticated Vendor's profile
-- Response also includes `currentQr` (the code, or `null`) and `qrAssigned` (boolean) — the Vendor's own active QR assignment status
+- Response also includes `currentQr` (the code, or `null`) and `qrAssigned` (boolean) — the Vendor's own active QR assignment status, plus `qrProvisioning` (`'ok'` | `'failed'`) and, when a QR exists, `referralUrl` (`APP_BASE_URL/v/CODE`, exactly what the QR encodes) and `qrSvg` (server-rendered SVG, about 1.5 kb)
+- **Automatic QR provisioning (lazy).** This endpoint runs on every login and session restore, so it is where a Solar Mitra with NO active QR gets one: `ensureVendorQr` creates a **brand-new** `V-####` above the highest existing number (`V-1148` when `V-1147` is the highest) and assigns it (`assigned_by` is null, which marks it automatic). It **never reuses, modifies, renumbers or assigns an existing QR**: existing `V-####` records (many already printed) are protected inventory, assigned or not. A vendor who already has a QR never gets another. Existing Solar Mitras without a QR receive one only when they next log in; nothing runs in bulk.
+- This GET therefore performs an idempotent write, deliberately (no extra login API; the frontend already calls it). Provisioning failure never blocks the profile: the response is a normal `200` with `qrProvisioning: 'failed'` and no QR, and the next load retries. At most 2 provisionings run at once per process (the rest wait in memory, holding no database connection), and the profile waits at most 20 s for its own; a slower run keeps going in the background and the next load finds the QR. A vendor is never audited for this (audit rows need a staff actor); the QR row plus its assignment is the record.
+- Concurrency: one transaction with transaction-scoped Postgres advisory locks, always taken in the same order: the vendor's lock (`solar-mitra-qr-vendor:<vendorId>`, serializes same-vendor tabs/retries/replacement) first, then the global numbering lock (`solar-mitra-qr-numbering`, shared with `POST /api/admin/qr/generate`). A unique-code clash from a writer that ignores the lock is retried up to 3 times. Numbers are unique and monotonically increasing; gaps are acceptable.
+
+### `GET /api/admin/auto-posters/summary`
+
+Solar Mitras whose QR was created automatically at login (an active assignment with `assigned_by` null on a real vendor's `V-####` QR), for the Admin "Auto-QR posters" panel (Solar Mitras page).
+
+- Authentication: Admin
+- Query: `include_prepared` (`true` to include QRs whose poster was already produced; default `false`)
+- Response: `{ total, prepared, pending, includePrepared, batchSize (500), codes: [...] (sorted by number, the ones to print), sample: [{ code, businessName }] (first 5) }`. "Produced" means the QR appears on a print job that is `APPROVED`, `GENERATING` or `COMPLETED`.
+
+### `POST /api/admin/auto-posters/batch`
+
+Create one print batch from an explicit list of automatic QR codes (the existing print-batch flow is range-based and is untouched).
+
+- Authentication: Admin
+- Request: `{ template_id, codes: [1..500], idempotency_key? }`. The template must be `PUBLISHED`. Codes are normalized and sorted by number.
+- Rules: every code must currently be an automatic Solar Mitra QR (active, `assigned_by` null, non-system vendor); anything else returns `409 AUTO_POSTER_NOT_ELIGIBLE` and creates nothing. A repeated `idempotency_key` returns `200 { job, duplicate: true }`. Creates an ordinary `QrPrintJob` (`PENDING_APPROVAL`, immutable template snapshot, items in order with `expectedUrl` = the vendor's referral URL), so it shows up in Print History.
+- Then use the existing endpoints unchanged: `POST /api/admin/qr/print-batch/:jobId/proof` (renders the proof and reads three sample QRs back), `POST .../approve`, `GET .../pdf` (one PDF up to 50 posters, otherwise a ZIP of 50-poster PDFs).
+- The panel's default template is per browser (localStorage `solarium:auto-poster-template`): the template used last there if still published, otherwise the newest published one. No server setting.
+
+### `GET /api/vendor/qr/image`
+
+Download the Solar Mitra's own QR as a `?format=png` file (2048 x 2048, poster-ready). SVG was removed from the vendor side on request; any other `format` returns `400 INVALID_FORMAT`.
+
+- Authentication: Vendor
+- There is deliberately **no code parameter**: the QR is the authenticated vendor's own active assignment, so a vendor can never fetch another vendor's or any inventory QR.
+- Response: an attachment named `Solarium-QR-V-1148.png`. Errors: `400 INVALID_FORMAT`, `404 QR_NOT_ASSIGNED` (no active QR), `401`/`403` for anyone else.
+
+### `GET /api/vendor/qr/poster`
+
+Download the Solar Mitra's own QR placed on the newest `PUBLISHED` poster template (the Admin default), as a one-page PDF.
+
+- Authentication: Vendor. No code parameter: the QR is the authenticated vendor's own active assignment.
+- Response: an attachment named `Solarium-Poster-V-1148.pdf`. Errors: `404 QR_NOT_ASSIGNED`, `404 POSTER_TEMPLATE_NOT_AVAILABLE` (no published template), `503 SERVER_BUSY` (another PDF job is running), `401`/`403` for anyone else.
+- This is the only download the Solar Mitra portal offers (poster only, never the bare QR); `/vendor/qr/image` stays but the UI no longer calls it.
+- Records no print job, so it never counts as a produced poster for the automatic-QR replace rule.
 
 ### `PATCH /api/vendor/profile`
 

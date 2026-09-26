@@ -2,6 +2,7 @@ import { Router } from 'express';
 import multer from 'multer';
 import { z } from 'zod';
 import { prisma } from '../lib/prisma.js';
+import { VENDOR_WITHOUT_LOCKED_QR_WHERE } from '../lib/qr-provisioning.js';
 import { requireAuth, requireSales } from '../middleware/auth.js';
 import { hashPassword, defaultVendorPassword, normalizeLoginIdentifier, publicVendor } from '../services/auth.js';
 import { assignUnassignedQr } from '../services/qr.js';
@@ -114,7 +115,7 @@ salesRoutes.get('/vendors', requireAuth, requireSales, async (request, response,
 			AND: [
 				{ OR: [{ salesUserId: request.auth.user.id }, { salesUserId: null }] },
 				{ status: 'ACTIVE' },
-				...(includeAssigned ? [] : [{ assignments: { none: { unassignedAt: null } } }]),
+				...(includeAssigned ? [] : [VENDOR_WITHOUT_LOCKED_QR_WHERE]),
 				...(search ? [search] : []),
 			],
 		};
