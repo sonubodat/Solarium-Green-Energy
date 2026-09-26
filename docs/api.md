@@ -31,6 +31,7 @@ Authenticate an Admin or Sales user.
 - Response: authenticated staff profile and session state
 - Rules: derive role from the stored account; never trust a submitted role
 - Security: requests are rate-limited per client IP; invalid credentials use a generic response
+- Session lifetime: a login (Admin, Sales and Solar Mitra, including `POST /api/vendor/login`) lasts `SESSION_LIFETIME_DAYS` days, default **7**, allowed 1-30. It is fixed from sign-in (activity does not extend it); the `sessions.expires_at` row and the cookie `Max-Age` use the same value. Sessions created before a change keep the expiry they were given.
 
 ### `GET /api/auth/session`
 
@@ -39,7 +40,7 @@ Return the account and role for the currently authenticated session, if any.
 - Authentication: any authenticated session (staff or Vendor)
 - Response: `{ type: 'staff' | 'vendor', role, account }`
 - Rules: read-only; relies entirely on the existing session cookie — never returns or accepts a password. Used by the frontend to silently restore a signed-in view (Admin/Sales/Vendor) without re-prompting for credentials within the session's lifetime.
-- Errors: `401` if no valid session cookie is present
+- Errors: `401` (`UNAUTHENTICATED`) if no valid session cookie is present. Every authenticated route returns that same `401` once the login has expired or been revoked, and the frontend answers it with a blocking "Session expired" popup (see `progress.md`).
 
 ### `POST /api/auth/logout`
 
@@ -339,7 +340,7 @@ Soft-delete multiple Vendors from the current Admin selection.
 
 ### `POST /api/admin/vendors/bulk-create`
 
-Create up to 500 Solar Mitras at once. Two mutually exclusive request shapes (sending both or neither returns `400`).
+Create Solar Mitras in bulk. Two mutually exclusive request shapes (sending both or neither returns `400`). **The Admin UI sends a list of up to 2,000 rows as sequential batches of 50** (this is a UI limit; the server never sees the whole list); each request is capped at 500 rows, a body-size limit of 512 kb (a route-specific parser mounted before the global 100 kb one, sized from the worst case of every field at its maximum length), and per-field maximum lengths. The endpoint is stateless and idempotent by phone number: a retried batch or a re-uploaded list never creates a second Solar Mitra (already-used phones come back as `PHONE_ALREADY_USED`).
 
 - Authentication: Admin
 - Optional `state`, applied to **every** Vendor in the batch (not a per-row field) — batch metadata, e.g. "this whole paste is Gujarat". Works with either mode below.
@@ -349,7 +350,7 @@ Create up to 500 Solar Mitras at once. Two mutually exclusive request shapes (se
   - Created fields: `business_name` = `owner_name` = `name`; `login_identifier` = `mobile_number` = the normalized phone (so the phone is literally the username, backed by the unique constraint); `must_change_password = true`. Vendor creation and any bank-details rows for the batch are written in one transaction — if the bank-details insert fails, the vendor insert rolls back too. A bank-details row is only ever attached to a vendor this same batch verified it created (matched by phone **and** name) — never to a pre-existing or unrelated Vendor.
   - One row's problem never fails the batch; `summary.failures[].row` is the row's original 1-based position in the request.
 - **Names mode (legacy).** `{ "names": ["Ram Store"], "auto_password": false }` — `owner_name` defaults to the business name, `login_identifier` is a slug of the name (`-2`/`-3` on collision), `mobile_number` is a placeholder from a reserved band (`9000010001` upward) for the Admin to correct later. With `auto_password` the password is `<slug-without-hyphens>@123`, otherwise `password_hash` stays `null`. No per-row bank fields (names mode has no per-row structure for them; only batch-level `state` applies here too).
-- Rows are written with a small fixed number of bulk statements, never one transaction per row (measured ~0.8 s/row that way). One `VENDOR_BULK_CREATED` audit entry per created vendor; passwords are never logged or audited.
+- Rows are written with a small fixed number of bulk statements, never one transaction per row (measured ~0.8 s/row that way). **One summary `VENDOR_BULK_CREATED` audit row per request** (entity `VendorBatch`, entityId = a uuid for that request, metadata `{ source, requested, created, failed, state }`, no id list), written in the same transaction as the vendors so audit and data commit or roll back together. Per-vendor audit rows were dropped because the audit log is capped at 5,000 rows and a 2,000-row upload would have consumed 40% of it. Passwords are never logged or audited.
 - Success: `{ success: true, summary: { totalRows, created, failed, failures: [{ row, businessName, reason }], warnings: [{ row, field, code, reason }] } }`
 
 ### `GET /api/admin/vendors/bulk-import-template`
@@ -559,6 +560,17 @@ Download a blank CSV template for `POST /api/admin/leads/import`, with the exact
 
 - Authentication: Admin
 
+### `POST /api/admin/leads/import-batch`
+
+Import one batch of customer (lead) rows. **This is what the Admin UI uses**: the browser parses the CSV, sends up to 2,000 rows as sequential batches of 100 (a UI limit), shows a do-not-close popup with progress, retries a failed batch (network/timeout/5xx only, never 4xx) with the identical body, and stops on a permanent failure without sending later batches.
+
+- Authentication: Admin
+- Request: `{ "rows": [{ "customer_name", "phone", "email", "location", "pincode", "average_electricity_bill", "solar_size", "status", "created_at" }], "row_offset": 0 }` — 1 to 100 rows (`400` above that, enforced server-side), every field an optional string with a maximum length (`customer_name` 120, `phone` 20, `email`/`location` 120, `pincode` 12, bands 30, `status` 20, `created_at` 30), body limit 512 kb. `row_offset` is the number of data rows sent before this batch.
+- Row numbers follow the CSV convention: row 1 is the header, the first data row is row 2, so a batch reports `row_offset + indexInBatch + 2` (batch 1 = rows 2-101, batch 2 = rows 102-201).
+- Rules: same lenient validation, duplicate handling, status/band/date normalization and company-import attribution as the multipart endpoint below. A phone repeated inside the batch: the first occurrence is eligible, later ones are duplicates. Every row lands in exactly one of `imported` / `duplicates` / `invalid` (`imported + duplicates + invalid = requested`; the UI treats a mismatch as a failed batch).
+- Set-based: one read and one write transaction per batch (about 10 round trips per 100 rows instead of about 600). The transaction holds the identity rows, the leads, an `UNPAID` payout for every `CONVERTED` lead (exactly one each) and **one summary audit row** (`LEAD_CSV_IMPORTED`, entity `LeadBatch`, metadata `{ source, requested, imported, duplicates, invalid, converted }`), so they commit or roll back together. A unique-constraint race on the customer identity (same phone claimed by another request mid-batch) rolls the batch back and re-runs it once, resolving that phone as a duplicate; any other error, including any other unique violation, fails the batch and is not retried.
+- Response: `{ success, summary: { requested, imported, duplicates: [{row, phone}], invalid: [{row, reason}] } }`
+
 ### `POST /api/admin/leads/import`
 
 Bulk-import pre-existing leads a company already has, without any QR scan or vendor referral. Imported leads are attributed to a single dedicated system vendor, "Company Uploaded Leads" (lazily created on first import, mirroring the existing `PUBLIC-GENERAL`/"Solarium Direct" fallback pattern used for scanless public submissions), so they group and filter cleanly alongside organic leads without any schema change.
@@ -570,7 +582,7 @@ Bulk-import pre-existing leads a company already has, without any QR scan or ven
 - Duplicate handling: a row whose phone number already belongs to any existing lead (organic or previously imported) is skipped and reported — never overwritten, and never exposing the other lead's vendor (same privacy rule as the public duplicate-customer flow)
 - A row with `status = CONVERTED` gets an `UNPAID` payout created automatically, via the same shared invariant `PATCH /api/admin/leads/:leadId` uses
 - Response: `{ success, summary: { totalRows, imported, duplicates: [{row, phone}], invalid: [{row, reason}] } }`
-- Rules: each row is created in its own short transaction (not one whole-file transaction), so one bad row never blocks the rest; each successfully imported lead writes an audit log entry (`LEAD_CSV_IMPORTED`)
+- Rules: the file is imported in server-side chunks of 100 rows through the same set-based code as `import-batch` (no query or transaction per row), so one bad row never blocks the rest; one summary audit row per chunk (`LEAD_CSV_IMPORTED`, entity `LeadBatch`). **This chunking is a database-efficiency fix, not a timeout guarantee**: it is still one synchronous HTTP request, so a 2,000-row call can still exceed a proxy's wait. Prefer `import-batch`.
 
 ### `GET /api/admin/payouts`
 

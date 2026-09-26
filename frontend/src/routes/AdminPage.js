@@ -6,6 +6,20 @@ import { apiRequest, API_BASE_URL, downloadFile, clearApiCache } from '../api/cl
 import { INDIAN_STATES } from '../constants/indian-states';
 import { SkeletonBlock } from '../components/Skeleton';
 import VendorPicker from '../components/VendorPicker';
+import BatchProgressModal from '../components/BatchProgressModal';
+import SessionExpiryGuard from '../components/SessionExpiryGuard';
+import {
+  BATCH_TIMEOUT_MS,
+  LEAD_BATCH_SIZE,
+  MAX_BULK_ROWS,
+  VENDOR_BATCH_SIZE,
+  mergeLeadRun,
+  mergeVendorRun,
+  runBatches,
+  toLeadUploadItem,
+  verifyLeadBatch,
+  verifyVendorBatch,
+} from '../lib/batch-upload';
 import './AdminPage.css';
 
 // Rows-per-page choices for the big tables. Default is 10. The choice lives only in React state, so
@@ -323,6 +337,9 @@ const BULK_VENDOR_FAILURE_LABELS = {
   LOGIN_IDENTIFIER_TAKEN: 'Login ID already taken',
 };
 
+// A 2,000-row result can hold thousands of entries; only this many are listed (the counts are always complete).
+const RESULT_LIST_LIMIT = 200;
+
 const BULK_VENDOR_BANK_FIELD_LABELS = {
   upi_number: 'UPI number',
   upi_id: 'UPI ID',
@@ -419,6 +436,8 @@ function AdminPage() {
   // Batch metadata, not row data: one state applied to every Vendor this bulk create makes.
   const [bulkVendorState, setBulkVendorState] = useState('');
   const [bulkVendorResult, setBulkVendorResult] = useState(null);
+  // Set while a bulk upload is being sent in batches; drives the do-not-close popup.
+  const [batchProgress, setBatchProgress] = useState(null);
   const [showImportLeads, setShowImportLeads] = useState(false);
   const [importFile, setImportFile] = useState(null);
   const [importResult, setImportResult] = useState(null);
@@ -1096,36 +1115,52 @@ function AdminPage() {
   async function bulkCreateVendors(event) {
     event.preventDefault();
     const { rows } = parseBulkVendorRows(bulkVendorNamesText);
-    if (!rows.length || rows.length > 500 || rows.some((row) => !row.name)) return;
+    if (!rows.length || rows.length > MAX_BULK_ROWS || rows.some((row) => !row.name)) return;
 
     // Any phone in the list means rows mode for every row (a name-only row then fails with
     // "Phone number missing"); a list with no phones at all keeps the legacy name-only mode.
     const rowsMode = rows.some((row) => row.phone);
-    const body = rowsMode
-      ? { rows, state: bulkVendorState || undefined }
-      : { names: parseBulkVendorNames(rows.map((row) => row.name).join('\n')), auto_password: bulkVendorAutoPassword, state: bulkVendorState || undefined };
+    const state = bulkVendorState || undefined;
+    const items = rowsMode ? rows : parseBulkVendorNames(rows.map((row) => row.name).join('\n'));
+    // runBatches freezes each batch's body once, so a retry resends the byte-identical request.
+    const serialize = (batch) => JSON.stringify(rowsMode
+      ? { rows: batch.items, state }
+      : { names: batch.items, auto_password: bulkVendorAutoPassword, state });
 
     setLoading(true);
     setMessage('');
     setMessageType('');
 
     try {
-      const result = await apiRequest('/admin/vendors/bulk-create', {
-        method: 'POST',
-        body: JSON.stringify(body),
+      const run = await runBatches({
+        items,
+        batchSize: VENDOR_BATCH_SIZE,
+        serialize,
+        send: (batch) => apiRequest('/admin/vendors/bulk-create', {
+          method: 'POST',
+          body: batch.body,
+          signal: AbortSignal.timeout(BATCH_TIMEOUT_MS),
+        }).then((result) => result.summary),
+        verify: verifyVendorBatch,
+        onProgress: (progress) => setBatchProgress({ title: 'Creating Solar Mitras', ...progress }),
       });
 
-      setBulkVendorResult(result.summary);
-      setShowBulkCreateVendors(false);
-      setBulkVendorNamesText('');
-      setBulkVendorAutoPassword(false);
-      setBulkVendorState('');
+      setBulkVendorResult(mergeVendorRun(run, items.length));
+      // Only a finished run clears the form. A stopped run keeps the list so it can be submitted
+      // again: rows already created come back as "already used" and are skipped safely.
+      if (!run.failed) {
+        setShowBulkCreateVendors(false);
+        setBulkVendorNamesText('');
+        setBulkVendorAutoPassword(false);
+        setBulkVendorState('');
+      }
 
       await loadAdminResource('vendors', adminPage, undefined, undefined, true);
     } catch (error) {
       setMessage(error.message);
       setMessageType('error');
     } finally {
+      setBatchProgress(null);
       setLoading(false);
     }
   }
@@ -1884,22 +1919,65 @@ function AdminPage() {
     setMessageType('');
 
     try {
-      const body = new FormData();
-      body.append('file', importFile);
+      const fail = (text) => {
+        setMessage(text);
+        setMessageType('error');
+      };
+      if (importFile.size > 5 * 1024 * 1024) return fail('CSV file must be 5 MB or smaller.');
 
-      const result = await apiRequest('/admin/leads/import', {
-        method: 'POST',
-        body,
+      // Parsed here (not on the server) so the list can be sent in small batches. Header
+      // normalization matches the server's own CSV path.
+      let records;
+      try {
+        records = parseCsv(await importFile.text(), {
+          columns: (headerRow) => headerRow.map((header) => String(header).trim().toLowerCase().replace(/\s+/g, '_')),
+          trim: true,
+          skip_empty_lines: true,
+          relax_column_count: true,
+          bom: true,
+        });
+      } catch (parseError) {
+        return fail('Could not read the CSV file. Check the format and try again.');
+      }
+      if (records.length === 0) return fail('The CSV file has no data rows.');
+      if (records.length > MAX_BULK_ROWS) {
+        return fail(`This file has ${records.length.toLocaleString()} rows; the limit is ${MAX_BULK_ROWS.toLocaleString()} per upload. Split the file and try again.`);
+      }
+
+      // CSV row 1 is the header, so data record i is row i + 2. A record with a field over the
+      // server's limit is sent as an empty placeholder so every later row keeps its row number.
+      const overLengthRows = new Set();
+      const items = records.map((record, index) => {
+        const { item, tooLong } = toLeadUploadItem(record);
+        if (tooLong) overLengthRows.add(index + 2);
+        return item;
       });
 
-      setImportResult(result.summary);
-      setImportFile(null);
-      setShowImportLeads(false);
+      const run = await runBatches({
+        items,
+        batchSize: LEAD_BATCH_SIZE,
+        serialize: (batch) => JSON.stringify({ rows: batch.items, row_offset: batch.offset }),
+        send: (batch) => apiRequest('/admin/leads/import-batch', {
+          method: 'POST',
+          body: batch.body,
+          signal: AbortSignal.timeout(BATCH_TIMEOUT_MS),
+        }).then((result) => result.summary),
+        verify: verifyLeadBatch,
+        onProgress: (progress) => setBatchProgress({ title: 'Importing customers', ...progress }),
+      });
+
+      setImportResult(mergeLeadRun(run, items.length, overLengthRows));
+      // A stopped run keeps the file selected so the same file can be imported again safely.
+      if (!run.failed) {
+        setImportFile(null);
+        setShowImportLeads(false);
+      }
       await loadAdminResource('leads', adminPage, undefined, undefined, true);
     } catch (error) {
       setMessage(error.message);
       setMessageType('error');
     } finally {
+      setBatchProgress(null);
       setLoading(false);
     }
   }
@@ -4839,6 +4917,29 @@ function AdminPage() {
     );
   }
 
+  // Shared by both bulk result modals: a run that stopped early, and batches that needed a retry.
+  function renderBatchRunNotes(result) {
+    const retriedRows = (result.retried || []).reduce((sum, batch) => sum + batch.alreadyExisting, 0);
+    return (
+      <>
+        {result.stopped && (
+          <p className="admin-field-error" role="alert">
+            <strong>Stopped early.</strong> Batch {result.stopped.batch} of {result.stopped.batches} failed: {result.stopped.message}{' '}
+            {result.processed.toLocaleString()} of {result.totalRows.toLocaleString()} rows were processed. Rows from row{' '}
+            {result.stopped.firstRow.toLocaleString()} onward were NOT processed. Submit the same list again once the problem is
+            fixed: rows that were already saved are skipped safely.
+          </p>
+        )}
+        {result.retried?.length > 0 && (
+          <p>
+            {result.retried.length} batch(es) needed a retry after a connection problem
+            {retriedRows > 0 ? `. ${retriedRows} row(s) in ${result.retried.length === 1 ? 'it' : 'them'} are reported below as already existing; they were most likely saved by the first attempt rather than being real duplicates` : ''}.
+          </p>
+        )}
+      </>
+    );
+  }
+
   function renderImportResultModal() {
     if (!importResult) return null;
     const duplicates = importResult.duplicates || [];
@@ -4849,7 +4950,7 @@ function AdminPage() {
           <div className="admin-modal-header">
             <div>
               <span className="admin-eyebrow">CSV IMPORT</span>
-              <h2>Import complete</h2>
+              <h2>{importResult.stopped ? 'Import stopped early' : 'Import complete'}</h2>
             </div>
             <button className="admin-mini-button" onClick={() => setImportResult(null)} aria-label="Close"><Icon path={ICONS.close} /></button>
           </div>
@@ -4857,11 +4958,12 @@ function AdminPage() {
             <p className="admin-deletion-lead">
               {importResult.imported} of {importResult.totalRows} rows imported successfully.
             </p>
+            {renderBatchRunNotes(importResult)}
             {duplicates.length > 0 && (
               <>
-                <p>{duplicates.length} row(s) skipped as duplicates (phone already has a lead):</p>
+                <p>{duplicates.length} row(s) skipped as duplicates (phone already has a lead){duplicates.length > RESULT_LIST_LIMIT ? ` (first ${RESULT_LIST_LIMIT} shown)` : ''}:</p>
                 <div className="admin-deletion-blocked-list">
-                  {duplicates.map((item) => (
+                  {duplicates.slice(0, RESULT_LIST_LIMIT).map((item) => (
                     <div className="admin-deletion-blocked-item" key={`dup-${item.row}`}>
                       <strong>Row {item.row}</strong>
                       <small>{item.phone}</small>
@@ -4872,9 +4974,9 @@ function AdminPage() {
             )}
             {invalid.length > 0 && (
               <>
-                <p>{invalid.length} row(s) could not be imported:</p>
+                <p>{invalid.length} row(s) could not be imported{invalid.length > RESULT_LIST_LIMIT ? ` (first ${RESULT_LIST_LIMIT} shown)` : ''}:</p>
                 <div className="admin-deletion-blocked-list">
-                  {invalid.map((item) => (
+                  {invalid.slice(0, RESULT_LIST_LIMIT).map((item) => (
                     <div className="admin-deletion-blocked-item" key={`invalid-${item.row}`}>
                       <strong>Row {item.row}</strong>
                       <small>{BULK_VENDOR_FAILURE_LABELS[item.reason] || item.reason}</small>
@@ -4898,7 +5000,7 @@ function AdminPage() {
     const rowsMissingName = detectedRows.filter((row) => !row.name).length;
     const rowsMode = rowsWithPhone > 0;
     const detectedCount = rowsMode ? detectedRows.length : parseBulkVendorNames(detectedRows.map((row) => row.name).join('\n')).length;
-    const overLimit = detectedCount > 500;
+    const overLimit = detectedCount > MAX_BULK_ROWS;
 
     function downloadVendorImportTemplate() {
       window.location.href = `${API_BASE_URL}/admin/vendors/bulk-import-template`;
@@ -4943,7 +5045,7 @@ function AdminPage() {
               Columns: <strong>name, phone, password</strong>, plus optional bank
               details — <strong>upi_number, upi_id, account_holder_name, account_number,
               ifsc_code</strong>. Paste rows from a spreadsheet or upload a .csv
-              file — up to 500 at a time. Leave password blank to use the phone
+              file — up to 2,000 at a time. Leave password blank to use the phone
               number as the initial password (changing it later is optional).
               Bank fields are format-checked only, not verified — a malformed
               one is skipped with a warning, the Solar Mitra is still created.
@@ -4974,7 +5076,7 @@ function AdminPage() {
               {rowsMode
                 ? `${detectedRows.length} row${detectedRows.length === 1 ? '' : 's'} detected · ${rowsWithPhone} with a phone number`
                 : `${detectedCount} name${detectedCount === 1 ? '' : 's'} detected`}
-              {overLimit ? ' — over the 500 limit, trim the list' : ''}
+              {overLimit ? ' — over the 2,000 limit, trim the list' : ''}
             </small>
             {parseError && <small role="alert">{parseError}</small>}
             {rowsMissingName > 0 && (
@@ -5009,7 +5111,7 @@ function AdminPage() {
             )}
 
             {loading && (
-              <small>Creating Solar Mitras and passwords — this may take up to a minute for large batches.</small>
+              <small>Sending in batches of {VENDOR_BATCH_SIZE}. Keep this page open until it finishes.</small>
             )}
 
             <div className="admin-form-actions">
@@ -5044,7 +5146,7 @@ function AdminPage() {
           <div className="admin-modal-header">
             <div>
               <span className="admin-eyebrow">BULK CREATE</span>
-              <h2>Solar Mitras created</h2>
+              <h2>{bulkVendorResult.stopped ? 'Bulk create stopped early' : 'Solar Mitras created'}</h2>
             </div>
             <button className="admin-mini-button" onClick={() => setBulkVendorResult(null)} aria-label="Close"><Icon path={ICONS.close} /></button>
           </div>
@@ -5052,11 +5154,12 @@ function AdminPage() {
             <p className="admin-deletion-lead">
               {bulkVendorResult.created} of {bulkVendorResult.totalRows} Solar Mitra(s) created successfully.
             </p>
+            {renderBatchRunNotes(bulkVendorResult)}
             {failures.length > 0 && (
               <>
-                <p>{failures.length} row(s) could not be created:</p>
+                <p>{failures.length} row(s) could not be created{failures.length > RESULT_LIST_LIMIT ? ` (first ${RESULT_LIST_LIMIT} shown)` : ''}:</p>
                 <div className="admin-deletion-blocked-list">
-                  {failures.map((item) => (
+                  {failures.slice(0, RESULT_LIST_LIMIT).map((item) => (
                     <div className="admin-deletion-blocked-item" key={`bulk-vendor-fail-${item.row}`}>
                       <strong>Row {item.row}: {item.businessName}</strong>
                       <small>{BULK_VENDOR_FAILURE_LABELS[item.reason] || item.reason}</small>
@@ -5067,9 +5170,9 @@ function AdminPage() {
             )}
             {warnings.length > 0 && (
               <>
-                <p>{warnings.length} bank field(s) were skipped — the Solar Mitra was still created:</p>
+                <p>{warnings.length} bank field(s) were skipped — the Solar Mitra was still created{warnings.length > RESULT_LIST_LIMIT ? ` (first ${RESULT_LIST_LIMIT} shown)` : ''}:</p>
                 <div className="admin-deletion-blocked-list">
-                  {warnings.map((item) => (
+                  {warnings.slice(0, RESULT_LIST_LIMIT).map((item) => (
                     <div className="admin-deletion-blocked-item" key={`bulk-vendor-warn-${item.row}-${item.field}`}>
                       <strong>Row {item.row}: {BULK_VENDOR_BANK_FIELD_LABELS[item.field] || item.field}</strong>
                       <small>{item.reason}</small>
@@ -5562,6 +5665,8 @@ function AdminPage() {
         {importResult && renderImportResultModal()}
         {showBulkCreateVendors && renderBulkCreateVendorsModal()}
         {bulkVendorResult && renderBulkVendorResultModal()}
+        {batchProgress && <BatchProgressModal title={batchProgress.title} progress={batchProgress} />}
+        <SessionExpiryGuard portal="admin" onSignOut={signOutCurrent} />
         {retentionStatus?.needsAcknowledgment && renderRetentionGateModal()}
         {previewTemplate && renderTemplatePreviewModal()}
         {confirmPurgeQrId && renderQrPurgeModal()}

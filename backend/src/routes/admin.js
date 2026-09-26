@@ -24,10 +24,12 @@ import { buildQrCodeSequence, normalizeQrCode, parseQrRange } from '../services/
 import { INDIAN_STATES } from '../lib/indian-states.js';
 import { bankDetailsSchema, validateBankField } from '../lib/vendor-bank-details.js';
 import { env } from '../config/env.js';
-import { normalizePhone, customerHashFor, findExistingLeadByHash } from '../lib/customer-identity.js';
+import { customerHashFor } from '../lib/customer-identity.js';
 import { geoTagFields, resolveGeoTag } from '../lib/geo-tag.js';
 import { billBands, solarSizeBands } from './public.js';
 import { checkAuditLogRetention, acknowledgeAuditLogRetentionWarning } from '../lib/audit-retention.js';
+import { BULK_TRANSACTION_OPTIONS, MAX_LEAD_BATCH_ROWS, MAX_VENDOR_REQUEST_ROWS, VENDOR_ROW_FIELD_MAX } from '../lib/bulk-limits.js';
+import { isCustomerIdentityRace, leadImportBatchSchema, prepareLeadRows } from '../lib/lead-import.js';
 
 export const adminRoutes = Router();
 
@@ -74,21 +76,21 @@ const bulkDeleteSchema = z.object({
 // password) are reported per row rather than failing the whole request, so the fields are
 // loose here and validated row by row in the route.
 const bulkCreateVendorsSchema = z.object({
-	names: z.array(z.string().trim().min(2).max(160)).min(1).max(500).optional(),
+	names: z.array(z.string().trim().min(2).max(VENDOR_ROW_FIELD_MAX.name)).min(1).max(MAX_VENDOR_REQUEST_ROWS).optional(),
 	rows: z.array(z.object({
-		name: z.string().trim().min(2).max(160),
-		phone: z.string().max(40).optional(),
-		password: z.string().max(200).optional(),
+		name: z.string().trim().min(2).max(VENDOR_ROW_FIELD_MAX.name),
+		phone: z.string().max(VENDOR_ROW_FIELD_MAX.phone).optional(),
+		password: z.string().max(VENDOR_ROW_FIELD_MAX.password).optional(),
 		// Per-vendor bank fields — unlike `state` above, these genuinely differ per row. Kept loose
 		// here (no format regex at the schema level): each is validated independently in
 		// bulkCreateVendorsFromRows, so one malformed field skips-with-warning instead of a schema
 		// error rejecting the whole row.
-		upi_number: z.string().max(40).optional(),
-		upi_id: z.string().max(120).optional(),
-		account_holder_name: z.string().max(160).optional(),
-		account_number: z.string().max(40).optional(),
-		ifsc_code: z.string().max(20).optional(),
-	})).min(1).max(500).optional(),
+		upi_number: z.string().max(VENDOR_ROW_FIELD_MAX.upi_number).optional(),
+		upi_id: z.string().max(VENDOR_ROW_FIELD_MAX.upi_id).optional(),
+		account_holder_name: z.string().max(VENDOR_ROW_FIELD_MAX.account_holder_name).optional(),
+		account_number: z.string().max(VENDOR_ROW_FIELD_MAX.account_number).optional(),
+		ifsc_code: z.string().max(VENDOR_ROW_FIELD_MAX.ifsc_code).optional(),
+	})).min(1).max(MAX_VENDOR_REQUEST_ROWS).optional(),
 	auto_password: z.boolean().optional().default(false),
 	// Batch metadata, not row data: one state applied to every Vendor in this batch (e.g. "this
 	// whole paste is Gujarat"), never a per-row column — no CSV/paste format change, no per-row
@@ -100,11 +102,6 @@ const bulkCreateVendorsSchema = z.object({
 const BULK_VENDOR_MOBILE_RANGE_START = '9000010000';
 const BULK_VENDOR_MOBILE_RANGE_END = '9000020000';
 const vendorPurgeSchema = z.object({ confirm_vendor_name: z.string().trim().min(1).max(160) });
-const importRowSchema = z.object({
-	customer_name: z.string().trim().min(2).max(120),
-	phone: z.string().trim().min(1),
-});
-const LEAD_STATUS_VALUES = ['NEW', 'CONTACTED', 'QUALIFIED', 'CONVERTED', 'LOST', 'REJECTED', 'DUPLICATE'];
 const MAX_IMPORT_ROWS = 2000;
 const COMPANY_IMPORT_QR_CODE = 'COMPANY-IMPORT';
 const COMPANY_IMPORT_VENDOR_LOGIN = 'company-import';
@@ -160,24 +157,6 @@ async function ensureCompanyImportVendor(transaction) {
 		select: { id: true },
 	});
 	return { vendorId: vendor.id, businessName: vendor.businessName, qrId: qr.id };
-}
-
-function normalizeImportStatus(rawStatus) {
-	if (!rawStatus) return 'NEW';
-	const trimmed = String(rawStatus).trim().toLowerCase();
-	return LEAD_STATUS_VALUES.find((value) => value.toLowerCase() === trimmed) || 'NEW';
-}
-
-function normalizeImportBand(rawValue, allowedValues) {
-	if (!rawValue) return null;
-	const trimmed = String(rawValue).trim().toLowerCase();
-	return allowedValues.find((value) => value.toLowerCase() === trimmed) || null;
-}
-
-function parseImportDate(rawValue) {
-	if (!rawValue) return new Date();
-	const parsed = new Date(rawValue);
-	return Number.isNaN(parsed.getTime()) ? new Date() : parsed;
 }
 
 function normalizeMobile(value) {
@@ -735,22 +714,25 @@ async function bulkCreateVendorsFromRows(request, response, rows, batchState) {
 				await tx.vendorBankDetails.createMany({ data: bankDetailsData });
 			}
 
-			return rowsCreated;
-		});
+			// ONE summary audit row per request, written in the SAME transaction as the data, so audit
+			// and data commit or roll back together. Per-record audit rows would burn the 5,000-row audit
+			// cap (a 2,000-row upload = 2,000 rows) and delete older history.
+			if (rowsCreated.length) {
+				await tx.auditLog.create({
+					data: {
+						actorUserId: request.auth.user.id,
+						actorRole: request.auth.user.role,
+						action: 'VENDOR_BULK_CREATED',
+						entity: 'VendorBatch',
+						entityId: randomUUID(),
+						metadata: { source: 'BULK_CREATE_ROWS', requested: rows.length, created: rowsCreated.length, failed: failures.length, state: batchState ?? null },
+					},
+				});
+			}
 
-		if (created.length) {
-			await prisma.auditLog.createMany({
-				data: created.map((row) => ({
-					actorUserId: request.auth.user.id,
-					actorRole: request.auth.user.role,
-					action: 'VENDOR_BULK_CREATED',
-					entity: 'Vendor',
-					entityId: row.id,
-					metadata: { batchSize: rows.length },
-				})),
-			});
-			checkAuditLogRetention(prisma).catch((error) => console.error('[AuditRetention] cleanup failed:', error));
-		}
+			return rowsCreated;
+		}, BULK_TRANSACTION_OPTIONS);
+
 		createdCount = created.length;
 	}
 
@@ -814,30 +796,29 @@ adminRoutes.post('/vendors/bulk-create', requireAuth, requireAdmin, async (reque
 		// this batch, so skipDuplicates only ever matters for a genuine race (another request
 		// claiming the same identifier between the read above and this write) — rare, and
 		// detected below by diffing the requested identifiers against what actually landed.
-		await prisma.vendor.createMany({ data: rows, skipDuplicates: true });
-
-		const insertedRows = await prisma.vendor.findMany({
-			where: { loginIdentifier: { in: rows.map((row) => row.loginIdentifier) } },
-			select: { id: true, loginIdentifier: true },
-		});
-		const insertedIdByIdentifier = new Map(insertedRows.map((row) => [row.loginIdentifier, row.id]));
-
-		if (insertedRows.length) {
-			await prisma.auditLog.createMany({
-				data: insertedRows.map((row) => ({
-					actorUserId: request.auth.user.id,
-					actorRole: request.auth.user.role,
-					action: 'VENDOR_BULK_CREATED',
-					entity: 'Vendor',
-					entityId: row.id,
-					metadata: { batchSize: names.length },
-				})),
+		// createMany + verify-read + ONE summary audit row in a single transaction, so the audit and
+		// the data commit or roll back together (per-record audit rows would burn the 5,000-row audit cap).
+		const insertedRows = await prisma.$transaction(async (tx) => {
+			await tx.vendor.createMany({ data: rows, skipDuplicates: true });
+			const inserted = await tx.vendor.findMany({
+				where: { loginIdentifier: { in: rows.map((row) => row.loginIdentifier) } },
+				select: { id: true, loginIdentifier: true },
 			});
-			// A bulk create can burst thousands of audit rows in one request — check retention
-			// immediately rather than waiting for the next dashboard/audit-logs visit. Fire-and-
-			// forget-but-logged so a retention hiccup never fails this response.
-			checkAuditLogRetention(prisma).catch((error) => console.error('[AuditRetention] cleanup failed:', error));
-		}
+			if (inserted.length) {
+				await tx.auditLog.create({
+					data: {
+						actorUserId: request.auth.user.id,
+						actorRole: request.auth.user.role,
+						action: 'VENDOR_BULK_CREATED',
+						entity: 'VendorBatch',
+						entityId: randomUUID(),
+						metadata: { source: 'BULK_CREATE_NAMES', requested: names.length, created: inserted.length, failed: names.length - inserted.length, state: state ?? null },
+					},
+				});
+			}
+			return inserted;
+		}, BULK_TRANSACTION_OPTIONS);
+		const insertedIdByIdentifier = new Map(insertedRows.map((row) => [row.loginIdentifier, row.id]));
 
 		const created = [];
 		const failures = [];
@@ -2417,6 +2398,108 @@ adminRoutes.get('/leads/import-template', requireAuth, requireAdmin, (request, r
 
 const csvUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
 
+// The company-import vendor/QR are stable sentinel rows: read them (one parallel round trip) and
+// only fall back to the upsert transaction the first time, instead of 4 round trips per batch.
+async function getCompanyImportContext() {
+	const [vendor, qr] = await Promise.all([
+		prisma.vendor.findUnique({ where: { loginIdentifier: COMPANY_IMPORT_VENDOR_LOGIN }, select: { id: true, businessName: true } }),
+		prisma.qrCode.findUnique({ where: { code: COMPANY_IMPORT_QR_CODE }, select: { id: true } }),
+	]);
+	if (vendor && qr) return { vendorId: vendor.id, businessName: vendor.businessName, qrId: qr.id };
+	return prisma.$transaction((transaction) => ensureCompanyImportVendor(transaction));
+}
+
+// Imports one batch of lead rows with a FIXED number of statements (one read, one write
+// transaction), never a query or transaction per row. rowOffset = data rows before this batch, so
+// reported row numbers follow the CSV convention (header = row 1). Every row lands in exactly one of
+// imported / duplicates / invalid. The lead, payout (CONVERTED leads get exactly one UNPAID payout)
+// and the batch's ONE summary audit row commit atomically. Retries the batch once, and only for the
+// customer-identity uniqueness race (isCustomerIdentityRace); any other error propagates.
+async function importLeadRows(request, records, rowOffset) {
+	const prepared = prepareLeadRows(records, { rowOffset, hashFor: customerHashFor, billBands, solarSizeBands });
+	const { invalid } = prepared;
+	if (!prepared.valid.length) {
+		return { requested: records.length, imported: 0, duplicates: prepared.duplicates, invalid };
+	}
+	const companyVendor = await getCompanyImportContext();
+
+	for (let attempt = 1; ; attempt += 1) {
+		const duplicates = [...prepared.duplicates];
+		try {
+			// Fresh read on every attempt: after a lost race the racing phone already has a lead and
+			// resolves as a duplicate instead of failing again.
+			const identities = await prisma.customerIdentity.findMany({
+				where: { hash: { in: prepared.valid.map((row) => row.hash) } },
+				select: { id: true, hash: true, leads: { select: { id: true }, take: 1 } },
+			});
+			const identityByHash = new Map(identities.map((identity) => [identity.hash, identity]));
+			const newIdentities = [];
+			const leadData = [];
+			const payoutData = [];
+			for (const row of prepared.valid) {
+				const existing = identityByHash.get(row.hash);
+				if (existing?.leads.length) {
+					duplicates.push({ row: row.row, phone: row.phone });
+					continue;
+				}
+				let identityId = existing?.id;
+				if (!identityId) {
+					identityId = randomUUID();
+					newIdentities.push({ id: identityId, hash: row.hash });
+				}
+				const leadId = randomUUID();
+				leadData.push({
+					id: leadId,
+					vendorId: companyVendor.vendorId,
+					vendorNameSnapshot: companyVendor.businessName,
+					qrId: companyVendor.qrId,
+					qrAssignmentId: null,
+					scanId: null,
+					customerIdentityId: identityId,
+					customerName: row.customerName,
+					phone: row.phone,
+					email: row.email,
+					location: row.location,
+					pincode: row.pincode,
+					averageElectricityBill: row.averageElectricityBill,
+					solarSize: row.solarSize,
+					status: row.status,
+					createdAt: row.createdAt,
+				});
+				if (row.status === 'CONVERTED') payoutData.push({ leadId, vendorId: companyVendor.vendorId, status: 'UNPAID' });
+			}
+
+			if (leadData.length) {
+				await prisma.$transaction(async (tx) => {
+					if (newIdentities.length) await tx.customerIdentity.createMany({ data: newIdentities });
+					await tx.lead.createMany({ data: leadData });
+					if (payoutData.length) await tx.payout.createMany({ data: payoutData });
+					await tx.auditLog.create({
+						data: {
+							actorUserId: request.auth.user.id,
+							actorRole: request.auth.user.role,
+							action: 'LEAD_CSV_IMPORTED',
+							entity: 'LeadBatch',
+							entityId: randomUUID(),
+							metadata: { source: 'CSV_IMPORT', requested: records.length, imported: leadData.length, duplicates: duplicates.length, invalid: invalid.length, converted: payoutData.length },
+						},
+					});
+				}, BULK_TRANSACTION_OPTIONS);
+			}
+
+			duplicates.sort((first, second) => first.row - second.row);
+			return { requested: records.length, imported: leadData.length, duplicates, invalid };
+		} catch (error) {
+			if (attempt === 1 && isCustomerIdentityRace(error)) {
+				// Constraint name, batch size and offset only: never phone numbers or customer data.
+				console.warn(`[LeadImport] customer-identity uniqueness race, retrying batch once (rows=${records.length}, offset=${rowOffset})`);
+				continue;
+			}
+			throw error;
+		}
+	}
+}
+
 adminRoutes.post('/leads/import', requireAuth, requireAdmin, csvUpload.single('file'), async (request, response, next) => {
 	try {
 		if (!request.file) {
@@ -2459,93 +2542,17 @@ adminRoutes.post('/leads/import', requireAuth, requireAdmin, csvUpload.single('f
 			throw error;
 		}
 
-		const companyVendor = await prisma.$transaction((transaction) => ensureCompanyImportVendor(transaction));
-
+		// Chunked server-side: one read + one transaction per 100 rows (importLeadRows), never a query
+		// per row. This is a database-efficiency fix, NOT a timeout guarantee: it is still one
+		// synchronous request. The admin UI uses POST /leads/import-batch (client-driven batches).
 		const duplicates = [];
 		const invalid = [];
 		let imported = 0;
-
-		for (let index = 0; index < records.length; index += 1) {
-			const rowNumber = index + 2; // header is row 1
-			const record = records[index];
-			const nameInput = record.customer_name || record.name || '';
-			const phoneInput = record.phone || record.mobile || record.mobile_number || '';
-
-			const rowResult = importRowSchema.safeParse({ customer_name: nameInput, phone: phoneInput });
-			if (!rowResult.success) {
-				invalid.push({ row: rowNumber, reason: 'Missing or invalid customer name / phone number.' });
-				continue;
-			}
-
-			const normalizedPhone = normalizePhone(rowResult.data.phone);
-			if (!/^[6-9]\d{9}$/.test(normalizedPhone)) {
-				invalid.push({ row: rowNumber, reason: 'Phone number is not a valid Indian mobile number.' });
-				continue;
-			}
-
-			const customerHash = customerHashFor(normalizedPhone);
-			const existingLead = await findExistingLeadByHash(customerHash);
-			if (existingLead) {
-				duplicates.push({ row: rowNumber, phone: normalizedPhone });
-				continue;
-			}
-
-			const status = normalizeImportStatus(record.status);
-			const email = record.email ? String(record.email).trim() || null : null;
-			const location = record.location ? String(record.location).trim() || null : null;
-			const pincode = record.pincode ? String(record.pincode).trim() || null : null;
-			const averageElectricityBill = normalizeImportBand(record.average_electricity_bill, billBands);
-			const solarSize = normalizeImportBand(record.solar_size, solarSizeBands);
-			const createdAt = parseImportDate(record.created_at || record.date || record.lead_date);
-
-			try {
-				await prisma.$transaction(async (transaction) => {
-					const customerIdentity = await transaction.customerIdentity.upsert({
-						where: { hash: customerHash },
-						create: { hash: customerHash },
-						update: {},
-						select: { id: true },
-					});
-					const createdLead = await transaction.lead.create({
-						data: {
-							vendorId: companyVendor.vendorId,
-							vendorNameSnapshot: companyVendor.businessName,
-							qrId: companyVendor.qrId,
-							qrAssignmentId: null,
-							scanId: null,
-							customerIdentityId: customerIdentity.id,
-							customerName: rowResult.data.customer_name,
-							phone: normalizedPhone,
-							email,
-							location,
-							pincode,
-							averageElectricityBill,
-							solarSize,
-							status,
-							createdAt,
-						},
-						select: { id: true, vendorId: true, status: true },
-					});
-					await writeAudit(transaction, request, 'LEAD_CSV_IMPORTED', 'Lead', createdLead.id, { phone: normalizedPhone, status });
-					if (status === 'CONVERTED') {
-						await ensurePayoutForConvertedLead(transaction, request, createdLead);
-					}
-				});
-				imported += 1;
-			} catch (rowError) {
-				if (rowError.code === 'P2002') {
-					duplicates.push({ row: rowNumber, phone: normalizedPhone });
-				} else {
-					invalid.push({ row: rowNumber, reason: 'Could not save this row.' });
-				}
-			}
-		}
-
-		// A CSV import can burst up to MAX_IMPORT_ROWS audit rows in one request — check
-		// retention immediately rather than waiting for the next dashboard/audit-logs visit.
-		// Fire-and-forget-but-logged so a retention hiccup never fails this response.
-		if (imported > 0) {
-			checkAuditLogRetention(prisma).catch((error) => console.error('[AuditRetention] cleanup failed:', error));
+		for (let start = 0; start < records.length; start += MAX_LEAD_BATCH_ROWS) {
+			const result = await importLeadRows(request, records.slice(start, start + MAX_LEAD_BATCH_ROWS), start);
+			imported += result.imported;
+			duplicates.push(...result.duplicates);
+			invalid.push(...result.invalid);
 		}
 
 		return response.status(201).json({
@@ -2558,6 +2565,19 @@ adminRoutes.post('/leads/import', requireAuth, requireAdmin, csvUpload.single('f
 			error.code = 'CSV_FILE_TOO_LARGE';
 			error.message = 'CSV file must be 5 MB or smaller.';
 		}
+		return next(error);
+	}
+});
+
+// Client-driven batches: the admin UI sends up to MAX_LEAD_BATCH_ROWS rows per request and merges the
+// summaries. Stateless (nothing kept between requests) and idempotent (a phone that already has a lead
+// is reported as a duplicate), so a retried batch or a re-uploaded file never creates a second lead.
+adminRoutes.post('/leads/import-batch', requireAuth, requireAdmin, async (request, response, next) => {
+	try {
+		const { rows, row_offset: rowOffset } = leadImportBatchSchema.parse(request.body);
+		const summary = await importLeadRows(request, rows, rowOffset);
+		return response.status(201).json({ success: true, summary });
+	} catch (error) {
 		return next(error);
 	}
 });

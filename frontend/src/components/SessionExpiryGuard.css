@@ -1,0 +1,50 @@
+/* Above every portal modal (Admin modals sit at z-index 60). */
+.session-expired-overlay {
+  align-items: center;
+  background: rgba(4, 20, 31, .6);
+  display: flex;
+  inset: 0;
+  justify-content: center;
+  padding: 24px;
+  position: fixed;
+  z-index: 2000;
+}
+
+.session-expired-card {
+  background: #fff;
+  border-radius: 14px;
+  box-shadow: 0 30px 70px rgba(4, 20, 31, .35);
+  max-width: 380px;
+  padding: 26px 24px 22px;
+  text-align: center;
+  width: 100%;
+}
+
+.session-expired-card h2 {
+  color: #102f4a;
+  font-size: 1.2rem;
+  margin: 0 0 8px;
+}
+
+.session-expired-card p {
+  color: #4a5b66;
+  font-size: .92rem;
+  line-height: 1.5;
+  margin: 0 0 18px;
+}
+
+.session-expired-button {
+  background: #ff6b21;
+  border: 0;
+  border-radius: 10px;
+  color: #fff;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 700;
+  padding: 11px 22px;
+}
+
+.session-expired-button:focus-visible {
+  outline: 3px solid rgba(255, 107, 33, .4);
+  outline-offset: 2px;
+}

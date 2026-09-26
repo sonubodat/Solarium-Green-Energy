@@ -2588,6 +2588,13 @@ select.admin-table-select {
   width: 100%;
 }
 
+/* Bulk upload progress popup (components/BatchProgressModal.js): no close affordance on purpose. */
+.batch-progress-modal { max-width: 460px; }
+.batch-progress-warning { color: var(--admin-text); margin: 0 0 14px; }
+.batch-progress-bar { background: var(--admin-border); border-radius: 999px; height: 10px; margin-bottom: 10px; overflow: hidden; }
+.batch-progress-bar span { background: var(--admin-orange); display: block; height: 100%; transition: width .3s ease; }
+.batch-progress-retry { color: var(--admin-orange); display: block; margin-top: 6px; }
+
 .admin-modal-header {
   align-items: flex-start;
   border-bottom: 1px solid var(--admin-border);

@@ -134,3 +134,51 @@ test('labelled tracking clears after success and failure', async () => {
 	await assert.rejects(client.apiRequest('/t', { method: 'POST', body: '{}', label: 'Working' }));
 	assert.equal(client.getActivitySnapshot().length, 0);
 });
+
+// ---- session expiry popup trigger -------------------------------------------------------------
+const unauthenticated = { status: 401, body: { error: { code: 'UNAUTHENTICATED', message: 'Session is invalid or expired.' } } };
+
+test('session expiry: a requireAuth 401 notifies subscribers and clears the cached data', async () => {
+	reset();
+	await client.apiRequest('/admin/qr?page=1'); // cached
+	assert.equal(log.length, 1);
+	let notified = 0;
+	const unsubscribe = client.subscribeSessionExpired(() => { notified += 1; });
+	behaviour = () => unauthenticated;
+	await assert.rejects(client.apiRequest('/admin/leads?page=1', { forceRefresh: true }), /invalid or expired/);
+	assert.equal(notified, 1);
+	behaviour = () => ({ status: 200, body: { ok: true } });
+	await client.apiRequest('/admin/qr?page=1'); // cache was wiped, so this hits the network again
+	assert.equal(log.filter((p) => p === '/admin/qr?page=1').length, 2);
+	unsubscribe();
+	behaviour = () => unauthenticated;
+	await assert.rejects(client.apiRequest('/admin/leads?page=2', { forceRefresh: true }));
+	assert.equal(notified, 1); // unsubscribed
+});
+
+test('session expiry: wrong password, the /auth/session probe and /auth/logout never notify', async () => {
+	reset();
+	let notified = 0;
+	const unsubscribe = client.subscribeSessionExpired(() => { notified += 1; });
+	behaviour = () => ({ status: 401, body: { error: { code: 'INVALID_CREDENTIALS', message: 'Invalid credentials.' } } });
+	await assert.rejects(client.apiRequest('/auth/login?portal=admin', { method: 'POST', body: '{}' }));
+	behaviour = () => unauthenticated;
+	await assert.rejects(client.apiRequest('/auth/session?portal=admin', { forceRefresh: true }));
+	await assert.rejects(client.apiRequest('/auth/logout?portal=admin', { method: 'POST' }));
+	behaviour = () => ({ status: 403, body: { error: { code: 'FORBIDDEN', message: 'no' } } });
+	await assert.rejects(client.apiRequest('/admin/x', { forceRefresh: true }));
+	behaviour = () => ({ status: 500, body: { error: { message: 'boom' } } });
+	await assert.rejects(client.apiRequest('/admin/y', { forceRefresh: true }));
+	assert.equal(notified, 0);
+	unsubscribe();
+});
+
+test('session expiry: every subscriber is told, and a write that gets a 401 notifies too', async () => {
+	reset();
+	const seen = [];
+	const off = [client.subscribeSessionExpired(() => seen.push('a')), client.subscribeSessionExpired(() => seen.push('b'))];
+	behaviour = () => unauthenticated;
+	await assert.rejects(client.apiRequest('/admin/vendors/bulk-create', { method: 'POST', body: '{}' }));
+	assert.deepEqual(seen, ['a', 'b']);
+	off.forEach((fn) => fn());
+});

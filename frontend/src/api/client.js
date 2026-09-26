@@ -55,6 +55,25 @@ export function clearApiCache() {
   clearSharedCache();
 }
 
+// ---- Session expiry ---------------------------------------------------------------------------
+// A signed-in portal page subscribes to be told when the server says the login is gone (it expired,
+// was revoked, or the browser dropped the cookie at its Max-Age). Only requireAuth's 401 counts
+// (code UNAUTHENTICATED): a wrong password is a 401 with another code, and /auth/session is the
+// "am I signed in?" probe that legitimately 401s for someone who never signed in.
+// /auth/session is the probe; /auth/logout is what "Sign in again" itself calls, and it must not re-raise the popup.
+const SESSION_EXPIRY_IGNORED_PATHS = ['/auth/session', '/auth/logout'];
+const sessionExpiredListeners = new Set();
+
+export function subscribeSessionExpired(listener) {
+  sessionExpiredListeners.add(listener);
+  return () => sessionExpiredListeners.delete(listener);
+}
+
+function notifySessionExpired() {
+  clearApiCache(); // never let the next person to sign in see the last person's cached data
+  sessionExpiredListeners.forEach((listener) => listener());
+}
+
 async function apiRequestCore(path, options = {}) {
   const { forceRefresh, ...fetchOptions } = options;
   const method = (fetchOptions.method || 'GET').toUpperCase();
@@ -102,6 +121,7 @@ async function apiRequestCore(path, options = {}) {
     error.code = payload?.error?.code;
     error.status = response.status;
     error.details = details;
+    if (response.status === 401 && error.code === 'UNAUTHENTICATED' && !SESSION_EXPIRY_IGNORED_PATHS.some((prefix) => path.startsWith(prefix))) notifySessionExpired();
     // Only 401s are worth caching as a negative result — "not logged in" is a stable fact
     // that's safe (and useful, across simultaneously-open tabs) to reuse for a few seconds.
     // A 500/network failure is exactly the kind of thing a quick retry should get past, so

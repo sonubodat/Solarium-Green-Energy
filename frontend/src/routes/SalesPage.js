@@ -6,6 +6,7 @@ import { INDIAN_STATES } from '../constants/indian-states';
 import QrScanner from '../components/QrScanner';
 import VendorPicker from '../components/VendorPicker';
 import { SkeletonBlock } from '../components/Skeleton';
+import SessionExpiryGuard from '../components/SessionExpiryGuard';
 import './SalesPage.css';
 
 // Server-side, paginated Solar Mitra lookup for the Sales pickers. Uncached (forceRefresh) so a
@@ -1387,6 +1388,7 @@ function SalesPage() {
             </footer>
           </>
         )}
+        {portalData && <SessionExpiryGuard portal="sales" onSignOut={signOutCurrent} />}
       </main>
     </div>
   );

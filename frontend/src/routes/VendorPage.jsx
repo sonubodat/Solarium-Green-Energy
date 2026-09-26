@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { apiRequest } from '../api/client';
 import { SkeletonBlock } from '../components/Skeleton';
+import SessionExpiryGuard from '../components/SessionExpiryGuard';
 import './VendorPage.css';
 
 const ICONS = {
@@ -1186,7 +1187,12 @@ function VendorPage() {
     return renderLogin();
   }
 
-  return renderWorkspace();
+  return (
+    <>
+      {renderWorkspace()}
+      <SessionExpiryGuard portal="vendor" onSignOut={signOutCurrent} />
+    </>
+  );
 }
 
 export default VendorPage;

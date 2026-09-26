@@ -27,6 +27,10 @@ export const env = {
   // available, matching prisma.config.ts's connection for the CLI. DATABASE_URL
   // remains the fallback for environments where only a pooled URL is configured.
   databaseUrl: process.env.DIRECT_URL || process.env.DATABASE_URL || '',
+  // How long one login (Admin, Sales, Solar Mitra) stays valid, in days: default 7, clamped to 1-30.
+  // It is a fixed lifetime from sign-in, not extended by activity. Sessions created before a change
+  // keep the expiry they were given.
+  sessionLifetimeDays: Math.min(Math.max(Number(process.env.SESSION_LIFETIME_DAYS) || 7, 1), 30),
   sessionSecret: process.env.SESSION_SECRET || '',
   customerHashSecret: process.env.CUSTOMER_HASH_SECRET || '',
   supabaseUrl: process.env.SUPABASE_URL || '',

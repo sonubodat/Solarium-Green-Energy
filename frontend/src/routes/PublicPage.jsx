@@ -47,8 +47,9 @@ function PublicPage() {
   const [referral, setReferral] = useState(null);
   const [referralMessage, setReferralMessage] = useState('');
   const [lead, setLead] = useState(EMPTY_LEAD);
-  // Starts unticked: DPDP Act s.6 needs a clear affirmative action, a pre-ticked box is not consent.
-  const [consent, setConsent] = useState(false);
+  // Pre-ticked at the owner's explicit, repeated request. Note DPDP Act s.6 expects a clear
+  // affirmative action, so a pre-ticked box is weak as proof of consent.
+  const [consent, setConsent] = useState(true);
   const noticeRef = useRef(null);
   const [message, setMessage] = useState('');
   const [loading, setLoading] = useState(false);
@@ -151,7 +152,7 @@ function PublicPage() {
       await apiRequest('/public/leads', { method: 'POST', body: JSON.stringify(body) });
       setSubmitted({ name: lead.customer_name });
       setLead(EMPTY_LEAD);
-      setConsent(false);
+      setConsent(true);
       setPhoneCheck('idle');
       setCapturedCoords(null);
     } catch (error) {

@@ -9,6 +9,7 @@ import { registrationRoutes } from './routes/registrations.js';
 import { notFoundHandler, errorHandler } from './middleware/errors.js';
 import { env } from './config/env.js';
 import { invalidateAfterWrites } from './lib/response-cache.js';
+import { BULK_BODY_LIMIT } from './lib/bulk-limits.js';
 
 export const app = express();
 
@@ -30,6 +31,10 @@ app.use((request, response, next) => {
 
 	return next();
 });
+// The two batched bulk endpoints get a larger, computed body limit (see lib/bulk-limits.js). These
+// MUST come before the global parser: it parses (and rejects at its 100 kb default) first, and
+// body-parser skips a request that an earlier parser already handled.
+app.use(['/api/admin/leads/import-batch', '/api/admin/vendors/bulk-create'], express.json({ limit: BULK_BODY_LIMIT }));
 app.use(express.json());
 // Any successful write anywhere clears the short-lived admin response cache.
 app.use('/api', invalidateAfterWrites);

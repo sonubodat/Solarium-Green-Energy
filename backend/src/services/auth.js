@@ -4,7 +4,7 @@ import { prisma } from '../lib/prisma.js';
 import { env } from '../config/env.js';
 
 const scrypt = promisify(scryptCallback);
-const sessionLifetimeMs = 1000 * 60 * 60 * 24;
+export const SESSION_LIFETIME_MS = env.sessionLifetimeDays * 24 * 60 * 60 * 1000;
 
 export async function hashPassword(password) {
   const salt = randomBytes(16).toString('hex');
@@ -88,7 +88,7 @@ export async function createStaffSession(userId) {
     data: {
       userId,
       tokenHash: hashSessionToken(token),
-      expiresAt: new Date(Date.now() + sessionLifetimeMs),
+      expiresAt: new Date(Date.now() + SESSION_LIFETIME_MS),
     },
   });
   return token;
@@ -100,7 +100,7 @@ export async function createVendorSession(vendorId) {
     data: {
       vendorId,
       tokenHash: hashSessionToken(token),
-      expiresAt: new Date(Date.now() + sessionLifetimeMs),
+      expiresAt: new Date(Date.now() + SESSION_LIFETIME_MS),
     },
   });
   return token;
@@ -125,7 +125,7 @@ export function setSessionCookie(response, token, role) {
   response.setHeader(
     'Set-Cookie',
     [
-      cookieOptions(sessionCookieName(role), encodeURIComponent(token), sessionLifetimeMs / 1000),
+      cookieOptions(sessionCookieName(role), encodeURIComponent(token), SESSION_LIFETIME_MS / 1000),
       cookieOptions(env.sessionCookieName, '', 0),
     ]
   );
