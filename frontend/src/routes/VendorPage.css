@@ -2341,10 +2341,22 @@
     font-size: 13px;
   }
 
+  .vendor-qr-linkrow,
   .vendor-qr-linkrow .vendor-qr-open {
-    min-height: 44px;
-    padding: 0 14px;
-    font-size: 14px;
+    width: 100%;
+  }
+
+  .vendor-qr-linkrow .vendor-qr-open {
+    justify-content: center;
+    min-height: 48px;
+    border-radius: 10px;
+    font-size: 16px;
+    font-weight: 700;
+  }
+
+  .vendor-qr-linkrow .vendor-qr-open svg {
+    width: 20px;
+    height: 20px;
   }
 
   .vendor-qr-close {

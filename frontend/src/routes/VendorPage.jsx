@@ -677,15 +677,6 @@ function VendorPage() {
           <h2>{vendor.currentQr}</h2>
           <p>{t('qr.counted')}</p>
           <div className="vendor-qr-linkrow">
-            <button
-              type="button"
-              className="vendor-qr-link"
-              onClick={() => copyReferralLink(vendor.referralUrl)}
-              title={t('qr.copyTitle')}
-              aria-label={t('qr.copyAria', { url: vendor.referralUrl })}
-            >
-              {vendor.referralUrl}
-            </button>
             <a
               className="vendor-qr-open"
               href={vendor.referralUrl}
