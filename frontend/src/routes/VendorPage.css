@@ -1901,9 +1901,9 @@
 
 /* ---- link row with Open button, and direct share options ---- */
 .vendor-qr-linkrow {
-  align-items: center;
+  align-items: flex-start;
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: column;
   gap: 8px;
 }
 
@@ -2334,7 +2334,7 @@
   }
 
   .vendor-qr-linkrow .vendor-qr-link {
-    flex: 1 1 180px;
+    flex: 0 0 auto;
     min-height: 44px;
     display: flex;
     align-items: center;
