@@ -80,12 +80,16 @@ owner_name
 mobile_number
 login_identifier
 sales_user_id      nullable until assigned
+state              nullable; the applicant's state, becomes Vendor.state on approval
+reviewed_by_id     nullable; the Admin who approved/rejected (plain id, the audit log names the actor)
+reviewed_at        nullable
+rejection_reason   nullable
 status
 created_at
 updated_at
 ```
 
-Status is `PENDING`, `ONBOARDED`, or `REJECTED`. A registration may be linked to one Vendor at most once; onboarding must set `vendor_id` and transition the registration transactionally. Index `sales_user_id`, `status`, and `created_at`. Do not expose more contact data to Sales than the onboarding workflow requires.
+Status is `PENDING`, `ONBOARDED` (approved), or `REJECTED`. Public applications (`/apply`) are reviewed by Admin; Sales can still onboard a `PENDING` row. Both paths claim the row with a conditional `PENDING` update first, so exactly one Vendor can come out of one application. A rejected applicant may re-apply: the same row returns to `PENDING`. A registration may be linked to one Vendor at most once; onboarding must set `vendor_id` and transition the registration transactionally. Index `sales_user_id`, `status`, and `created_at`. Do not expose more contact data to Sales than the onboarding workflow requires.
 
 `login_identifier` is unique at the database level, matching `Vendor.login_identifier` — this prevents duplicate pending registrations for the same identifier from silently coexisting. `mobile_number` uniqueness follows the same open policy question as `Vendor.mobile_number` (see `RFI.md` §9) and is not yet enforced.
 

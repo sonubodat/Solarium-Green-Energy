@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { useParams } from 'react-router-dom';
+import { Link, useParams } from 'react-router-dom';
 import { apiRequest } from '../api/client';
 import { SkeletonBlock } from '../components/Skeleton';
 import { cleanQrCodeParam } from '../lib/qr-link';
@@ -430,6 +430,9 @@ function PublicPage() {
 
   return (
     <div className="enquiry-page">
+      <div className="enquiry-apply-bar">
+        New Solar Mitra? <Link to="/apply">Apply for Solar Mitra</Link> · Already a Solar Mitra? <Link to="/vendor">Sign in</Link>
+      </div>
       <header className="enquiry-header">
         <span className="enquiry-brand"><img className="enquiry-logo" src="/Sol_logo.jpg" alt="Solarium" /></span>
         <span className="enquiry-tagline">India's Leading Solar Solutions Provider</span>

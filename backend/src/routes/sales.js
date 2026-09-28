@@ -162,21 +162,35 @@ salesRoutes.post('/vendors/:vendorId/onboard', requireAuth, requireSales, async 
 			return response.status(403).json({ success: false, error: { code: 'REGISTRATION_NOT_ASSIGNED', message: 'This registration is assigned to another Sales user.' } });
 		}
 
+		const passwordHash = await hashPassword(input.password || defaultVendorPassword(registration.mobileNumber));
 		const vendor = await prisma.$transaction(async (transaction) => {
+			// Claim the registration first (PENDING -> ONBOARDED, conditional), so Sales and Admin can never both
+			// turn the same application into a Solar Mitra. Losing the race rolls everything back.
+			const claimed = await transaction.vendorRegistration.updateMany({
+				where: { id: registration.id, status: 'PENDING' },
+				data: { salesUserId: request.auth.user.id, status: 'ONBOARDED' },
+			});
+			if (claimed.count === 0) {
+				const lost = new Error('This registration was already reviewed.');
+				lost.statusCode = 409;
+				lost.code = 'REGISTRATION_ALREADY_REVIEWED';
+				throw lost;
+			}
 			const createdVendor = await transaction.vendor.create({
 				data: {
 					businessName: registration.businessName,
 					ownerName: registration.ownerName,
 					loginIdentifier: registration.loginIdentifier,
 					mobileNumber: registration.mobileNumber,
-					passwordHash: await hashPassword(input.password || defaultVendorPassword(registration.mobileNumber)),
+					passwordHash,
 					mustChangePassword: true,
 					salesUserId: request.auth.user.id,
+					state: registration.state ?? null,
 				},
 			});
 			await transaction.vendorRegistration.update({
 				where: { id: registration.id },
-				data: { vendorId: createdVendor.id, salesUserId: request.auth.user.id, status: 'ONBOARDED' },
+				data: { vendorId: createdVendor.id },
 			});
 			await writeAudit(transaction, request, 'VENDOR_CREATED', 'Vendor', createdVendor.id, { source: 'REGISTRATION' });
 			return createdVendor;

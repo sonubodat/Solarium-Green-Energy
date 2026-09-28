@@ -41,6 +41,7 @@ const ICONS = {
   store: 'M4 10h16v10H4V10Zm2 0V6h12v4M3 10h18',
   qr: 'M4 4h6v6H4V4Zm10 0h6v6h-6V4ZM4 14h6v6H4v-6Zm10 1h2v2h-2v-2Zm3-1h3v3h-3v-3Zm-3 4h2v2h-2v-2Z',
   users: 'M16 20v-1.5c0-2.2-1.8-4-4-4H7c-2.2 0-4 1.8-4 4V20m6-9a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Zm7-6a3 3 0 0 1 0 6m2 9v-1.5a4 4 0 0 0-3-3.9',
+  'vendor-applications': 'M16 20v-1.5c0-2.2-1.8-4-4-4H7c-2.2 0-4 1.8-4 4V20m6-9a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Zm5 2 2 2 4-4',
   lead: 'M5 4h14a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Zm3 4h8M8 12h8M8 16h5',
   scan: 'M4 7V5a1 1 0 0 1 1-1h2m11 3V5a1 1 0 0 0-1-1h-2M4 17v2a1 1 0 0 0 1 1h2m11-3v2a1 1 0 0 1-1 1h-2M8 8h8v8H8V8Z',
   money: 'M12 2v20m4-16c-.7-1-2.1-2-4-2-2.8 0-4.5 1.4-4.5 3.4 0 5.1 9 2.1 9 6.6 0 2-1.7 3.4-4.5 3.4-2 0-3.6-.9-4.5-2',
@@ -352,6 +353,7 @@ const BULK_VENDOR_BANK_FIELD_LABELS = {
 const NAV_ITEMS = [
   ['dashboard', 'Dashboard'],
   ['vendors', 'Solar Mitras'],
+  ['vendor-applications', 'Solar Mitra Applications'],
   ['qr', 'QR Management'],
   ['print-qr', 'Print QR Codes'],
   ['templates', 'Templates'],
@@ -389,6 +391,15 @@ function AdminPage() {
   // data was still in flight, which looked like a bug rather than a load in progress.
   const [resourceLoading, setResourceLoading] = useState(false);
   const [adminPage, setAdminPage] = useState(1);
+  // Public "Apply for Solar Mitra" applications: status filter (ref = what the loader reads), the count
+  // shown on the sidebar item, and the row being approved/rejected.
+  const [applicationStatus, setApplicationStatus] = useState('PENDING');
+  const applicationStatusRef = useRef('PENDING');
+  const [pendingApplications, setPendingApplications] = useState(0);
+  const [applicationBusyId, setApplicationBusyId] = useState('');
+  const [rejectingApplicationId, setRejectingApplicationId] = useState('');
+  const [rejectReason, setRejectReason] = useState('');
+  const [applicationStates, setApplicationStates] = useState({});
   const [printWizardStep, setPrintWizardStep] = useState(1);
   const [printWizardMode, setPrintWizardMode] = useState('range');
   const [printWizardDraft, setPrintWizardDraft] = useState({ range_start: '', range_end: '', code: '', template_id: '' });
@@ -880,10 +891,17 @@ function AdminPage() {
         query += `&state=${encodeURIComponent(vendorStateFilterRef.current)}`;
       }
 
+      if (nextResource === 'vendor-applications') {
+        query += `&status=${encodeURIComponent(applicationStatusRef.current)}`;
+      }
+
       const data = await apiRequest(`/admin/${nextResource}${query}`, { forceRefresh, supersede: 'admin-list' });
 
       if (!mountedRef.current || seq !== adminLoadSeq.current) return;
 
+      if (nextResource === 'vendor-applications' && typeof data.pending_count === 'number') {
+        setPendingApplications(data.pending_count);
+      }
       setAdminPage(page);
 
       setPortalData((current) => ({
@@ -960,7 +978,62 @@ function AdminPage() {
     }
   }
 
+  // Sidebar count of applications waiting for approval, fetched once after sign-in (the list itself
+  // refreshes it whenever it loads).
+  const signedIn = Boolean(portalData);
+  useEffect(() => {
+    if (!signedIn) return undefined;
+    let cancelled = false;
+    apiRequest('/admin/vendor-applications?limit=1')
+      .then((data) => {
+        if (!cancelled && typeof data.pending_count === 'number') setPendingApplications(data.pending_count);
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [signedIn]);
+
+  function changeApplicationStatus(nextStatus) {
+    applicationStatusRef.current = nextStatus;
+    setApplicationStatus(nextStatus);
+    setRejectingApplicationId('');
+    loadAdminResource('vendor-applications', 1);
+  }
+
+  // Approve creates the Solar Mitra (the server does it in one transaction); reject keeps the row with a reason.
+  // A 409 means someone else already handled it: show that and reload, never retry.
+  async function reviewApplication(application, action) {
+    setApplicationBusyId(application.id);
+    let notice = null;
+    try {
+      const body = action === 'approve'
+        ? { ...(application.state ? {} : { state: applicationStates[application.id] }) }
+        : { reason: rejectReason.trim() || undefined };
+      await apiRequest(`/admin/vendor-applications/${application.id}/${action}`, { method: 'POST', body: JSON.stringify(body) });
+      notice = {
+        type: 'success',
+        text: action === 'approve' ? `${application.businessName} is now a Solar Mitra. Their first password is their phone number.` : `${application.businessName}'s application was rejected.`,
+      };
+      setRejectingApplicationId('');
+      setRejectReason('');
+    } catch (error) {
+      notice = { type: 'error', text: error.message };
+    } finally {
+      setApplicationBusyId('');
+      // Reloading clears any message, so the result is shown after the list has refreshed.
+      await loadAdminResource('vendor-applications', adminPage, undefined, undefined, true);
+      if (notice) {
+        setMessage(notice.text);
+        setMessageType(notice.type);
+      }
+    }
+  }
+
   function navigate(nextResource) {
+    if (nextResource === 'vendor-applications') {
+      applicationStatusRef.current = 'PENDING';
+      setApplicationStatus('PENDING');
+      setRejectingApplicationId('');
+    }
     setResource(nextResource);
     setAdminPage(1);
     setVendorSearch('');
@@ -4390,6 +4463,131 @@ function AdminPage() {
     );
   }
 
+  function renderApplications() {
+    const applications = portalData?.data?.applications || [];
+    const statusLabel = { PENDING: 'Pending', ONBOARDED: 'Approved', REJECTED: 'Rejected' };
+    const statusTone = { PENDING: 'warning', ONBOARDED: 'active', REJECTED: 'inactive' };
+
+    return (
+      <div className="admin-resource">
+        <div className="admin-resource-heading">
+          <div>
+            <span className="admin-eyebrow">NEW PARTNERS</span>
+            <h2>Solar Mitra applications</h2>
+            <p>People who applied on the website. Approving creates their Solar Mitra account.</p>
+          </div>
+
+          <div className="admin-heading-actions">
+            <select
+              value={applicationStatus}
+              disabled={loading}
+              onChange={(event) => changeApplicationStatus(event.target.value)}
+              aria-label="Filter applications by status"
+            >
+              <option value="PENDING">Pending</option>
+              <option value="ONBOARDED">Approved</option>
+              <option value="REJECTED">Rejected</option>
+              <option value="ALL">All</option>
+            </select>
+            <button
+              className="admin-outline-button"
+              onClick={() => loadAdminResource('vendor-applications', adminPage, undefined, undefined, true)}
+            >
+              <Icon path={ICONS.refresh} />
+              Refresh
+            </button>
+          </div>
+        </div>
+
+        <div className="admin-table-wrap">
+          <table className="admin-table">
+            <thead>
+              <tr>
+                <th>Applicant</th>
+                <th>Mobile</th>
+                <th>State</th>
+                <th>Applied</th>
+                <th>Status</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {applications.length ? applications.map((application) => (
+                <tr key={application.id}>
+                  <td>
+                    <strong>{application.businessName}</strong>
+                    <div className="admin-muted-line">{application.ownerName}</div>
+                  </td>
+                  <td>{application.mobileNumber}</td>
+                  <td>
+                    {application.state || (application.status === 'PENDING' ? (
+                      <select
+                        className="admin-table-select"
+                        value={applicationStates[application.id] || ''}
+                        onChange={(event) => setApplicationStates((current) => ({ ...current, [application.id]: event.target.value }))}
+                        aria-label={`State for ${application.businessName}`}
+                      >
+                        <option value="">Choose state</option>
+                        {INDIAN_STATES.map((state) => <option key={state} value={state}>{state}</option>)}
+                      </select>
+                    ) : '—')}
+                  </td>
+                  <td>{application.createdAt ? new Date(application.createdAt).toLocaleDateString() : '—'}</td>
+                  <td>
+                    <span className={`admin-status ${statusTone[application.status] || ''}`}>{statusLabel[application.status] || application.status}</span>
+                    {application.status === 'REJECTED' && application.rejectionReason && (
+                      <div className="admin-muted-line">{application.rejectionReason}</div>
+                    )}
+                  </td>
+                  <td>
+                    {application.status === 'PENDING' ? (
+                      rejectingApplicationId === application.id ? (
+                        <span className="admin-inline-confirm">
+                          <input
+                            className="admin-inline-confirm-input"
+                            placeholder="Reason (optional)"
+                            maxLength={500}
+                            value={rejectReason}
+                            onChange={(event) => setRejectReason(event.target.value)}
+                            aria-label="Rejection reason"
+                          />
+                          <button type="button" className="admin-mini-button danger" disabled={applicationBusyId === application.id} onClick={() => reviewApplication(application, 'reject')}>Confirm reject</button>
+                          <button type="button" className="admin-mini-button" onClick={() => { setRejectingApplicationId(''); setRejectReason(''); }}>Cancel</button>
+                        </span>
+                      ) : (
+                        <span className="admin-inline-confirm">
+                          <button
+                            type="button"
+                            className="admin-mini-button"
+                            disabled={applicationBusyId === application.id || (!application.state && !applicationStates[application.id])}
+                            onClick={() => reviewApplication(application, 'approve')}
+                          >
+                            {applicationBusyId === application.id ? 'Working...' : 'Approve'}
+                          </button>
+                          <button type="button" className="admin-mini-button danger" disabled={applicationBusyId === application.id} onClick={() => { setRejectingApplicationId(application.id); setRejectReason(''); }}>Reject</button>
+                        </span>
+                      )
+                    ) : (
+                      <span className="admin-muted-line">{application.reviewedAt ? new Date(application.reviewedAt).toLocaleDateString() : '—'}</span>
+                    )}
+                  </td>
+                </tr>
+              )) : (
+                <tr>
+                  <td colSpan="6" className="admin-empty">
+                    {resourceLoading || loading ? 'Loading...' : `No ${applicationStatus === 'ALL' ? '' : `${(statusLabel[applicationStatus] || '').toLowerCase()} `}applications.`}
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+
+        {renderPagination()}
+      </div>
+    );
+  }
+
   function renderAuditLogs() {
     // The backend returns the list under `audit_logs` (see GET /api/admin/audit-logs).
     const logs =
@@ -5345,6 +5543,10 @@ function AdminPage() {
       return renderUsers();
     }
 
+    if (resource === 'vendor-applications') {
+      return renderApplications();
+    }
+
     if (resource === 'audit-logs') {
       return renderAuditLogs();
     }
@@ -5550,6 +5752,9 @@ function AdminPage() {
                   }
                 />
                 <span>{label}</span>
+                {key === 'vendor-applications' && pendingApplications > 0 && (
+                  <span className="admin-nav-badge" aria-label={`${pendingApplications} pending`}>{pendingApplications}</span>
+                )}
               </button>
             )
           )}

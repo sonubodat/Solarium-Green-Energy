@@ -49,6 +49,8 @@ function createLimiter(prefix, limit, durationMs) {
 
 export const authRateLimit = createLimiter('auth', 10, 15 * 60 * 1000);
 export const passwordResetRateLimit = createLimiter('password-reset', 5, 15 * 60 * 1000);
+// Public "Apply for Solar Mitra": a few applications per IP is plenty for a real person.
+export const registerRateLimit = createLimiter('register', 5, 15 * 60 * 1000);
 
 const sweepTimer = setInterval(() => {
   const now = Date.now();

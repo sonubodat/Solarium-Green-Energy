@@ -32,6 +32,7 @@ import { BULK_TRANSACTION_OPTIONS, MAX_LEAD_BATCH_ROWS, MAX_VENDOR_REQUEST_ROWS,
 import { isCustomerIdentityRace, leadImportBatchSchema, prepareLeadRows } from '../lib/lead-import.js';
 import { VENDOR_WITHOUT_LOCKED_QR_WHERE } from '../lib/qr-provisioning.js';
 import { registerAutoPosterRoutes } from './admin-auto-posters.js';
+import { registerVendorApplicationRoutes } from './admin-vendor-applications.js';
 
 export const adminRoutes = Router();
 
@@ -3011,5 +3012,6 @@ adminRoutes.post('/payouts/:payoutId/status', requireAuth, requireAdmin, async (
 
 // Admin "Auto-QR posters" (Solar Mitras page): must be registered before the catch-all below.
 registerAutoPosterRoutes(adminRoutes);
+registerVendorApplicationRoutes(adminRoutes);
 
 adminRoutes.use((_request, response) => response.status(501).json({ success: false, error: { code: 'NOT_IMPLEMENTED', message: 'Admin route is scaffolded but not implemented.' } }));

@@ -139,3 +139,13 @@
   .enquiry-brand { justify-self: center; }
   .enquiry-tagline { grid-column: 1; white-space: normal; text-align: center; }
 }
+
+/* "New Solar Mitra? Apply for Solar Mitra" strip above the header */
+.enquiry-apply-bar {
+  background: var(--eq-navy);
+  color: #cfdaf0;
+  font-size: .8rem;
+  padding: .5rem 1rem;
+  text-align: center;
+}
+.enquiry-apply-bar a { color: #fff; font-weight: 700; padding: .35rem .15rem; text-decoration: underline; text-underline-offset: 2px; }

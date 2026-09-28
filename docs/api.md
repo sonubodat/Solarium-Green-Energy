@@ -140,12 +140,33 @@ When `scan_id` is omitted, the backend accepts a direct public enquiry and creat
 
 ### `POST /api/vendors/register`
 
-Create a vendor registration.
+Public "Apply for Solar Mitra" (the `/apply` page). Creates a `PENDING` application that Admin approves or rejects; nothing is created or activated from here.
 
-- Authentication: public
-- Request: `business_name`, `owner_name`, `mobile_number`, `login_identifier`
-- Response: registration acknowledgement
-- Rules: validate and normalize identifiers; do not assign or activate a QR during registration
+- Authentication: public. Rate limited to 5 requests per IP per 15 minutes (`429 RATE_LIMITED`).
+- Request: `business_name`, `owner_name`, `mobile_number`, `state` (must be one of the fixed Indian states/UTs). `login_identifier` is still accepted for the old contract but ignored: the login is always the normalized mobile number. A hidden `website` field is a bot trap; when it is filled the response is a normal `201` and nothing is stored.
+- Responses (exactly these, so nothing about an earlier decision leaks): new or re-applied `201 { registration: { id, status: 'PENDING' } }`; same mobile already `PENDING` `200 { already_submitted: true }` (no second row); a Solar Mitra already exists for that mobile or login, or it was already approved, `409 ALREADY_A_SOLAR_MITRA`; bad mobile `400 INVALID_MOBILE_NUMBER`; missing or unknown state `400 VALIDATION_ERROR`.
+- A previously `REJECTED` application for the same mobile is reset to `PENDING` on the same row (conditional update, so simultaneous re-applications cannot corrupt it); the reply is the plain `201` and does not mention the rejection.
+- Rules: validate and normalize identifiers; do not assign or activate a QR during registration (an approved Solar Mitra gets a QR lazily on first login, see `GET /api/vendor/profile`).
+
+## Admin: Solar Mitra applications
+
+All three require Admin (a public or Sales caller gets `401`/`403`). Every status change is a conditional update from `PENDING`, so two admins, or Admin and Sales, can never act on the same application twice.
+
+### `GET /api/admin/vendor-applications`
+
+- Query: `status` = `PENDING` (default, oldest first) | `ONBOARDED` (approved) | `REJECTED` | `all`; `page`, `limit` (default 25, capped at 100)
+- Response: `applications[]` (`id, businessName, ownerName, mobileNumber, state, status, vendorId, rejectionReason, reviewedAt, createdAt`), `pending_count`, `pagination`. `400 INVALID_STATUS` for anything else.
+
+### `POST /api/admin/vendor-applications/:id/approve`
+
+- Body: optional `state`, used only for an older application that has none (`400 STATE_REQUIRED` otherwise); the applicant's own state wins.
+- One transaction: claim the application (`PENDING` to `ONBOARDED`), check no Solar Mitra exists with that mobile or login (`409 VENDOR_ALREADY_EXISTS`; the database unique constraints stay the final backstop and a unique clash also rolls everything back), create the Solar Mitra (login = the application's login, `mustChangePassword`, first password = the phone number, state), link `vendorId`, write audit rows `VENDOR_APPLICATION_APPROVED` and `VENDOR_CREATED`. Any failure leaves the application `PENDING` and creates nothing.
+- Response `201 { vendor_id, business_name }`. `409 APPLICATION_ALREADY_REVIEWED` (with `error.details.current_status`) when it was already approved or rejected, `404 APPLICATION_NOT_FOUND`.
+- No QR is created here (lazy provisioning on first login, failure tolerant), so approval cannot fail because of QR.
+
+### `POST /api/admin/vendor-applications/:id/reject`
+
+- Body: optional `reason` (max 500 characters). Conditional `PENDING` to `REJECTED`, audit `VENDOR_APPLICATION_REJECTED`. `409 APPLICATION_ALREADY_REVIEWED` if it was already approved or rejected.
 
 ## Sales API
 

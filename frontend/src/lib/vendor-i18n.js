@@ -167,6 +167,25 @@ const en = {
   'set.uploadFailed': 'Unable to upload document.',
 
   'footer.tagline': "Partner portal · India's Leading Solar Solutions Provider",
+
+  'apply.loginLink': 'New Solar Mitra? Apply for Solar Mitra',
+  'apply.title': 'Apply for Solar Mitra',
+  'apply.sub': 'Share your details. Our team will review your application and contact you.',
+  'apply.business': 'Business name',
+  'apply.owner': 'Owner name',
+  'apply.mobile': 'Mobile number',
+  'apply.state': 'State',
+  'apply.statePlaceholder': 'Select your state',
+  'apply.submit': 'Submit application',
+  'apply.submitting': 'Submitting...',
+  'apply.doneTitle': 'Application received',
+  'apply.doneBody': 'Our team will review your application and contact you on your mobile number.',
+  'apply.haveAccount': 'Already a Solar Mitra?',
+  'apply.signIn': 'Sign in',
+  'apply.alreadyMitra': 'This number is already a Solar Mitra. Please sign in.',
+  'apply.invalidMobile': 'Enter a valid 10-digit mobile number.',
+  'apply.tooMany': 'Too many attempts. Please try again in a few minutes.',
+  'apply.failed': 'Could not submit your application. Please try again.',
 };
 
 const gu = {
@@ -326,6 +345,25 @@ const gu = {
   'set.uploadFailed': 'દસ્તાવેજ અપલોડ થઈ શક્યો નથી.',
 
   'footer.tagline': 'પાર્ટનર પોર્ટલ · ભારતની અગ્રણી સોલાર સોલ્યુશન્સ પ્રદાતા',
+
+  'apply.loginLink': 'નવા સોલાર મિત્ર? સોલાર મિત્ર માટે અરજી કરો',
+  'apply.title': 'સોલાર મિત્ર માટે અરજી કરો',
+  'apply.sub': 'તમારી વિગતો આપો. અમારી ટીમ તમારી અરજી તપાસીને તમારો સંપર્ક કરશે.',
+  'apply.business': 'વ્યવસાયનું નામ',
+  'apply.owner': 'માલિકનું નામ',
+  'apply.mobile': 'મોબાઇલ નંબર',
+  'apply.state': 'રાજ્ય',
+  'apply.statePlaceholder': 'તમારું રાજ્ય પસંદ કરો',
+  'apply.submit': 'અરજી મોકલો',
+  'apply.submitting': 'મોકલી રહ્યા છીએ...',
+  'apply.doneTitle': 'અરજી મળી ગઈ',
+  'apply.doneBody': 'અમારી ટીમ તમારી અરજી તપાસીને તમારા મોબાઇલ નંબર પર સંપર્ક કરશે.',
+  'apply.haveAccount': 'પહેલેથી સોલાર મિત્ર છો?',
+  'apply.signIn': 'સાઇન ઇન',
+  'apply.alreadyMitra': 'આ નંબર પહેલેથી સોલાર મિત્ર છે. કૃપા કરીને સાઇન ઇન કરો.',
+  'apply.invalidMobile': 'માન્ય 10 અંકનો મોબાઇલ નંબર દાખલ કરો.',
+  'apply.tooMany': 'ઘણા બધા પ્રયત્નો. કૃપા કરીને થોડી મિનિટ પછી ફરી પ્રયત્ન કરો.',
+  'apply.failed': 'તમારી અરજી મોકલી શકાઈ નથી. કૃપા કરીને ફરી પ્રયત્ન કરો.',
 };
 
 const hi = {
@@ -485,6 +523,25 @@ const hi = {
   'set.uploadFailed': 'दस्तावेज़ अपलोड नहीं हो सका।',
 
   'footer.tagline': 'पार्टनर पोर्टल · भारत की अग्रणी सोलर समाधान प्रदाता',
+
+  'apply.loginLink': 'नए सोलर मित्र? सोलर मित्र के लिए आवेदन करें',
+  'apply.title': 'सोलर मित्र के लिए आवेदन करें',
+  'apply.sub': 'अपनी जानकारी दें। हमारी टीम आपके आवेदन की समीक्षा करके आपसे संपर्क करेगी।',
+  'apply.business': 'व्यवसाय का नाम',
+  'apply.owner': 'मालिक का नाम',
+  'apply.mobile': 'मोबाइल नंबर',
+  'apply.state': 'राज्य',
+  'apply.statePlaceholder': 'अपना राज्य चुनें',
+  'apply.submit': 'आवेदन भेजें',
+  'apply.submitting': 'भेजा जा रहा है...',
+  'apply.doneTitle': 'आवेदन मिल गया',
+  'apply.doneBody': 'हमारी टीम आपके आवेदन की समीक्षा करके आपके मोबाइल नंबर पर संपर्क करेगी।',
+  'apply.haveAccount': 'पहले से सोलर मित्र हैं?',
+  'apply.signIn': 'साइन इन',
+  'apply.alreadyMitra': 'यह नंबर पहले से सोलर मित्र है। कृपया साइन इन करें।',
+  'apply.invalidMobile': 'मान्य 10 अंकों का मोबाइल नंबर दर्ज करें।',
+  'apply.tooMany': 'बहुत ज़्यादा प्रयास। कृपया कुछ मिनट बाद फिर कोशिश करें।',
+  'apply.failed': 'आपका आवेदन भेजा नहीं जा सका। कृपया फिर से कोशिश करें।',
 };
 
 export const TRANSLATIONS = { en, gu, hi };

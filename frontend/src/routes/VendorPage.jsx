@@ -4,7 +4,9 @@ import { SkeletonBlock } from '../components/Skeleton';
 import SessionExpiryGuard from '../components/SessionExpiryGuard';
 import LanguageSwitcher from '../components/LanguageSwitcher';
 import { mailtoHref, shareBody, smsHref, whatsappHref } from '../lib/qr-link';
-import { loadLanguage, saveLanguage, translate, translateStatus } from '../lib/vendor-i18n';
+import { translateStatus } from '../lib/vendor-i18n';
+import { useVendorLanguage } from '../lib/use-vendor-language';
+import { Link } from 'react-router-dom';
 import './VendorPage.css';
 
 // The password prompt (Solar Mitra still on the phone-number password) closes by itself after this many
@@ -88,18 +90,6 @@ function statusClass(status = '') {
   }
 
   return 'vendor-status vendor-status-neutral';
-}
-
-// Selected language (English by default), remembered in this browser. `t('key', { name })` looks the
-// text up in ../lib/vendor-i18n.
-function useVendorLanguage() {
-  const [language, setLanguageState] = useState(loadLanguage);
-  const setLanguage = (code) => {
-    setLanguageState(code);
-    saveLanguage(code);
-  };
-  const t = (key, params) => translate(language, key, params);
-  return { language, setLanguage, t };
 }
 
 function VendorPage() {
@@ -499,6 +489,10 @@ function VendorPage() {
               <Icon path={ICONS.lock} />
               <span>{t('login.secure')}</span>
             </div>
+
+            <p className="vendor-apply-prompt">
+              <Link to="/apply">{t('apply.loginLink')}</Link>
+            </p>
           </section>
         </div>
       </div>

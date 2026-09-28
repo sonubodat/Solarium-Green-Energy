@@ -3,6 +3,7 @@ import PublicPage from './routes/PublicPage';
 import AdminPage from './routes/AdminPage';
 import SalesPage from './routes/SalesPage';
 import VendorPage from './routes/VendorPage';
+import ApplyPage from './routes/ApplyPage';
 import WakeButton from './components/WakeButton';
 import './App.css';
 
@@ -16,6 +17,7 @@ function App() {
         <Route path="/admin" element={<AdminPage />} />
         <Route path="/sales" element={<SalesPage />} />
         <Route path="/vendor" element={<VendorPage />} />
+        <Route path="/apply" element={<ApplyPage />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </BrowserRouter>
