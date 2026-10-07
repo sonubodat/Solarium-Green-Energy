@@ -1894,6 +1894,23 @@ function AdminPage() {
     }
   }
 
+  // One-click assignment from the row; the server re-checks the assignee (active BDE) and records history.
+  async function assignLeadInline(lead, assigneeId) {
+    if (assigneeId === (lead.assignedToId || '')) return;
+    setLoading(true);
+    try {
+      await apiRequest(`/admin/leads/${lead.id}/assignment`, { method: 'PATCH', body: JSON.stringify({ assigned_to_id: assigneeId || null }) });
+      await loadAdminResource('leads', adminPage, undefined, undefined, true);
+      setMessage(assigneeId ? 'Lead assigned.' : 'Lead unassigned.');
+      setMessageType('success');
+    } catch (error) {
+      setMessage(error.message);
+      setMessageType('error');
+    } finally {
+      setLoading(false);
+    }
+  }
+
   async function updateLeadStatus(lead, status) {
     if (status === lead.status) return;
     setLoading(true);
@@ -3854,7 +3871,20 @@ function AdminPage() {
                           </td>
 
                           <td>
-                            {lead.assignedTo?.name || <span className="admin-muted">Unassigned</span>}
+                            {can('leads.assign') ? (
+                              <select
+                                className="admin-inline-select"
+                                aria-label={`Assign ${lead.customerName} to`}
+                                value={lead.assignedToId || ''}
+                                disabled={loading}
+                                onChange={(event) => assignLeadInline(lead, event.target.value)}
+                              >
+                                <option value="">Unassigned</option>
+                                {assignableStaff.map((user) => <option key={user.id} value={user.id}>{user.name}</option>)}
+                              </select>
+                            ) : (
+                              lead.assignedTo?.name || <span className="admin-muted">Unassigned</span>
+                            )}
                           </td>
 
                           <td>
