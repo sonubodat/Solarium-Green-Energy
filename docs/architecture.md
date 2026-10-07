@@ -145,6 +145,17 @@ The design targets approximately 50,000 vendors and potentially millions of scan
 - Keep audit logs in PostgreSQL initially and paginate them.
 - Add shared caching or rate limiting only when deployment topology or measured traffic requires it.
 
+## Account types, portals and permissions
+
+| Type | Portal / cookie | Rights |
+| --- | --- | --- |
+| `ADMIN` | Admin | everything (super-admin) |
+| `STAFF` | Admin (same cookie), filtered | only the permissions of its custom role (`staff_roles.permissions`) |
+| `SALES` | Sales | own assigned leads plus onboarding and QR activation |
+| `VENDOR` | Vendor | own data |
+
+`requireAdmin` guards super-admin-only routes; `requirePermission(...)` (any-of) guards delegable routes and admits `ADMIN` always. `requireAuth` loads the session, the user and the user's role from the database on every request, so a role edit, deactivation or account-type change applies immediately. The Admin UI gets the permission list from the session (`account.permissions`) and the catalog from `GET /admin/roles`; it hides screens and controls, but the backend check is the real gate. Lead ownership and locking rules live in `backend/src/lib/lead-ownership.js` (locks in a fixed order: assignee row first, then leads by id).
+
 ## Operational Separation
 
 Admin, Sales, Vendor, and public flows remain logically separated in both frontend routes and backend authorization. The separation is a security boundary, not merely hidden navigation.

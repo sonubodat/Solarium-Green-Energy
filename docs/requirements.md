@@ -1506,3 +1506,12 @@ Never replace working code simply to make the implementation easier.
 Never invent APIs or database fields that contradict this specification.
 
 If a requirement is ambiguous, preserve existing architecture and flag the ambiguity instead of silently making a destructive architectural decision.
+
+
+## Lead assignment and custom roles (requirements)
+
+- An Admin, or a role holder with `leads.assign`, can assign a lead to an active BDE / Sales user from the Leads page (single or bulk), see who owns each lead, filter by assignee, and see the ownership history.
+- A BDE / Sales user has a "My leads" tab showing only their own leads with contact details, requirements, status and notes; they can call or WhatsApp the customer, set New, Contacted, Qualified or Lost, and add notes. They cannot convert, reject or mark duplicate, and see no commission data.
+- The super-admin can create any number of named back-office roles and tick, per screen, which actions each may do (view, edit, and so on). A user with a role signs in to the Admin portal and sees only the allowed screens and controls.
+- Permanent deletion, staff and roles, audit logs, templates and printing are never delegable.
+- Role and permission changes apply on the user's next request; deactivating a BDE returns their leads to the unassigned pool.

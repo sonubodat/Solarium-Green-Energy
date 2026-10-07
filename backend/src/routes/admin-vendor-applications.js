@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { prisma } from '../lib/prisma.js';
-import { requireAuth, requireAdmin } from '../middleware/auth.js';
+import { requireAuth, requirePermission } from '../middleware/auth.js';
 import { hashPassword, defaultVendorPassword } from '../services/auth.js';
 import { INDIAN_STATES } from '../lib/indian-states.js';
 import { normalizeMobile } from './registrations.js';
@@ -121,7 +121,7 @@ function pagination(query) {
 }
 
 export function registerVendorApplicationRoutes(router) {
-	router.get('/vendor-applications', requireAuth, requireAdmin, async (request, response, next) => {
+	router.get('/vendor-applications', requireAuth, requirePermission('applications.view', 'applications.review'), async (request, response, next) => {
 		try {
 			const status = String(request.query.status || 'PENDING').toUpperCase();
 			if (!['PENDING', 'ONBOARDED', 'REJECTED', 'ALL'].includes(status)) {
@@ -146,7 +146,7 @@ export function registerVendorApplicationRoutes(router) {
 		}
 	});
 
-	router.post('/vendor-applications/:id/approve', requireAuth, requireAdmin, async (request, response, next) => {
+	router.post('/vendor-applications/:id/approve', requireAuth, requirePermission('applications.review'), async (request, response, next) => {
 		try {
 			const input = approveSchema.parse(request.body || {});
 			const vendor = await approveApplication(prisma, request.auth.user, request.params.id, input);
@@ -156,7 +156,7 @@ export function registerVendorApplicationRoutes(router) {
 		}
 	});
 
-	router.post('/vendor-applications/:id/reject', requireAuth, requireAdmin, async (request, response, next) => {
+	router.post('/vendor-applications/:id/reject', requireAuth, requirePermission('applications.review'), async (request, response, next) => {
 		try {
 			const input = rejectSchema.parse(request.body || {});
 			await rejectApplication(prisma, request.auth.user, request.params.id, input);

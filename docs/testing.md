@@ -632,3 +632,12 @@ Use this to track a full pass. Check off against `plan.md` §24 (Definition of D
 - [ ] §9 Supabase checks all pass (no plaintext passwords/phones, append-only assignments, single active assignment per QR, audit trail present)
 - [ ] §10 All seven acceptance scenarios pass end-to-end
 - [ ] §11 Frontend walkthrough for all four portals with no console errors
+
+
+## 13. Lead assignment and custom roles
+
+Automated: `cd backend && npm test` (route inventory `tests/route-permissions.test.js`, permission rules `tests/permissions.test.js`).
+
+Integration (throwaway Postgres only, never the live database): apply the migrations to a local database and run the scenarios: a Manager role (`vendors.view` + `vendors.edit`) can view, edit, deactivate and reactivate a Solar Mitra but gets 403 on purge, delete, create, reset password, bank details, bulk create; `qr.assign` alone cannot reassign, generate or repair; `leads.edit` cannot set or leave `CONVERTED`, `leads.convert` can; a role saved with `leads.assign` gets `leads.view`; the CHECK constraint rejects `STAFF` without a role and `ADMIN`/`SALES` with one; assign, reassign, unassign; inactive, ADMIN, STAFF and unknown assignees rejected; bulk assignment is all-or-nothing; 24 concurrent assignments of one lead leave a valid history chain; overlapping bulk assignments do not deadlock; assignment racing the assignee's deactivation never leaves a lead on an inactive user; BDE sees only own leads (404 for others), cannot set `CONVERTED`/`REJECTED`/`DUPLICATE` (403), gets 409 on decided leads; note versus reassignment race; response shaping (no payout without `payouts.view`); a role edited mid-session applies on the next request; changing account type revokes sessions; STAFF signs in through the Admin portal.
+
+Browser: super-admin creates a role from the matrix (ticking an action auto-ticks View), adds a Staff user with it, signs in as that user and sees only the allowed menu and controls; a BDE signs in to the Sales portal at 390 px, opens My leads, changes status and adds a note; a Rejected lead shows as closed.

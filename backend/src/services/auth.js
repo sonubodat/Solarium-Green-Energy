@@ -2,6 +2,7 @@ import { randomBytes, scrypt as scryptCallback, timingSafeEqual, createHash } fr
 import { promisify } from 'node:util';
 import { prisma } from '../lib/prisma.js';
 import { env } from '../config/env.js';
+import { permissionsOf } from '../lib/permissions.js';
 
 const scrypt = promisify(scryptCallback);
 export const SESSION_LIFETIME_MS = env.sessionLifetimeDays * 24 * 60 * 60 * 1000;
@@ -113,8 +114,10 @@ function cookieIsSecure() {
   return env.nodeEnv === 'production' || env.sessionCookieSameSite === 'None';
 }
 
+// STAFF (Admin-defined back-office role) works in the Admin portal, so it shares the Admin portal's cookie.
 export function sessionCookieName(role) {
-  return `${env.sessionCookieName}_${role.toLowerCase()}`;
+  const portal = role === 'STAFF' ? 'admin' : role.toLowerCase();
+  return `${env.sessionCookieName}_${portal}`;
 }
 
 function cookieOptions(name, value, maxAge) {
@@ -141,8 +144,15 @@ export function clearSessionCookie(response, role) {
   );
 }
 
+// `permissions` is what the screens may show (a super-admin gets the whole list); the server checks again on every request.
 export function publicStaff(user) {
-  return { id: user.id, name: user.name, role: user.role };
+  return {
+    id: user.id,
+    name: user.name,
+    role: user.role,
+    roleName: user.role === 'STAFF' ? user.accessRole?.name || null : null,
+    permissions: [...permissionsOf(user)],
+  };
 }
 
 export function publicVendor(vendor) {

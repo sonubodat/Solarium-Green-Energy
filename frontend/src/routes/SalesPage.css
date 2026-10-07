@@ -1120,3 +1120,35 @@
     transform: none;
   }
 }
+
+/* Sales tabs and "My leads" (mobile first) */
+.sales-tabs { display: flex; gap: 8px; margin: 12px 0; }
+.sales-tabs button { flex: 1; min-height: 48px; border: 1px solid #d1d5db; border-radius: 12px; background: #fff; font: inherit; font-weight: 600; }
+.sales-tabs button.active { background: #f97316; border-color: #f97316; color: #fff; }
+.sales-leads { display: grid; gap: 12px; }
+.sales-lead-filters { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 4px; }
+.sales-chip { flex: none; min-height: 44px; padding: 0 16px; border: 1px solid #d1d5db; border-radius: 22px; background: #fff; font: inherit; }
+.sales-chip.selected { background: #111827; color: #fff; border-color: #111827; }
+.sales-lead-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.sales-lead-card { width: 100%; min-height: 64px; display: grid; grid-template-columns: 1fr auto; gap: 4px 8px; text-align: left; padding: 12px 14px; border: 1px solid #e5e7eb; border-radius: 12px; background: #fff; font: inherit; }
+.sales-lead-name { font-weight: 700; }
+.sales-lead-sub { grid-column: 1 / -1; color: #6b7280; font-size: 14px; overflow-wrap: anywhere; }
+.sales-lead-status { justify-self: end; padding: 2px 10px; border-radius: 12px; background: #e5e7eb; font-size: 13px; font-weight: 600; }
+.sales-lead-status.NEW { background: #dbeafe; }
+.sales-lead-status.CONTACTED, .sales-lead-status.QUALIFIED { background: #fef3c7; }
+.sales-lead-status.CONVERTED { background: #dcfce7; }
+.sales-lead-contact { display: grid; gap: 8px; margin: 8px 0; }
+.sales-lead-contact a { display: flex; align-items: center; justify-content: center; min-height: 48px; text-decoration: none; }
+.sales-lead-fields { display: grid; grid-template-columns: auto 1fr; gap: 6px 12px; margin: 0; }
+.sales-lead-fields dt { color: #6b7280; }
+.sales-lead-fields dd { margin: 0; overflow-wrap: anywhere; }
+.sales-lead-status-buttons { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.sales-status-button { min-height: 48px; border: 1px solid #d1d5db; border-radius: 12px; background: #fff; font: inherit; }
+.sales-status-button.selected { background: #111827; color: #fff; }
+.sales-lead-note-form { display: grid; gap: 8px; }
+.sales-lead-note-form textarea { width: 100%; font: inherit; font-size: 16px; padding: 10px; border: 1px solid #d1d5db; border-radius: 10px; }
+.sales-lead-notes { list-style: none; margin: 12px 0 0; padding: 0; display: grid; gap: 8px; }
+.sales-lead-notes li { padding: 8px 10px; border: 1px solid #e5e7eb; border-radius: 8px; }
+.sales-lead-notes p { margin: 4px 0 0; white-space: pre-wrap; }
+@media (min-width: 640px) { .sales-lead-contact { grid-template-columns: 1fr 1fr; } }
+.sales-lead-note-form textarea, .admin-note-form textarea { box-sizing: border-box; }

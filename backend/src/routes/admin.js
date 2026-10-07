@@ -1,7 +1,10 @@
 import { Router } from 'express';
 import multer from 'multer';
 import { parse as parseCsv } from 'csv-parse/sync';
-import { requireAuth, requireAdmin } from '../middleware/auth.js';
+import { requireAuth, requireAdmin, requirePermission } from '../middleware/auth.js';
+import { hasPermission } from '../lib/permissions.js';
+import { LEAD_STATUSES } from '../lib/lead-status.js';
+import { releaseLeadsOfUser } from '../lib/lead-ownership.js';
 import { prisma } from '../lib/prisma.js';
 import { createPasswordResetToken, resetTokenResponse } from '../services/password-reset.js';
 import { assignUnassignedQr, generateQrCodes, generateSpecificQrCodes, reassignQr } from '../services/qr.js';
@@ -33,6 +36,8 @@ import { isCustomerIdentityRace, leadImportBatchSchema, prepareLeadRows } from '
 import { VENDOR_WITHOUT_LOCKED_QR_WHERE } from '../lib/qr-provisioning.js';
 import { registerAutoPosterRoutes } from './admin-auto-posters.js';
 import { registerVendorApplicationRoutes } from './admin-vendor-applications.js';
+import { registerRoleRoutes } from './admin-roles.js';
+import { registerLeadAssignmentRoutes } from './admin-lead-assignment.js';
 
 export const adminRoutes = Router();
 
@@ -59,18 +64,38 @@ const vendorUpdateSchema = vendorSchema.partial().extend({
 // "set/fix later," unlike Sales where only the latter has its own dedicated endpoint.
 const vendorLocationSchema = z.object(geoTagFields);
 const photoUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } });
-const leadStatusSchema = z.object({ status: z.enum(['NEW', 'CONTACTED', 'QUALIFIED', 'CONVERTED', 'LOST', 'REJECTED', 'DUPLICATE']) });
+const leadStatusSchema = z.object({ status: z.enum(LEAD_STATUSES) });
 const payoutStatusSchema = z.object({
 	status: z.enum(['UNPAID', 'PAID', 'PARTIAL']),
 	paid_reference: z.string().trim().max(160).optional(),
 });
+// ADMIN = super-admin, SALES = BDE / field staff, STAFF = back-office user with an Admin-defined role (staff_role_id).
 const userSchema = z.object({
 	name: z.string().trim().min(2).max(120),
 	username_or_mobile: z.string().trim().min(3).max(120),
 	password: z.string().min(8),
-	role: z.enum(['ADMIN', 'SALES']),
+	role: z.enum(['ADMIN', 'SALES', 'STAFF']),
+	staff_role_id: z.string().trim().min(1).optional(),
+}).superRefine((value, context) => {
+	if (value.role === 'STAFF' && !value.staff_role_id) {
+		context.addIssue({ code: 'custom', path: ['staff_role_id'], message: 'Choose a role for a Staff user.' });
+	}
+	if (value.role !== 'STAFF' && value.staff_role_id) {
+		context.addIssue({ code: 'custom', path: ['staff_role_id'], message: 'Only a Staff user has a role.' });
+	}
 });
-const userUpdateSchema = userSchema.partial().extend({ status: z.enum(['ACTIVE', 'INACTIVE', 'DELETED']).optional() });
+const userUpdateSchema = z.object({
+	name: z.string().trim().min(2).max(120).optional(),
+	username_or_mobile: z.string().trim().min(3).max(120).optional(),
+	password: z.string().min(8).optional(),
+	role: z.enum(['ADMIN', 'SALES', 'STAFF']).optional(),
+	staff_role_id: z.string().trim().min(1).nullable().optional(),
+	status: z.enum(['ACTIVE', 'INACTIVE', 'DELETED']).optional(),
+});
+const staffUserSelect = { id: true, name: true, usernameMobile: true, role: true, status: true, staffRoleId: true, accessRole: { select: { id: true, name: true } } };
+function staffUserView(user) {
+	return { id: user.id, name: user.name, usernameMobile: user.usernameMobile, role: user.role, status: user.status, staffRoleId: user.staffRoleId ?? null, roleName: user.accessRole?.name ?? null };
+}
 const bulkDeleteSchema = z.object({
 	ids: z.array(z.string().trim().min(1)).min(1).max(100),
 });
@@ -216,7 +241,7 @@ async function ensureActiveAdminRemains(transaction, userId, changes) {
 
 // Parallelized via Promise.all — independent autocommit counts, no shared transaction,
 // safe to run concurrently. Was sequential (~2.0s); now ~0.87s measured. See progress.md.
-adminRoutes.get('/dashboard', requireAuth, requireAdmin, async (request, response, next) => {
+adminRoutes.get('/dashboard', requireAuth, requirePermission('dashboard.view'), async (request, response, next) => {
 	try {
 		// Grouped counts run one after another (lib/admin-stats.js) and are cached for 30 s; any
 		// successful write clears the cache. Retention is checked live, as before.
@@ -228,7 +253,7 @@ adminRoutes.get('/dashboard', requireAuth, requireAdmin, async (request, respons
 	}
 });
 
-adminRoutes.post('/vendors', requireAuth, requireAdmin, async (request, response, next) => {
+adminRoutes.post('/vendors', requireAuth, requirePermission('vendors.create'), async (request, response, next) => {
 	try {
 		const input = vendorCreateSchema.parse(request.body);
 		const mobileNumber = normalizeMobile(input.mobile_number);
@@ -269,27 +294,51 @@ adminRoutes.post('/vendors', requireAuth, requireAdmin, async (request, response
 adminRoutes.get('/users', requireAuth, requireAdmin, async (request, response, next) => {
 	try {
 		const { page, limit, skip } = pagination(request.query);
-		const [users, total] = await Promise.all([
-			prisma.user.findMany({ orderBy: { createdAt: 'desc' }, skip, take: limit, select: { id: true, name: true, usernameMobile: true, role: true, status: true, createdAt: true, updatedAt: true } }),
+		const [rows, total] = await Promise.all([
+			prisma.user.findMany({
+				orderBy: { createdAt: 'desc' },
+				skip,
+				take: limit,
+				select: { ...staffUserSelect, createdAt: true, updatedAt: true, _count: { select: { assignedLeads: true } } },
+			}),
 			prisma.user.count(),
 		]);
+		// assignedLeadCount lets the screen warn before a salesperson is deactivated or moved away from SALES.
+		const users = rows.map(({ _count, accessRole, ...user }) => ({ ...user, roleName: accessRole?.name ?? null, assignedLeadCount: _count.assignedLeads }));
 		return response.json({ success: true, users, pagination: { page, limit, total } });
 	} catch (error) {
 		return next(error);
 	}
 });
 
+function badRequest(code, message) {
+	const error = new Error(message);
+	error.statusCode = 400;
+	error.code = code;
+	return error;
+}
+
 adminRoutes.post('/users', requireAuth, requireAdmin, async (request, response, next) => {
 	try {
 		const input = userSchema.parse(request.body);
+		if (input.staff_role_id && !(await prisma.accessRole.findUnique({ where: { id: input.staff_role_id }, select: { id: true } }))) {
+			throw badRequest('ROLE_NOT_FOUND', 'That role does not exist.');
+		}
 		const user = await prisma.$transaction(async (transaction) => {
 			const created = await transaction.user.create({
-				data: { name: input.name, usernameMobile: normalizeLoginIdentifier(input.username_or_mobile), passwordHash: await hashPassword(input.password), role: input.role },
+				data: {
+					name: input.name,
+					usernameMobile: normalizeLoginIdentifier(input.username_or_mobile),
+					passwordHash: await hashPassword(input.password),
+					role: input.role,
+					staffRoleId: input.role === 'STAFF' ? input.staff_role_id : null,
+				},
+				select: staffUserSelect,
 			});
-			await writeAudit(transaction, request, 'STAFF_USER_CREATED', 'User', created.id, { role: created.role });
+			await writeAudit(transaction, request, 'STAFF_USER_CREATED', 'User', created.id, { role: created.role, staffRoleId: created.staffRoleId });
 			return created;
 		});
-		return response.status(201).json({ success: true, user: { id: user.id, name: user.name, usernameMobile: user.usernameMobile, role: user.role, status: user.status } });
+		return response.status(201).json({ success: true, user: staffUserView(user) });
 	} catch (error) {
 		if (error.code === 'P2002') {
 			error.statusCode = 409;
@@ -300,28 +349,75 @@ adminRoutes.post('/users', requireAuth, requireAdmin, async (request, response, 
 	}
 });
 
+// Everything that follows a role or status change of a user, in one place: sessions are revoked when the account
+// type changes (it decides the portal and the cookie) or the user is deactivated, and a salesperson who stops
+// being SALES or is deactivated hands their leads back to the pool. Runs inside the caller's transaction.
+async function applyAccountChangeEffects(transaction, request, user, { roleChanged, deactivated }) {
+	let releasedLeads = 0;
+	if (user.role === 'SALES' && (roleChanged || deactivated)) {
+		releasedLeads = await releaseLeadsOfUser(transaction, request.auth.user, user.id);
+	}
+	if (roleChanged || deactivated) {
+		await transaction.session.updateMany({ where: { userId: user.id, revokedAt: null }, data: { revokedAt: new Date() } });
+	}
+	return releasedLeads;
+}
+
+function staffNotFound() {
+	const error = new Error('Staff user was not found.');
+	error.statusCode = 404;
+	error.code = 'STAFF_USER_NOT_FOUND';
+	return error;
+}
+
 adminRoutes.patch('/users/:userId', requireAuth, requireAdmin, async (request, response, next) => {
 	try {
 		const input = userUpdateSchema.parse(request.body);
-		const data = {};
-		if (input.name !== undefined) data.name = input.name;
-		if (input.username_or_mobile !== undefined) data.usernameMobile = normalizeLoginIdentifier(input.username_or_mobile);
-		if (input.password !== undefined) data.passwordHash = await hashPassword(input.password);
-		if (input.role !== undefined) data.role = input.role;
-		if (input.status !== undefined) data.status = input.status;
-		preventSelfLockout(request, request.params.userId, data);
-		const user = await prisma.$transaction(async (transaction) => {
-			await ensureActiveAdminRemains(transaction, request.params.userId, data);
-			const updated = await transaction.user.update({ where: { id: request.params.userId }, data });
-			await writeAudit(transaction, request, 'STAFF_USER_UPDATED', 'User', updated.id, { changedFields: Object.keys(data) });
-			return updated;
+		const userId = request.params.userId;
+		const result = await prisma.$transaction(async (transaction) => {
+			await transaction.$queryRaw`SELECT id FROM users WHERE id = ${userId} FOR UPDATE`;
+			const current = await transaction.user.findUnique({ where: { id: userId } });
+			if (!current) throw staffNotFound();
+
+			const data = {};
+			if (input.name !== undefined) data.name = input.name;
+			if (input.username_or_mobile !== undefined) data.usernameMobile = normalizeLoginIdentifier(input.username_or_mobile);
+			if (input.password !== undefined) data.passwordHash = await hashPassword(input.password);
+			if (input.status !== undefined) data.status = input.status;
+
+			// Account type and role. A Staff user always has a role; ADMIN and SALES never do. Becoming Staff needs
+			// the role chosen in this same request, so an old role can never come back by itself.
+			const newRole = input.role ?? current.role;
+			if (newRole === 'STAFF') {
+				const roleId = newRole !== current.role ? input.staff_role_id : (input.staff_role_id ?? current.staffRoleId);
+				if (!roleId) throw badRequest('STAFF_ROLE_REQUIRED', 'Choose a role for a Staff user.');
+				if (!(await transaction.accessRole.findUnique({ where: { id: roleId }, select: { id: true } }))) {
+					throw badRequest('ROLE_NOT_FOUND', 'That role does not exist.');
+				}
+				data.staffRoleId = roleId;
+			} else {
+				if (input.staff_role_id) throw badRequest('ROLE_NOT_ALLOWED', 'Only a Staff user has a role.');
+				data.staffRoleId = null;
+			}
+			const roleChanged = newRole !== current.role;
+			if (roleChanged) data.role = newRole;
+
+			const guarded = { role: input.role, status: input.status };
+			preventSelfLockout(request, userId, guarded);
+			await ensureActiveAdminRemains(transaction, userId, guarded);
+
+			const deactivated = input.status !== undefined && input.status !== 'ACTIVE' && current.status === 'ACTIVE';
+			const releasedLeads = await applyAccountChangeEffects(transaction, request, current, { roleChanged, deactivated });
+			const updated = await transaction.user.update({ where: { id: userId }, data, select: staffUserSelect });
+			await writeAudit(transaction, request, 'STAFF_USER_UPDATED', 'User', updated.id, { changedFields: Object.keys(data), releasedLeads });
+			return { updated, releasedLeads };
 		});
-		return response.json({ success: true, user: { id: user.id, name: user.name, usernameMobile: user.usernameMobile, role: user.role, status: user.status } });
+		return response.json({ success: true, user: staffUserView(result.updated), released_leads: result.releasedLeads });
 	} catch (error) {
-		if (error.code === 'P2025') {
-			error.statusCode = 404;
-			error.code = 'STAFF_USER_NOT_FOUND';
-			error.message = 'Staff user was not found.';
+		if (error.code === 'P2002') {
+			error.statusCode = 409;
+			error.code = 'STAFF_USER_ALREADY_EXISTS';
+			error.message = 'A staff user already exists for this identifier.';
 		}
 		return next(error);
 	}
@@ -329,27 +425,31 @@ adminRoutes.patch('/users/:userId', requireAuth, requireAdmin, async (request, r
 
 adminRoutes.post('/users/:userId/deactivate', requireAuth, requireAdmin, async (request, response, next) => {
 	try {
-		preventSelfLockout(request, request.params.userId, { status: 'INACTIVE' });
-		const user = await prisma.$transaction(async (transaction) => {
-			await ensureActiveAdminRemains(transaction, request.params.userId, { status: 'INACTIVE' });
-			const updated = await transaction.user.update({ where: { id: request.params.userId }, data: { status: 'INACTIVE' } });
-			await writeAudit(transaction, request, 'STAFF_USER_DEACTIVATED', 'User', updated.id);
-			return updated;
+		const userId = request.params.userId;
+		preventSelfLockout(request, userId, { status: 'INACTIVE' });
+		const result = await prisma.$transaction(async (transaction) => {
+			await transaction.$queryRaw`SELECT id FROM users WHERE id = ${userId} FOR UPDATE`;
+			const current = await transaction.user.findUnique({ where: { id: userId } });
+			if (!current) throw staffNotFound();
+			await ensureActiveAdminRemains(transaction, userId, { status: 'INACTIVE' });
+			const releasedLeads = await applyAccountChangeEffects(transaction, request, current, { roleChanged: false, deactivated: true });
+			const updated = await transaction.user.update({ where: { id: userId }, data: { status: 'INACTIVE' }, select: staffUserSelect });
+			await writeAudit(transaction, request, 'STAFF_USER_DEACTIVATED', 'User', updated.id, { releasedLeads });
+			return { updated, releasedLeads };
 		});
-		return response.json({ success: true, user: { id: user.id, name: user.name, role: user.role, status: user.status } });
+		return response.json({ success: true, user: staffUserView(result.updated), released_leads: result.releasedLeads });
 	} catch (error) {
-		if (error.code === 'P2025') {
-			error.statusCode = 404;
-			error.code = 'STAFF_USER_NOT_FOUND';
-			error.message = 'Staff user was not found.';
-		}
 		return next(error);
 	}
 });
 
-adminRoutes.patch('/vendors/:vendorId', requireAuth, requireAdmin, async (request, response, next) => {
+adminRoutes.patch('/vendors/:vendorId', requireAuth, requirePermission('vendors.edit'), async (request, response, next) => {
 	try {
 		const input = vendorUpdateSchema.parse(request.body);
+		// Changing a password is its own permission: vendors.edit alone must not be a way around vendors.reset_password.
+		if (input.password !== undefined && !hasPermission(request.auth.user, 'vendors.reset_password')) {
+			return response.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'You are not authorized to perform this action.' } });
+		}
 		const data = {};
 		if (input.business_name !== undefined) data.businessName = input.business_name;
 		if (input.owner_name !== undefined) data.ownerName = input.owner_name;
@@ -386,7 +486,7 @@ adminRoutes.patch('/vendors/:vendorId', requireAuth, requireAdmin, async (reques
 	}
 });
 
-adminRoutes.post('/vendors/:vendorId/deactivate', requireAuth, requireAdmin, async (request, response, next) => {
+adminRoutes.post('/vendors/:vendorId/deactivate', requireAuth, requirePermission('vendors.edit'), async (request, response, next) => {
 	try {
 		const vendor = await prisma.$transaction(async (transaction) => {
 			const updated = await transaction.vendor.update({ where: { id: request.params.vendorId }, data: { status: 'INACTIVE' } });
@@ -747,7 +847,7 @@ async function bulkCreateVendorsFromRows(request, response, rows, batchState) {
 	});
 }
 
-adminRoutes.post('/vendors/bulk-create', requireAuth, requireAdmin, async (request, response, next) => {
+adminRoutes.post('/vendors/bulk-create', requireAuth, requirePermission('vendors.bulk_create'), async (request, response, next) => {
 	try {
 		const { names, rows: importRows, auto_password: autoPassword, state } = bulkCreateVendorsSchema.parse(request.body);
 		if (importRows) return await bulkCreateVendorsFromRows(request, response, importRows, state);
@@ -843,7 +943,7 @@ adminRoutes.post('/vendors/bulk-create', requireAuth, requireAdmin, async (reque
 	}
 });
 
-adminRoutes.post('/vendors/:vendorId/reset-password', requireAuth, requireAdmin, async (request, response, next) => {
+adminRoutes.post('/vendors/:vendorId/reset-password', requireAuth, requirePermission('vendors.reset_password'), async (request, response, next) => {
 	try {
 		const vendor = await prisma.vendor.findUnique({ where: { id: request.params.vendorId } });
 		if (!vendor) {
@@ -925,7 +1025,7 @@ const qrBatchSchema = z.object({
 // service-level check (file.size > MAX) is the exact gate.
 const qrArtworkUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: QR_ARTWORK_MAX_BYTES + 1 } });
 
-adminRoutes.get('/qr', requireAuth, requireAdmin, async (request, response, next) => {
+adminRoutes.get('/qr', requireAuth, requirePermission('qr.view'), async (request, response, next) => {
 	try {
 		// No table-wide repair write here any more: a GET must not write. Legacy ACTIVE-without-assignment
 		// rows are fixed on demand by POST /qr/repair-status; new ones cannot be created (purge resets status).
@@ -977,7 +1077,7 @@ adminRoutes.get('/qr', requireAuth, requireAdmin, async (request, response, next
 
 // Explicit, admin-triggered fix for legacy rows: an ACTIVE code that has no open assignment
 // (left over from before vendor purge reset the status). dry_run only reports the count.
-adminRoutes.post('/qr/repair-status', requireAuth, requireAdmin, async (request, response, next) => {
+adminRoutes.post('/qr/repair-status', requireAuth, requirePermission('qr.repair'), async (request, response, next) => {
 	try {
 		const { dry_run: dryRun = false } = z.object({ dry_run: z.boolean().optional() }).parse(request.body ?? {});
 		const where = { status: 'ACTIVE', assignments: { none: { unassignedAt: null } } };
@@ -995,7 +1095,7 @@ adminRoutes.post('/qr/repair-status', requireAuth, requireAdmin, async (request,
 	}
 });
 
-adminRoutes.post('/qr/generate', requireAuth, requireAdmin, async (request, response, next) => {
+adminRoutes.post('/qr/generate', requireAuth, requirePermission('qr.create'), async (request, response, next) => {
 	try {
 		const { quantity } = generateQrSchema.parse(request.body);
 		const result = await generateQrCodes(quantity, request.auth.user.id);
@@ -1906,7 +2006,7 @@ adminRoutes.post('/qr/:qrId/purge', requireAuth, requireAdmin, async (request, r
 	}
 });
 
-adminRoutes.get('/qr/lookup/:code', requireAuth, requireAdmin, async (request, response, next) => {
+adminRoutes.get('/qr/lookup/:code', requireAuth, requirePermission('qr.view', 'qr.assign', 'qr.reassign'), async (request, response, next) => {
 	try {
 		const normalizedCode = normalizeQrCode(request.params.code);
 		const qr = await prisma.qrCode.findUnique({
@@ -1926,7 +2026,7 @@ adminRoutes.get('/qr/lookup/:code', requireAuth, requireAdmin, async (request, r
 	}
 });
 
-adminRoutes.post('/qr/:qrId/reassign', requireAuth, requireAdmin, async (request, response, next) => {
+adminRoutes.post('/qr/:qrId/reassign', requireAuth, requirePermission('qr.reassign'), async (request, response, next) => {
 	try {
 		const { vendor_id: vendorId } = reassignQrSchema.parse(request.body);
 		const result = await reassignQr({ qrId: request.params.qrId, vendorId, assignedById: request.auth.user.id });
@@ -1936,7 +2036,7 @@ adminRoutes.post('/qr/:qrId/reassign', requireAuth, requireAdmin, async (request
 	}
 });
 
-adminRoutes.post('/qr/:qrId/assign', requireAuth, requireAdmin, async (request, response, next) => {
+adminRoutes.post('/qr/:qrId/assign', requireAuth, requirePermission('qr.assign'), async (request, response, next) => {
 	try {
 		const { vendor_id: vendorId } = reassignQrSchema.parse(request.body);
 		const qr = await prisma.qrCode.findUnique({ where: { id: request.params.qrId } });
@@ -1950,7 +2050,7 @@ adminRoutes.post('/qr/:qrId/assign', requireAuth, requireAdmin, async (request, 
 	}
 });
 
-adminRoutes.get('/vendors/bulk-import-template', requireAuth, requireAdmin, (request, response) => {
+adminRoutes.get('/vendors/bulk-import-template', requireAuth, requirePermission('vendors.bulk_create'), (request, response) => {
 	// The password column header carries its own rule; the parser matches it by prefix, so a
 	// plain "password" header works too. A blank password cell means "use the phone number".
 	// The 5 bank columns are all optional — leave any of them blank to skip that field. Example
@@ -1964,7 +2064,7 @@ adminRoutes.get('/vendors/bulk-import-template', requireAuth, requireAdmin, (req
 	return response.send(csv);
 });
 
-adminRoutes.get('/vendors/lookup', requireAuth, requireAdmin, async (request, response, next) => {
+adminRoutes.get('/vendors/lookup', requireAuth, requirePermission('vendors.view', 'qr.assign', 'qr.reassign'), async (request, response, next) => {
 	try {
 		const { page, limit, skip } = pickerPagination(request.query);
 		const search = vendorSearchWhere(request.query.search);
@@ -2176,7 +2276,7 @@ adminRoutes.get('/qr/pdf', requireAuth, requireAdmin, async (request, response, 
 	}
 });
 
-adminRoutes.get('/vendors', requireAuth, requireAdmin, async (request, response, next) => {
+adminRoutes.get('/vendors', requireAuth, requirePermission('vendors.view'), async (request, response, next) => {
 	try {
 		const { page, limit, skip } = pagination(request.query, 200);
 		const search = vendorSearchWhere(request.query.search);
@@ -2229,7 +2329,7 @@ adminRoutes.get('/vendors', requireAuth, requireAdmin, async (request, response,
 
 // Same shape as GET /leads/export below: no pagination, honors the same search/state filters as
 // the list view above so "export what I'm looking at" works.
-adminRoutes.get('/vendors/export', requireAuth, requireAdmin, async (request, response, next) => {
+adminRoutes.get('/vendors/export', requireAuth, requirePermission('vendors.export'), async (request, response, next) => {
 	try {
 		const search = vendorSearchWhere(request.query.search);
 		const stateFilter = vendorStateFilterOrError(request.query.state);
@@ -2280,37 +2380,54 @@ adminRoutes.get('/vendors/export', requireAuth, requireAdmin, async (request, re
 	}
 });
 
-adminRoutes.get('/leads', requireAuth, requireAdmin, async (request, response, next) => {
+adminRoutes.get('/leads', requireAuth, requirePermission('leads.view'), async (request, response, next) => {
 	try {
 		const { page, limit, skip } = pagination(request.query, 200);
+		const where = {};
+		const assignedFilter = String(request.query.assigned_to || '').trim();
+		if (assignedFilter === 'unassigned') where.assignedToId = null;
+		else if (assignedFilter) where.assignedToId = assignedFilter;
+		const statusFilter = String(request.query.status || '').trim().toUpperCase();
+		if (statusFilter) {
+			if (!LEAD_STATUSES.includes(statusFilter)) {
+				return response.status(400).json({ success: false, error: { code: 'INVALID_STATUS', message: 'Unknown lead status.' } });
+			}
+			where.status = statusFilter;
+		}
+		// Commission data only goes to someone who may see commissions.
+		const showPayout = hasPermission(request.auth.user, 'payouts.view');
 		const [leads, total] = await Promise.all([
 			prisma.lead.findMany({
+				where,
 				orderBy: { createdAt: 'desc' },
 				skip,
 				take: limit,
-					select: {
-						id: true,
-						vendorId: true,
-						vendorNameSnapshot: true,
-						qrId: true,
-						qrAssignmentId: true,
-						scanId: true,
-						customerName: true,
-						phone: true,
-						email: true,
-						location: true,
-						pincode: true,
-						averageElectricityBill: true,
-						solarSize: true,
-						status: true,
-						createdAt: true,
-						vendor: { select: { businessName: true } },
-						qr: { select: { code: true } },
-											payout: { select: { id: true, status: true, paidAt: true, paidReference: true, vendorId: true } },
-						geoLocation: { select: { latitude: true, longitude: true, accuracy: true, capturedAt: true } },
-					},
+				select: {
+					id: true,
+					vendorId: true,
+					vendorNameSnapshot: true,
+					qrId: true,
+					qrAssignmentId: true,
+					scanId: true,
+					customerName: true,
+					phone: true,
+					email: true,
+					location: true,
+					pincode: true,
+					averageElectricityBill: true,
+					solarSize: true,
+					status: true,
+					assignedToId: true,
+					assignedAt: true,
+					assignedTo: { select: { id: true, name: true } },
+					createdAt: true,
+					vendor: { select: { businessName: true } },
+					qr: { select: { code: true } },
+					...(showPayout ? { payout: { select: { id: true, status: true, paidAt: true, paidReference: true, vendorId: true } } } : {}),
+					geoLocation: { select: { latitude: true, longitude: true, accuracy: true, capturedAt: true } },
+				},
 			}),
-			prisma.lead.count(),
+			prisma.lead.count({ where }),
 		]);
 		return response.json({ success: true, leads, pagination: { page, limit, total } });
 	} catch (error) {
@@ -2338,7 +2455,7 @@ function toCsv(headers, rows) {
 	return lines.join('\r\n');
 }
 
-adminRoutes.get('/leads/export', requireAuth, requireAdmin, async (request, response, next) => {
+adminRoutes.get('/leads/export', requireAuth, requirePermission('leads.export'), async (request, response, next) => {
 	try {
 		const leads = await prisma.lead.findMany({
 			orderBy: { createdAt: 'desc' },
@@ -2355,12 +2472,14 @@ adminRoutes.get('/leads/export', requireAuth, requireAdmin, async (request, resp
 				vendor: { select: { businessName: true, mobileNumber: true, state: true } },
 				qr: { select: { code: true } },
 				payout: { select: { status: true, paidReference: true } },
+				assignedTo: { select: { name: true } },
 				geoLocation: { select: { latitude: true, longitude: true, accuracy: true } },
 			},
 		});
+		const showPayout = hasPermission(request.auth.user, 'payouts.view');
 
 		const csv = toCsv(
-			['Customer Name', 'Customer Phone', 'Customer Email', 'Location', 'Pincode', 'Average Electricity Bill', 'Solar Size', 'GPS Latitude', 'GPS Longitude', 'GPS Accuracy (m)', 'Lead Status', 'Vendor Name', 'Vendor Mobile Number', 'Vendor State', 'QR Code', 'Payout Status', 'Payout Reference', 'Created At'],
+			['Customer Name', 'Customer Phone', 'Customer Email', 'Location', 'Pincode', 'Average Electricity Bill', 'Solar Size', 'GPS Latitude', 'GPS Longitude', 'GPS Accuracy (m)', 'Lead Status', 'Vendor Name', 'Vendor Mobile Number', 'Vendor State', 'QR Code', 'Payout Status', 'Payout Reference', 'Created At', 'Assigned To'],
 			leads.map((lead) => [
 				lead.customerName,
 				lead.phone,
@@ -2377,9 +2496,10 @@ adminRoutes.get('/leads/export', requireAuth, requireAdmin, async (request, resp
 				lead.vendor?.mobileNumber,
 				lead.vendor?.state,
 				lead.qr?.code,
-				lead.payout?.status,
-				lead.payout?.paidReference,
+				showPayout ? lead.payout?.status : '',
+				showPayout ? lead.payout?.paidReference : '',
 				lead.createdAt.toISOString(),
+				lead.assignedTo?.name,
 			])
 		);
 
@@ -2391,7 +2511,7 @@ adminRoutes.get('/leads/export', requireAuth, requireAdmin, async (request, resp
 	}
 });
 
-adminRoutes.get('/leads/import-template', requireAuth, requireAdmin, (request, response) => {
+adminRoutes.get('/leads/import-template', requireAuth, requirePermission('leads.import'), (request, response) => {
 	const csv = toCsv(
 		['customer_name', 'phone', 'email', 'location', 'pincode', 'average_electricity_bill', 'solar_size', 'status', 'created_at'],
 		[['Jane Doe', '9876543210', 'jane@example.com', 'Pune, Maharashtra', '411001', '3-4k', '3-4 kW', 'NEW', '2026-01-15']]
@@ -2505,7 +2625,7 @@ async function importLeadRows(request, records, rowOffset) {
 	}
 }
 
-adminRoutes.post('/leads/import', requireAuth, requireAdmin, csvUpload.single('file'), async (request, response, next) => {
+adminRoutes.post('/leads/import', requireAuth, requirePermission('leads.import'), csvUpload.single('file'), async (request, response, next) => {
 	try {
 		if (!request.file) {
 			const error = new Error('Upload a CSV file.');
@@ -2577,7 +2697,7 @@ adminRoutes.post('/leads/import', requireAuth, requireAdmin, csvUpload.single('f
 // Client-driven batches: the admin UI sends up to MAX_LEAD_BATCH_ROWS rows per request and merges the
 // summaries. Stateless (nothing kept between requests) and idempotent (a phone that already has a lead
 // is reported as a duplicate), so a retried batch or a re-uploaded file never creates a second lead.
-adminRoutes.post('/leads/import-batch', requireAuth, requireAdmin, async (request, response, next) => {
+adminRoutes.post('/leads/import-batch', requireAuth, requirePermission('leads.import'), async (request, response, next) => {
 	try {
 		const { rows, row_offset: rowOffset } = leadImportBatchSchema.parse(request.body);
 		const summary = await importLeadRows(request, rows, rowOffset);
@@ -2587,7 +2707,7 @@ adminRoutes.post('/leads/import-batch', requireAuth, requireAdmin, async (reques
 	}
 });
 
-adminRoutes.get('/scans', requireAuth, requireAdmin, async (request, response, next) => {
+adminRoutes.get('/scans', requireAuth, requirePermission('scans.view'), async (request, response, next) => {
 	try {
 		const { page, limit, skip } = pagination(request.query, 200);
 		const [scans, total] = await Promise.all([
@@ -2605,7 +2725,7 @@ adminRoutes.get('/scans', requireAuth, requireAdmin, async (request, response, n
 	}
 });
 
-adminRoutes.get('/payouts', requireAuth, requireAdmin, async (request, response, next) => {
+adminRoutes.get('/payouts', requireAuth, requirePermission('payouts.view'), async (request, response, next) => {
 	try {
 		const { page, limit, skip } = pagination(request.query, 200);
 		const [payouts, total] = await Promise.all([
@@ -2663,7 +2783,7 @@ adminRoutes.get('/audit-logs/export', requireAuth, requireAdmin, async (request,
 	}
 });
 
-adminRoutes.patch('/leads/:leadId', requireAuth, requireAdmin, async (request, response, next) => {
+adminRoutes.patch('/leads/:leadId', requireAuth, requirePermission('leads.edit'), async (request, response, next) => {
 	try {
 		const { status } = leadStatusSchema.parse(request.body);
 		const lead = await prisma.$transaction(async (transaction) => {
@@ -2672,6 +2792,15 @@ adminRoutes.patch('/leads/:leadId', requireAuth, requireAdmin, async (request, r
 				const error = new Error('Lead was not found.');
 				error.statusCode = 404;
 				error.code = 'LEAD_NOT_FOUND';
+				throw error;
+			}
+			// Converting creates the commission payout, and moving a lead away from CONVERTED undoes it, so both
+			// need leads.convert (a super-admin always has it); leads.edit alone covers every other status.
+			if (status !== current.status && (status === 'CONVERTED' || current.status === 'CONVERTED')
+				&& !hasPermission(request.auth.user, 'leads.convert')) {
+				const error = new Error('Changing a lead to or from Converted needs the "convert" permission.');
+				error.statusCode = 403;
+				error.code = 'CONVERT_PERMISSION_REQUIRED';
 				throw error;
 			}
 			const updated = await transaction.lead.update({
@@ -2735,7 +2864,7 @@ adminRoutes.post('/leads/:leadId/delete', requireAuth, requireAdmin, async (requ
 	}
 });
 
-adminRoutes.get('/vendors/:vendorId/bank-details', requireAuth, requireAdmin, async (request, response, next) => {
+adminRoutes.get('/vendors/:vendorId/bank-details', requireAuth, requirePermission('vendors.bank_details'), async (request, response, next) => {
 	try {
 		const details = await prisma.vendorBankDetails.findUnique({ where: { vendorId: request.params.vendorId }, include: { vendor: { select: { id: true, businessName: true } } } });
 		if (!details) return response.json({ success: true, bank_details: null });
@@ -2763,7 +2892,7 @@ const bankDocumentUpload = multer({ storage: multer.memoryStorage(), limits: { f
 // Admin can always create or overwrite a Vendor's bank details, unlike Sales' equivalent route
 // (routes/sales.js), which locks once anything has been saved — Admin is the one place that can
 // still fix a mistake or replace a document after that. Same fields/limits/upload pattern.
-adminRoutes.patch('/vendors/:vendorId/bank-details', requireAuth, requireAdmin, async (request, response, next) => {
+adminRoutes.patch('/vendors/:vendorId/bank-details', requireAuth, requirePermission('vendors.bank_details'), async (request, response, next) => {
 	try {
 		const input = bankDetailsSchema.parse(request.body);
 		const vendor = await prisma.vendor.findUnique({ where: { id: request.params.vendorId }, select: { id: true } });
@@ -2780,7 +2909,7 @@ adminRoutes.patch('/vendors/:vendorId/bank-details', requireAuth, requireAdmin, 
 	}
 });
 
-adminRoutes.post('/vendors/:vendorId/bank-details/:documentType', requireAuth, requireAdmin, bankDocumentUpload.single('file'), async (request, response, next) => {
+adminRoutes.post('/vendors/:vendorId/bank-details/:documentType', requireAuth, requirePermission('vendors.bank_details'), bankDocumentUpload.single('file'), async (request, response, next) => {
 	try {
 		const type = request.params.documentType;
 		if (!['passbook', 'cheque'].includes(type)) {
@@ -2827,7 +2956,7 @@ adminRoutes.post('/vendors/:vendorId/bank-details/:documentType', requireAuth, r
 // attempt the storage delete. A storage-delete failure is logged and still reported to the admin
 // as a warning (not hidden as a plain success) — the DB is already correct; the file becomes an
 // orphan to clean up later, not a broken reference.
-adminRoutes.post('/vendors/:vendorId/bank-details/:documentType/delete', requireAuth, requireAdmin, async (request, response, next) => {
+adminRoutes.post('/vendors/:vendorId/bank-details/:documentType/delete', requireAuth, requirePermission('vendors.bank_details'), async (request, response, next) => {
 	try {
 		const type = request.params.documentType;
 		if (!['passbook', 'cheque'].includes(type)) {
@@ -2864,7 +2993,7 @@ adminRoutes.post('/vendors/:vendorId/bank-details/:documentType/delete', require
 });
 
 // Coordinates plus signed URLs for both photos, mirroring GET .../bank-details.
-adminRoutes.get('/vendors/:vendorId/onboarding-media', requireAuth, requireAdmin, async (request, response, next) => {
+adminRoutes.get('/vendors/:vendorId/onboarding-media', requireAuth, requirePermission('vendors.edit'), async (request, response, next) => {
 	try {
 		const media = await prisma.vendorOnboardingMedia.findUnique({ where: { vendorId: request.params.vendorId } });
 		if (!media) return response.json({ success: true, onboarding_media: null });
@@ -2891,7 +3020,7 @@ adminRoutes.get('/vendors/:vendorId/onboarding-media', requireAuth, requireAdmin
 // "Set/fix later" for the geo-tag — unlike Sales' equivalent, this isn't live device GPS;
 // Admin types or pastes coordinates (e.g. relayed by the Sales rep, or copied from Google
 // Maps), so there's no ownership restriction, matching Admin's other vendor-mutation routes.
-adminRoutes.patch('/vendors/:vendorId/location', requireAuth, requireAdmin, async (request, response, next) => {
+adminRoutes.patch('/vendors/:vendorId/location', requireAuth, requirePermission('vendors.edit'), async (request, response, next) => {
 	try {
 		const input = vendorLocationSchema.parse(request.body);
 		const geoTag = resolveGeoTag(input);
@@ -2920,7 +3049,7 @@ adminRoutes.patch('/vendors/:vendorId/location', requireAuth, requireAdmin, asyn
 // placed in the shop) — used both right after creation and to complete/fix onboarding media
 // later. No ownership restriction, matching Admin's other vendor-mutation routes (Admin
 // doesn't scope by salesUserId the way Sales does).
-adminRoutes.post('/vendors/:vendorId/photos/:photoType', requireAuth, requireAdmin, photoUpload.single('photo'), async (request, response, next) => {
+adminRoutes.post('/vendors/:vendorId/photos/:photoType', requireAuth, requirePermission('vendors.edit'), photoUpload.single('photo'), async (request, response, next) => {
 	try {
 		const type = request.params.photoType;
 		if (!['shop', 'qr-placement'].includes(type)) {
@@ -2955,7 +3084,7 @@ adminRoutes.post('/vendors/:vendorId/photos/:photoType', requireAuth, requireAdm
 	}
 });
 
-adminRoutes.post('/payouts/:payoutId/status', requireAuth, requireAdmin, async (request, response, next) => {
+adminRoutes.post('/payouts/:payoutId/status', requireAuth, requirePermission('payouts.mark_paid'), async (request, response, next) => {
 	try {
 		const { status, paid_reference: paidReference } = payoutStatusSchema.parse(request.body);
 		const payout = await prisma.$transaction(async (transaction) => {
@@ -3013,5 +3142,7 @@ adminRoutes.post('/payouts/:payoutId/status', requireAuth, requireAdmin, async (
 // Admin "Auto-QR posters" (Solar Mitras page): must be registered before the catch-all below.
 registerAutoPosterRoutes(adminRoutes);
 registerVendorApplicationRoutes(adminRoutes);
+registerRoleRoutes(adminRoutes);
+registerLeadAssignmentRoutes(adminRoutes);
 
 adminRoutes.use((_request, response) => response.status(501).json({ success: false, error: { code: 'NOT_IMPLEMENTED', message: 'Admin route is scaffolded but not implemented.' } }));

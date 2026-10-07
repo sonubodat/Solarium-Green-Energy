@@ -206,3 +206,12 @@ Each step should be implemented, verified live (curl/browser as established this
 - Design-system plan step 6: accessibility pass for explicit labels and keyboard/screen-reader validation on all Admin/Sales/Vendor forms.
 - Production validation pending from `RFI.md` values: final deployed `CORS_ORIGINS`/`FRONTEND_ORIGIN` and live cross-origin cookie verification.
 - Independent manual verification pass still recommended (Postman/curl/Supabase) for payout and access-control flows after each mutation slice change.
+
+## Lead assignment and custom roles (Phase 2)
+
+- [x] Migrations, permission catalog, `requirePermission`, route inventory test
+- [x] Roles API, staff account types, assignment API, Sales "My leads" API, notes, history
+- [x] Admin UI: role matrix, staff account type, Leads assigned column/filter/bulk assign/notes, action-level gating
+- [x] Sales UI: My leads tab (mobile first)
+- [ ] Apply the migrations to the live database (backup first): `cd backend && npx prisma migrate deploy && npx prisma generate`, then restart
+- [ ] Optional: e-mail or push notification to a BDE when a lead is assigned

@@ -2988,3 +2988,23 @@ select.admin-table-select {
   color: var(--admin-muted, #71808d);
   font-size: 10px;
 }
+
+/* Roles matrix, lead assignment bar and lead notes */
+.admin-matrix th[scope='row'] { white-space: nowrap; text-align: left; vertical-align: top; }
+.admin-matrix-options { display: flex; flex-wrap: wrap; gap: 8px 18px; }
+.admin-check { display: inline-flex; align-items: center; gap: 6px; font-size: 14px; }
+.admin-role-form { display: grid; gap: 12px; margin-bottom: 16px; }
+.admin-roles { margin-top: 32px; }
+.admin-muted { color: var(--admin-muted, #6b7280); }
+.admin-bulk-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 10px 12px; margin-bottom: 12px; border: 1px solid #f59e0b; border-radius: 10px; background: #fffbeb; }
+.admin-note-list { list-style: none; margin: 8px 0; padding: 0; display: grid; gap: 8px; }
+.admin-note-list li { padding: 8px 10px; border: 1px solid #e5e7eb; border-radius: 8px; }
+.admin-note-list p { margin: 4px 0 0; white-space: pre-wrap; }
+.admin-note-form { display: grid; gap: 8px; margin-top: 8px; }
+.admin-note-form textarea { width: 100%; font: inherit; padding: 8px; border: 1px solid #d1d5db; border-radius: 8px; }
+.admin-matrix { table-layout: fixed; width: 100%; }
+.admin-matrix th[scope='row'] { width: 130px; }
+.admin-matrix td { white-space: normal; }
+.admin-matrix-options .admin-check { white-space: normal; }
+.admin-role-form input:not([type='checkbox']) { padding: 10px 12px; border: 1px solid #d1d5db; border-radius: 8px; font: inherit; }
+.sales-lead-note-form textarea, .admin-note-form textarea { box-sizing: border-box; }

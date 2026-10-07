@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { prisma } from '../lib/prisma.js';
 import { env } from '../config/env.js';
 import { sessionCookieName } from '../services/auth.js';
+import { hasAnyPermission } from '../lib/permissions.js';
 
 function unauthorized(message = 'Authentication is required.') {
   const error = new Error(message);
@@ -57,7 +58,8 @@ export async function requireAuth(request, _response, next) {
         revokedAt: null,
         expiresAt: { gt: new Date() },
       },
-      include: { user: true, vendor: true },
+      // The role is read with the user on every request, so editing a role takes effect on the next request.
+      include: { user: { include: { accessRole: true } }, vendor: true },
     });
 
     if (!session || (!session.user && !session.vendor)) {
@@ -89,6 +91,23 @@ export function requireRole(role) {
 
 export function requireAdmin(request, response, next) {
   return requireRole('ADMIN')(request, response, next);
+}
+
+// Admin route open to a super-admin and to STAFF whose role holds ANY of the listed permissions. A route that
+// does not use this keeps requireAdmin and therefore stays super-admin only.
+export function requirePermission(...permissions) {
+  const guard = (request, _response, next) => {
+    if (!request.auth) {
+      return next(unauthorized());
+    }
+    if (request.auth.type !== 'staff') {
+      return next(forbidden());
+    }
+    return hasAnyPermission(request.auth.user, permissions) ? next() : next(forbidden());
+  };
+  // Readable by tests/route-permissions.test.js, which lists every Admin route with its guard.
+  guard.permissions = permissions;
+  return guard;
 }
 
 export function requireSales(request, response, next) {

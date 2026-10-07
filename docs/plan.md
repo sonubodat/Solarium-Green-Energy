@@ -165,8 +165,8 @@ Sales users can:
 Sales users cannot:
 
 - access the admin dashboard
-- access customer phone numbers beyond the minimum operational need for onboarding
-- access unrestricted lead data
+- access customer phone numbers beyond the minimum operational need for onboarding, except for leads the office has assigned to them (see "Lead assignment and custom roles")
+- access unrestricted lead data (only their own assigned leads)
 - access payout information
 - mark payouts as paid
 - reassign active QR codes
@@ -891,8 +891,8 @@ The sales dashboard must expose only operational information required for vendor
 The sales area must not expose:
 
 - admin dashboard
-- customer phone numbers
-- unrestricted leads
+- customer phone numbers, except on leads assigned to that salesperson ("My leads")
+- unrestricted leads (a salesperson sees only leads assigned to them)
 - payout information
 - audit logs
 - system settings
@@ -1096,3 +1096,18 @@ It intentionally does not include:
 - separate UX cleanup phase
 
 The scope remains intentionally minimal and aligned to the actual business requirement.
+
+
+## Lead assignment and custom roles
+
+Account types: `ADMIN` (super-admin, unrestricted), `SALES` (BDE / field staff, fixed rights over their own assigned leads), `STAFF` (a custom back-office role created by the super-admin, with a per-screen permission matrix) and `VENDOR`. A `STAFF` user always has a role; `ADMIN` and `SALES` never do (database CHECK constraint `users_role_access_role_ck`). "BDE / Sales" is only the label of the `SALES` type.
+
+**Assignment.** An Admin, or a role with `leads.assign`, assigns a lead to an ACTIVE `SALES` user from the Leads page (single or bulk, up to 200, all-or-nothing). One assignee at a time; every change is kept in `lead_assignment_history`. Deactivating a salesperson, or moving them to another account type, returns their leads to the unassigned pool and ends their sessions.
+
+**"My leads" (Sales portal).** A salesperson sees only leads assigned to them (someone else's lead is `404`): contact details, requirements, status, notes. They may set `NEW`, `CONTACTED`, `QUALIFIED` or `LOST` freely and add notes. They can never set `CONVERTED`, `REJECTED` or `DUPLICATE`, nor change a lead already in one of those (`409 STATUS_LOCKED`). Commission and payout data is never shown to them. This deliberately replaces the earlier rule that Sales never sees customer phone numbers beyond onboarding, for assigned leads only.
+
+**Custom roles (permission matrix).** Permissions: `dashboard.view`; `leads.view|edit|convert|assign|export|import`; `vendors.view|create|edit|reset_password|bank_details|bulk_create|export`; `applications.view|review`; `qr.view|create|assign|reassign|repair`; `scans.view`; `payouts.view|mark_paid`. Any action on a screen implies that screen's `view`; `leads.convert` also implies `leads.edit`. `vendors.edit` includes deactivate and reactivate; changing a Solar Mitra password needs `vendors.reset_password`. Setting a lead to or from `CONVERTED` needs `leads.convert` because it creates or removes the commission.
+
+**Never delegable (super-admin only):** permanent deletion of Solar Mitras, leads and QR codes; staff users and roles; audit logs; templates and printing (Print QR, Templates, Print History, Auto-QR posters); retention. Any Admin route not mapped to a permission stays super-admin only (safe default; `tests/route-permissions.test.js` fails on an unclassified route).
+
+**Live enforcement.** The server reads the user's role and permissions on every request, so editing a role takes effect on the next request. Changing a user's account type revokes their sessions. A role cannot be deleted while users hold it.

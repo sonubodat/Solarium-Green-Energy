@@ -11,6 +11,7 @@ import { geoTagFields, resolveGeoTag } from '../lib/geo-tag.js';
 import { INDIAN_STATES } from '../lib/indian-states.js';
 import { bankDetailsSchema, isBankDetailsSet } from '../lib/vendor-bank-details.js';
 import { vendorSearchWhere, pickerPagination, PICKER_VENDOR_SELECT } from '../lib/vendor-search.js';
+import { registerSalesLeadRoutes } from './sales-leads.js';
 
 export const salesRoutes = Router();
 
@@ -419,6 +420,8 @@ salesRoutes.post('/vendors/:vendorId/bank-details/:documentType', requireAuth, r
 		return next(error);
 	}
 });
+
+registerSalesLeadRoutes(salesRoutes);
 
 // Must stay LAST: anything registered after this never matches.
 salesRoutes.use((_request, response) => response.status(501).json({ success: false, error: { code: 'NOT_IMPLEMENTED', message: 'Sales route is scaffolded but not implemented.' } }));

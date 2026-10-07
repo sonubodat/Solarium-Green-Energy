@@ -7,6 +7,7 @@ import QrScanner from '../components/QrScanner';
 import VendorPicker from '../components/VendorPicker';
 import { SkeletonBlock } from '../components/Skeleton';
 import SessionExpiryGuard from '../components/SessionExpiryGuard';
+import SalesLeads from './SalesLeads';
 import './SalesPage.css';
 
 // Server-side, paginated Solar Mitra lookup for the Sales pickers. Uncached (forceRefresh) so a
@@ -211,6 +212,7 @@ function SalesPage() {
   // backend is, e.g. a cold Render instance waking up), before silently swapping to the
   // dashboard. Shows a skeleton instead of that flash.
   const [sessionChecked, setSessionChecked] = useState(false);
+  const [tab, setTab] = useState('onboard'); // 'onboard' | 'leads'
   const [selectedVendorId, setSelectedVendorId] = useState('');
   const [selectedVendorLabel, setSelectedVendorLabel] = useState('');
   const [assignmentCode, setAssignmentCode] = useState('');
@@ -742,6 +744,13 @@ function SalesPage() {
               </div>
             </header>
 
+            <nav className="sales-tabs" aria-label="Sales sections">
+              <button type="button" className={tab === 'onboard' ? 'active' : ''} aria-current={tab === 'onboard' ? 'page' : undefined} onClick={() => setTab('onboard')}>Onboarding</button>
+              <button type="button" className={tab === 'leads' ? 'active' : ''} aria-current={tab === 'leads' ? 'page' : undefined} onClick={() => setTab('leads')}>My leads</button>
+            </nav>
+
+            {tab === 'leads' ? <SalesLeads /> : (
+              <>
             <section className="sales-welcome">
               <div>
                 <div className="sales-eyebrow">SALES WORKSPACE</div>
@@ -1336,6 +1345,8 @@ function SalesPage() {
                 )}
               </article>
             </section>
+              </>
+            )}
 
             {showScanner && (
               <QrScanner onDetected={handleScanDetected} onClose={() => setShowScanner(false)} />

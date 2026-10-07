@@ -310,6 +310,18 @@ Index `entity + entity_id`, `actor_user_id + timestamp`, `timestamp`, and `actio
 
 **Retention**: capped at 5000 rows — once exceeded, the oldest rows are deleted automatically (see `backend/src/lib/audit-retention.js`), checked on every `GET /api/admin/dashboard` and `GET /api/admin/audit-logs` request and immediately after the two operations that can burst many rows at once (bulk vendor create, lead CSV import). At 4000 rows (80% of the cap) the Admin portal blocks with a modal until the admin downloads a CSV copy (`GET /api/admin/audit-logs/export`) — tracked server-side via a single-row `AuditLogRetentionState` table so it survives across logins/devices and only re-prompts after a future cleanup actually runs. This retention mechanism manages the `audit_logs` table only — it is not a general database-size safeguard for the rest of the schema (leads, lead locations, vendors, QR codes, and payouts are deliberately left to grow unmanaged), and the CSV export is a manual download, not an automated backup/disaster-recovery system.
 
+### AccessRole (`staff_roles`)
+
+Admin-defined back-office role: `id`, `name` (unique ignoring case), `description`, `permissions text[]`, `created_by_id`, timestamps. Referenced by `users.staff_role_id` (`ON DELETE RESTRICT`).
+
+### User changes
+
+`role` enum `StaffRole` gains `STAFF`. `staff_role_id` is required for `STAFF` and must be null for `ADMIN` and `SALES` (CHECK `users_role_access_role_ck`). Existing rows already satisfy it.
+
+### Lead assignment
+
+`leads.assigned_to_id` (FK users, `ON DELETE SET NULL`) and `leads.assigned_at`, index `(assigned_to_id, status)`. `lead_notes` (`lead_id` cascade, `author_id`, `body`, `created_at`, append-only). `lead_assignment_history` (`lead_id` cascade, `from_user_id`, `to_user_id`, `changed_by_id` as plain ids, `changed_at`), never pruned: it is the ownership record. AuditLog is pruned to 5,000 rows, so it is not.
+
 ## Relationship Rules
 
 ```text
@@ -334,6 +346,8 @@ The active QR assignment is used only for a new public scan. Existing Scan, Lead
 3. Lead creation: normalize identity, resolve the scan attribution, apply duplicate rules, and create the lead transactionally.
 4. Payout marking: verify the authenticated actor is Admin, set `PAID`, record payment metadata, and audit atomically.
 5. Password reset: create a short-lived single-use reset record and invalidate it after successful use.
+
+6. Lead assignment: `SELECT ... FOR SHARE` on the assignee, then `FOR UPDATE` on the leads ordered by id, compare with the locked owner, update, write history and audit. Deactivating or moving a `SALES` user locks that user row first, then their leads in id order.
 
 ## Database-Only Constraints
 

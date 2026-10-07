@@ -9,6 +9,7 @@ import VendorPicker from '../components/VendorPicker';
 import BatchProgressModal from '../components/BatchProgressModal';
 import AutoPosterModal from '../components/AutoPosterModal';
 import SessionExpiryGuard from '../components/SessionExpiryGuard';
+import { RolesPanel, LeadWorkPanel } from './AdminAccess';
 import {
   BATCH_TIMEOUT_MS,
   LEAD_BATCH_SIZE,
@@ -365,6 +366,32 @@ const NAV_ITEMS = [
   ['audit-logs', 'Audit Logs'],
 ];
 
+// Permission that opens each screen for a custom-role (STAFF) user. A screen not listed here (printing,
+// templates, staff, audit logs) is for the super-admin only. The backend enforces the same rules.
+const NAV_PERMISSION = {
+  dashboard: 'dashboard.view',
+  vendors: 'vendors.view',
+  'vendor-applications': 'applications.view',
+  qr: 'qr.view',
+  leads: 'leads.view',
+  scans: 'scans.view',
+  payouts: 'payouts.view',
+};
+
+const LEAD_STATUS_OPTIONS = ['NEW', 'CONTACTED', 'QUALIFIED', 'CONVERTED', 'LOST', 'REJECTED', 'DUPLICATE'];
+
+const canUse = (account, permission) =>
+  account?.role === 'ADMIN' || Boolean(account?.permissions?.includes(permission));
+
+const landingResource = (account) =>
+  NAV_ITEMS.map(([key]) => key).find((key) => (account?.role === 'ADMIN' ? true : NAV_PERMISSION[key] && canUse(account, NAV_PERMISSION[key]))) || null;
+
+// Users screen: one selector for the account type. "SALES" and "ADMIN" are the fixed types; every custom
+// role is "role:<id>" and creates a STAFF user.
+const ACCOUNT_TYPE_SALES = 'SALES';
+const accountTypeOf = (user) => (user.role === 'STAFF' ? `role:${user.staffRoleId}` : user.role);
+const accountTypePayload = (value) => (value.startsWith('role:') ? { role: 'STAFF', staff_role_id: value.slice(5) } : { role: value });
+
 function AdminPage() {
   const [login, setLogin] = useState({
     identifier: '',
@@ -372,6 +399,18 @@ function AdminPage() {
   });
 
   const [portalData, setPortalData] = useState(null);
+  const can = (permission) => canUse(portalData?.account, permission);
+  // The signed-in account as of the latest sign-in/restore (state is not updated yet inside the first load).
+  const accountRef = useRef(null);
+  const [accessRoles, setAccessRoles] = useState([]);
+  const [permissionCatalog, setPermissionCatalog] = useState([]);
+  const [assignableStaff, setAssignableStaff] = useState([]);
+  const [leadAssignFilter, setLeadAssignFilter] = useState('');
+  const leadAssignFilterRef = useRef('');
+  const [leadStatusFilter, setLeadStatusFilter] = useState('');
+  const leadStatusFilterRef = useRef('');
+  const [selectedLeadIds, setSelectedLeadIds] = useState([]);
+  const [bulkAssignee, setBulkAssignee] = useState('');
   // Distinguishes "still checking whether a session cookie is valid" from "confirmed logged
   // out" — without this, the login form flashes on every page load/reload for an already
   // signed-in Admin while restoreSession()'s request is in flight (worse the slower the
@@ -719,19 +758,28 @@ function AdminPage() {
     try {
       const session = await apiRequest('/auth/session?portal=admin');
 
-      if (!mountedRef.current || session.role !== 'ADMIN') return;
+      if (!mountedRef.current || !['ADMIN', 'STAFF'].includes(session.role)) return;
 
       setPortalData({
         account: session.account,
         data: null,
       });
 
-      await loadAdminResource('dashboard', 1);
+      await openLanding(session.account);
     } catch (error) {
       // No active Admin session.
     } finally {
       if (mountedRef.current) setSessionChecked(true);
     }
+  }
+
+  // A custom role may not include the dashboard: open the first screen it can use instead.
+  async function openLanding(account) {
+    accountRef.current = account;
+    const first = landingResource(account);
+    setResource(first || 'dashboard');
+    setAdminPage(1);
+    if (first) await loadAdminResource(first, 1);
   }
 
   async function signIn(event) {
@@ -750,7 +798,7 @@ function AdminPage() {
         }),
       });
 
-      if (result.user?.role !== 'ADMIN') {
+      if (!['ADMIN', 'STAFF'].includes(result.user?.role)) {
         throw new Error('Admin access is required.');
       }
 
@@ -759,10 +807,7 @@ function AdminPage() {
         data: null,
       });
 
-      setResource('dashboard');
-      setAdminPage(1);
-
-      await loadAdminResource('dashboard', 1);
+      await openLanding(result.user);
 
       setMessage('Signed in successfully.');
       setMessageType('success');
@@ -798,10 +843,6 @@ function AdminPage() {
     assignmentOverride,
     forceRefresh = false
   ) {
-    if (!portalData && nextResource !== 'dashboard') {
-      return;
-    }
-
     // Only the most recent load may write its result: a slow earlier response (an older
     // search, page, or a resource the admin has since left) must never overwrite a newer one.
     const seq = adminLoadSeq.current + 1;
@@ -809,6 +850,7 @@ function AdminPage() {
 
     setLoading(true);
     if (nextResource === 'vendors') setSelectedVendorIds([]);
+    if (nextResource === 'leads') setSelectedLeadIds([]);
     setMessage('');
     setMessageType('');
 
@@ -895,6 +937,11 @@ function AdminPage() {
         query += `&status=${encodeURIComponent(applicationStatusRef.current)}`;
       }
 
+      if (nextResource === 'leads') {
+        if (leadAssignFilterRef.current) query += `&assigned_to=${encodeURIComponent(leadAssignFilterRef.current)}`;
+        if (leadStatusFilterRef.current) query += `&status=${encodeURIComponent(leadStatusFilterRef.current)}`;
+      }
+
       const data = await apiRequest(`/admin/${nextResource}${query}`, { forceRefresh, supersede: 'admin-list' });
 
       if (!mountedRef.current || seq !== adminLoadSeq.current) return;
@@ -910,14 +957,28 @@ function AdminPage() {
       }));
       if (data.retention) setRetentionStatus(data.retention);
 
-      if (nextResource === 'qr') {
+      if (nextResource === 'qr' && accountRef.current?.role === 'ADMIN') {
         // Solar Mitras are no longer preloaded for the QR table: each picker searches the
         // server when it is opened, so this page no longer fetches the whole vendor list.
+        // (Templates are for printing, which only the super-admin does.)
         const templates = await apiRequest('/admin/qr/templates', { forceRefresh });
 
         if (mountedRef.current) {
           setQrTemplates(templates.templates || []);
         }
+      }
+
+      if (nextResource === 'users') {
+        const access = await apiRequest('/admin/roles', { forceRefresh: true });
+        if (mountedRef.current) {
+          setAccessRoles(access.roles || []);
+          setPermissionCatalog(access.catalog || []);
+        }
+      }
+
+      if (nextResource === 'leads' && canUse(accountRef.current, 'leads.assign')) {
+        const staff = await apiRequest('/admin/staff/assignable', { forceRefresh });
+        if (mountedRef.current) setAssignableStaff(staff.users || []);
       }
     } catch (error) {
       // A newer load replaced this one while it was still queued: nothing to report.
@@ -982,7 +1043,7 @@ function AdminPage() {
   // refreshes it whenever it loads).
   const signedIn = Boolean(portalData);
   useEffect(() => {
-    if (!signedIn) return undefined;
+    if (!signedIn || !can('applications.view')) return undefined;
     let cancelled = false;
     apiRequest('/admin/vendor-applications?limit=1')
       .then((data) => {
@@ -990,6 +1051,7 @@ function AdminPage() {
       })
       .catch(() => {});
     return () => { cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [signedIn]);
 
   function changeApplicationStatus(nextStatus) {
@@ -1802,6 +1864,36 @@ function AdminPage() {
     }
   }
 
+  function changeLeadFilters(status, assignee) {
+    leadStatusFilterRef.current = status;
+    leadAssignFilterRef.current = assignee;
+    setLeadStatusFilter(status);
+    setLeadAssignFilter(assignee);
+    loadAdminResource('leads', 1);
+  }
+
+  // All-or-nothing on the server: if any selected lead changed or vanished, nothing is assigned (409).
+  async function bulkAssignLeads() {
+    setLoading(true);
+    try {
+      const result = await apiRequest('/admin/leads/assign-bulk', {
+        method: 'POST',
+        body: JSON.stringify({ lead_ids: selectedLeadIds, assigned_to_id: bulkAssignee === '__none' ? null : bulkAssignee }),
+      });
+      setSelectedLeadIds([]);
+      setBulkAssignee('');
+      await loadAdminResource('leads', adminPage, undefined, undefined, true);
+      setMessage(`${result.changed} lead${result.changed === 1 ? '' : 's'} updated.`);
+      setMessageType('success');
+    } catch (error) {
+      setMessage(error.code === 'LEADS_CHANGED' ? 'Some leads changed or were removed, so nothing was assigned. The list was refreshed.' : error.message);
+      setMessageType('error');
+      if (error.code === 'LEADS_CHANGED') await loadAdminResource('leads', adminPage, undefined, undefined, true);
+    } finally {
+      setLoading(false);
+    }
+  }
+
   async function updateLeadStatus(lead, status) {
     if (status === lead.status) return;
     setLoading(true);
@@ -1848,14 +1940,19 @@ function AdminPage() {
     try {
       await apiRequest('/admin/users', {
         method: 'POST',
-        body: JSON.stringify(newStaffUser),
+        body: JSON.stringify({
+          name: newStaffUser.name,
+          username_or_mobile: newStaffUser.username_or_mobile,
+          password: newStaffUser.password,
+          ...accountTypePayload(newStaffUser.role),
+        }),
       });
 
       setNewStaffUser({
         name: '',
         username_or_mobile: '',
         password: '',
-        role: 'SALES',
+        role: ACCOUNT_TYPE_SALES,
       });
 
       setShowCreateStaff(false);
@@ -1873,22 +1970,20 @@ function AdminPage() {
   }
 
   async function updateStaffUserRole(user) {
-    const nextRole =
-      staffRoleInputs[user.id] || user.role;
+    const nextType =
+      staffRoleInputs[user.id] || accountTypeOf(user);
 
     setLoading(true);
 
     try {
-      await apiRequest(`/admin/users/${user.id}`, {
+      const result = await apiRequest(`/admin/users/${user.id}`, {
         method: 'PATCH',
-        body: JSON.stringify({
-          role: nextRole,
-        }),
+        body: JSON.stringify(accountTypePayload(nextType)),
       });
 
       await loadAdminResource('users', adminPage);
 
-      setMessage('Staff user role updated.');
+      setMessage(result.released_leads ? `Account type updated. ${result.released_leads} lead${result.released_leads === 1 ? '' : 's'} returned to the unassigned pool.` : 'Account type updated.');
       setMessageType('success');
     } catch (error) {
       setMessage(error.message);
@@ -1900,9 +1995,9 @@ function AdminPage() {
   }
 
   function armUpdateStaffUserRole(user) {
-    const nextRole = staffRoleInputs[user.id] || user.role;
-    if (nextRole === user.role) {
-      setMessage('Select a different role first.');
+    const nextType = staffRoleInputs[user.id] || accountTypeOf(user);
+    if (nextType === accountTypeOf(user)) {
+      setMessage('Select a different account type first.');
       setMessageType('error');
       return;
     }
@@ -1913,7 +2008,7 @@ function AdminPage() {
     setLoading(true);
 
     try {
-      await apiRequest(
+      const result = await apiRequest(
         `/admin/users/${user.id}/deactivate`,
         {
           method: 'POST',
@@ -1922,7 +2017,7 @@ function AdminPage() {
 
       await loadAdminResource('users', adminPage);
 
-      setMessage('Staff user deactivated.');
+      setMessage(result.released_leads ? `Staff user deactivated. ${result.released_leads} lead${result.released_leads === 1 ? '' : 's'} returned to the unassigned pool.` : 'Staff user deactivated.');
       setMessageType('success');
     } catch (error) {
       setMessage(error.message);
@@ -1930,6 +2025,22 @@ function AdminPage() {
     } finally {
       setLoading(false);
       setConfirmDeactivateStaffId(null);
+    }
+  }
+
+  // Reactivation is a plain status change; the account keeps its type and role, and returned leads stay unassigned.
+  async function activateStaffUser(user) {
+    setLoading(true);
+    try {
+      await apiRequest(`/admin/users/${user.id}`, { method: 'PATCH', body: JSON.stringify({ status: 'ACTIVE' }) });
+      await loadAdminResource('users', adminPage, undefined, undefined, true);
+      setMessage('Staff user activated.');
+      setMessageType('success');
+    } catch (error) {
+      setMessage(error.message);
+      setMessageType('error');
+    } finally {
+      setLoading(false);
     }
   }
 
@@ -2161,6 +2272,7 @@ function AdminPage() {
         )}
 
         <div className="admin-quick-grid">
+          {can('vendors.view') && (
           <button
             onClick={() => navigate('vendors')}
             className="admin-quick-card"
@@ -2172,7 +2284,9 @@ function AdminPage() {
             </div>
             <Icon path={ICONS.arrow} />
           </button>
+          )}
 
+          {can('qr.view') && (
           <button
             onClick={() => navigate('qr')}
             className="admin-quick-card"
@@ -2184,7 +2298,9 @@ function AdminPage() {
             </div>
             <Icon path={ICONS.arrow} />
           </button>
+          )}
 
+          {can('leads.view') && (
           <button
             onClick={() => navigate('leads')}
             className="admin-quick-card"
@@ -2196,7 +2312,9 @@ function AdminPage() {
             </div>
             <Icon path={ICONS.arrow} />
           </button>
+          )}
 
+          {can('payouts.view') && (
           <button
             onClick={() => navigate('payouts')}
             className="admin-quick-card"
@@ -2208,6 +2326,7 @@ function AdminPage() {
             </div>
             <Icon path={ICONS.arrow} />
           </button>
+          )}
         </div>
       </div>
     );
@@ -2237,47 +2356,55 @@ function AdminPage() {
           </div>
 
           <div className="admin-heading-actions">
-            <button
-              className="admin-outline-button"
-              onClick={downloadVendorsCsv}
-            >
-              Export CSV
-            </button>
+            {can('vendors.export') && (
+              <button
+                className="admin-outline-button"
+                onClick={downloadVendorsCsv}
+              >
+                Export CSV
+              </button>
+            )}
 
-            <button
-              className="admin-primary-button"
-              onClick={() =>
-                setShowCreateVendor(
-                  (current) => !current
-                )
-              }
-            >
-              <Icon path={ICONS.plus} />
-              Add Solar Mitra
-            </button>
+            {can('vendors.create') && (
+              <button
+                className="admin-primary-button"
+                onClick={() =>
+                  setShowCreateVendor(
+                    (current) => !current
+                  )
+                }
+              >
+                <Icon path={ICONS.plus} />
+                Add Solar Mitra
+              </button>
+            )}
 
-            <button
-              className="admin-outline-button"
-              onClick={() => {
-                setBulkVendorState('');
-                setShowBulkCreateVendors(true);
-              }}
-            >
-              <Icon path={ICONS.plus} />
-              Bulk create
-            </button>
+            {can('vendors.bulk_create') && (
+              <button
+                className="admin-outline-button"
+                onClick={() => {
+                  setBulkVendorState('');
+                  setShowBulkCreateVendors(true);
+                }}
+              >
+                <Icon path={ICONS.plus} />
+                Bulk create
+              </button>
+            )}
 
-            <button
-              className="admin-outline-button"
-              onClick={() => setShowAutoPosters(true)}
-            >
-              <Icon path={ICONS.qr} />
-              Auto-QR posters
-            </button>
+            {portalData.account.role === 'ADMIN' && (
+              <button
+                className="admin-outline-button"
+                onClick={() => setShowAutoPosters(true)}
+              >
+                <Icon path={ICONS.qr} />
+                Auto-QR posters
+              </button>
+            )}
           </div>
         </div>
 
-        {showCreateVendor && (
+        {showCreateVendor && can('vendors.create') && (
           <form
             onSubmit={createVendor}
             className="admin-form-card"
@@ -2509,6 +2636,7 @@ function AdminPage() {
           </button>
         </div>
 
+        {portalData.account.role === 'ADMIN' && (
         <div className="admin-selection-toolbar">
           <label className="admin-select-all">
             <input type="checkbox" checked={allVisibleVendorsSelected} onChange={(event) => setSelectedVendorIds(event.target.checked ? selectableVendors.map((vendor) => vendor.id) : [])} />
@@ -2526,12 +2654,13 @@ function AdminPage() {
             <button type="button" className="admin-mini-button danger" disabled={!selectedVendorIds.length || loading} onClick={() => setConfirmBulkDeleteVendors(true)}>Delete selected</button>
           )}
         </div>
+        )}
 
         <div className="admin-table-wrap">
           <table className="admin-table">
             <thead>
               <tr>
-                <th className="admin-check-cell">Select</th>
+                {portalData.account.role === 'ADMIN' && <th className="admin-check-cell">Select</th>}
                 <th>Solar Mitra</th>
                 <th>Owner</th>
                 <th>State</th>
@@ -2546,9 +2675,11 @@ function AdminPage() {
               {filtered.length ? (
                 filtered.map((vendor) => (
                   <tr key={vendor.id}>
+                    {portalData.account.role === 'ADMIN' && (
                     <td className="admin-check-cell">
                       <input type="checkbox" disabled={isProtectedDirectVendor(vendor)} checked={selectedVendorIds.includes(vendor.id)} onChange={(event) => setSelectedVendorIds((current) => event.target.checked ? [...new Set([...current, vendor.id])] : current.filter((id) => id !== vendor.id))} aria-label={`Select ${vendor.businessName}`} />
                     </td>
+                    )}
                     <td>
                       {editingVendorId === vendor.id ? (
                         <input
@@ -2718,6 +2849,7 @@ function AdminPage() {
                               Details
                             </button>
 
+                            {can('vendors.edit') && (
                             <button
                               className="admin-mini-button"
                               onClick={() =>
@@ -2731,8 +2863,9 @@ function AdminPage() {
                               />
                               Edit
                             </button>
+                            )}
 
-                            {confirmResetPasswordVendorId === vendor.id ? (
+                            {!can('vendors.reset_password') ? null : confirmResetPasswordVendorId === vendor.id ? (
                               <span className="admin-inline-confirm">
                                 <button
                                   className="admin-mini-button primary solid"
@@ -2765,7 +2898,7 @@ function AdminPage() {
                               </button>
                             )}
 
-                            {confirmDeactivateVendorId === vendor.id ? (
+                            {!can('vendors.edit') ? null : confirmDeactivateVendorId === vendor.id ? (
                               <span className="admin-inline-confirm">
                                 <button
                                   className="admin-mini-button danger solid"
@@ -2798,7 +2931,7 @@ function AdminPage() {
                               </button>
                             )}
 
-                            {!isProtectedDirectVendor(vendor) && (confirmDeleteVendorId === vendor.id ? (
+                            {portalData.account.role === 'ADMIN' && !isProtectedDirectVendor(vendor) && (confirmDeleteVendorId === vendor.id ? (
                               <span className="admin-inline-confirm">
                                 <button
                                   className="admin-mini-button danger solid"
@@ -2830,7 +2963,7 @@ function AdminPage() {
                                 Delete
                               </button>
                             ))}
-                            {!isProtectedDirectVendor(vendor) && (confirmPurgeVendorId === vendor.id ? (
+                            {portalData.account.role === 'ADMIN' && !isProtectedDirectVendor(vendor) && (confirmPurgeVendorId === vendor.id ? (
                               <>
                               <small className="admin-field-error" style={{ display: 'block', width: '100%' }}>
                                 This also permanently deletes the Solar Mitra "{vendor.businessName}" itself, not just its history.
@@ -2878,12 +3011,14 @@ function AdminPage() {
                                 Hard delete history
                               </button>
                             ))}
-                            <button
-                              className="admin-mini-button"
-                              onClick={() => viewVendorOnboardingMedia(vendor)}
-                            >
-                              Onboarding media
-                            </button>
+                            {can('vendors.edit') && (
+                              <button
+                                className="admin-mini-button"
+                                onClick={() => viewVendorOnboardingMedia(vendor)}
+                              >
+                                Onboarding media
+                              </button>
+                            )}
                           </>
                         )}
                       </div>
@@ -2893,7 +3028,7 @@ function AdminPage() {
               ) : (
                 <tr>
                   <td
-                    colSpan={8}
+                    colSpan={9}
                     className="admin-empty"
                   >
                     {vendorSearch.trim() ? `No Solar Mitras match "${vendorSearch.trim()}".` : 'No Solar Mitras found.'}
@@ -3183,17 +3318,21 @@ function AdminPage() {
             <p>See which QR codes exist, who holds them, and what was printed most recently.</p>
           </div>
           <div className="admin-heading-actions">
-            <button className="admin-outline-button" onClick={() => { setShowGenerateQr((current) => !current); setGenerateQrResult(null); }}>
-              <Icon path={ICONS.plus} />
-              Generate QR codes
-            </button>
-            <button className="admin-primary-button" onClick={openPrintWizard}>
-              <Icon path={ICONS.qr} />
-              Print QR Codes
-            </button>
+            {can('qr.create') && (
+              <button className="admin-outline-button" onClick={() => { setShowGenerateQr((current) => !current); setGenerateQrResult(null); }}>
+                <Icon path={ICONS.plus} />
+                Generate QR codes
+              </button>
+            )}
+            {portalData.account.role === 'ADMIN' && (
+              <button className="admin-primary-button" onClick={openPrintWizard}>
+                <Icon path={ICONS.qr} />
+                Print QR Codes
+              </button>
+            )}
           </div>
         </div>
-        {showGenerateQr && (
+        {showGenerateQr && can('qr.create') && (
           <div className="admin-form-card admin-qr-generate-panel">
             {generateQrResult ? (
               <>
@@ -3224,7 +3363,7 @@ function AdminPage() {
           {qrSummary && <div className="admin-qr-overview-stat warning"><span>Unassigned</span><strong>{qrSummary.unassigned.toLocaleString()}</strong></div>}
           <div className="admin-qr-overview-stat"><span>Showing</span><strong>{qrs.length.toLocaleString()} of {qrTotal.toLocaleString()}</strong></div>
         </div>
-        {qrSummary && qrSummary.consistent === false && (
+        {qrSummary && qrSummary.consistent === false && can('qr.repair') && (
           <p className="admin-audit-capacity-note" role="alert">
             Inventory check needed: assigned + unassigned does not add up to the total.{' '}
             {qrRepair ? (qrRepair.affected > 0
@@ -3245,10 +3384,10 @@ function AdminPage() {
             return <tr key={qr.id}>
               <td><span className="admin-qr-code"><Icon path={ICONS.qr} />{qr.code}</span></td>
               <td>{currentVendor?.businessName || 'Unassigned'}</td>
-              <td>{qr.latestPrint ? <div className="admin-primary-cell"><strong>{qr.latestPrint.templateName}</strong><small>{new Date(qr.latestPrint.printedAt).toLocaleDateString()} · {qr.latestPrint.kind === 'SINGLE' ? 'single' : 'batch'}</small><button type="button" className="admin-mini-button" onClick={() => openQrPrintHistory(qr)}>History</button></div> : <span className="admin-muted-text">Not printed</span>}</td>
+              <td>{qr.latestPrint ? <div className="admin-primary-cell"><strong>{qr.latestPrint.templateName}</strong><small>{new Date(qr.latestPrint.printedAt).toLocaleDateString()} · {qr.latestPrint.kind === 'SINGLE' ? 'single' : 'batch'}</small>{portalData.account.role === 'ADMIN' && <button type="button" className="admin-mini-button" onClick={() => openQrPrintHistory(qr)}>History</button>}</div> : <span className="admin-muted-text">Not printed</span>}</td>
               <td><span className={`admin-status ${displayStatus === 'UNASSIGNED' ? 'warning' : displayStatus === 'ACTIVE' ? 'active' : 'inactive'}`}>{displayStatus}</span></td>
               <td>{qr.assignments?.[0]?.assignedAt ? new Date(qr.assignments[0].assignedAt).toLocaleDateString() : '—'}</td>
-              <td><div className="admin-qr-action"><VendorPicker fetchPage={fetchAssignableVendors} value={reassignVendorInputs[qr.id] || ''} onChange={(id) => setReassignVendorInputs({ ...reassignVendorInputs, [qr.id]: id })} ariaLabel={`Solar Mitra for ${qr.code}`} />{confirmAssignQrId === qr.id ? <span className="admin-inline-confirm"><button className="admin-mini-button primary solid" disabled={loading} onClick={() => assignQr(qr, Boolean(currentVendor))}>Confirm</button><button className="admin-mini-button admin-inline-confirm-cancel" disabled={loading} onClick={() => setConfirmAssignQrId(null)} aria-label="Cancel assignment"><Icon path={ICONS.close} /></button></span> : <button className="admin-mini-button" disabled={loading} onClick={() => armAssignQr(qr)}>{currentVendor ? 'Reassign' : 'Assign'}</button>}{!currentVendor && (confirmDeleteQrId === qr.id ? <span className="admin-inline-confirm"><button className="admin-mini-button danger solid" disabled={loading} onClick={() => deleteQr(qr)}>Confirm delete</button><button className="admin-mini-button admin-inline-confirm-cancel" disabled={loading} onClick={() => setConfirmDeleteQrId(null)} aria-label="Cancel delete"><Icon path={ICONS.close} /></button></span> : <button className="admin-mini-button danger" disabled={loading} title="Delete only if this QR has never been used" onClick={() => setConfirmDeleteQrId(qr.id)}>Delete</button>)}<button className="admin-mini-button danger" disabled={loading} title="Permanently remove this QR and all linked history" onClick={() => { setConfirmPurgeQrId(qr.id); setPurgeQrConfirmText(''); }}>Purge history</button></div></td>
+              <td><div className="admin-qr-action">{(currentVendor ? can('qr.reassign') : can('qr.assign')) && <><VendorPicker fetchPage={fetchAssignableVendors} value={reassignVendorInputs[qr.id] || ''} onChange={(id) => setReassignVendorInputs({ ...reassignVendorInputs, [qr.id]: id })} ariaLabel={`Solar Mitra for ${qr.code}`} />{confirmAssignQrId === qr.id ? <span className="admin-inline-confirm"><button className="admin-mini-button primary solid" disabled={loading} onClick={() => assignQr(qr, Boolean(currentVendor))}>Confirm</button><button className="admin-mini-button admin-inline-confirm-cancel" disabled={loading} onClick={() => setConfirmAssignQrId(null)} aria-label="Cancel assignment"><Icon path={ICONS.close} /></button></span> : <button className="admin-mini-button" disabled={loading} onClick={() => armAssignQr(qr)}>{currentVendor ? 'Reassign' : 'Assign'}</button>}</>}{portalData.account.role === 'ADMIN' && !currentVendor && (confirmDeleteQrId === qr.id ? <span className="admin-inline-confirm"><button className="admin-mini-button danger solid" disabled={loading} onClick={() => deleteQr(qr)}>Confirm delete</button><button className="admin-mini-button admin-inline-confirm-cancel" disabled={loading} onClick={() => setConfirmDeleteQrId(null)} aria-label="Cancel delete"><Icon path={ICONS.close} /></button></span> : <button className="admin-mini-button danger" disabled={loading} title="Delete only if this QR has never been used" onClick={() => setConfirmDeleteQrId(qr.id)}>Delete</button>)}{portalData.account.role === 'ADMIN' && <button className="admin-mini-button danger" disabled={loading} title="Permanently remove this QR and all linked history" onClick={() => { setConfirmPurgeQrId(qr.id); setPurgeQrConfirmText(''); }}>Purge history</button>}</div></td>
             </tr>;
           }) : <tr><td colSpan="6" className="admin-empty">No QR codes found.</td></tr>}
         </tbody></table></div>
@@ -3416,20 +3555,24 @@ function AdminPage() {
           </div>
 
           <div className="admin-heading-actions">
-            <button
-              className="admin-outline-button"
-              onClick={downloadLeadsCsv}
-            >
-              Export CSV
-            </button>
+            {can('leads.export') && (
+              <button
+                className="admin-outline-button"
+                onClick={downloadLeadsCsv}
+              >
+                Export CSV
+              </button>
+            )}
 
-            <button
-              className="admin-primary-button"
-              onClick={() => setShowImportLeads((current) => !current)}
-            >
-              <Icon path={ICONS.plus} />
-              Import CSV
-            </button>
+            {can('leads.import') && (
+              <button
+                className="admin-primary-button"
+                onClick={() => setShowImportLeads((current) => !current)}
+              >
+                <Icon path={ICONS.plus} />
+                Import CSV
+              </button>
+            )}
 
             <button
               className="admin-outline-button"
@@ -3449,7 +3592,7 @@ function AdminPage() {
           </div>
         </div>
 
-        {showImportLeads && (
+        {showImportLeads && can('leads.import') && (
           <form onSubmit={importLeadsCsv} className="admin-form-card admin-leads-import">
             <div>
               <div className="admin-form-title">Import company leads</div>
@@ -3507,16 +3650,42 @@ function AdminPage() {
 
           <div className="admin-filter">
             <Icon path={ICONS.filter} />
-            <select>
-              <option>All statuses</option>
-              <option>NEW</option>
-              <option>CONTACTED</option>
-              <option>QUALIFIED</option>
-              <option>CONVERTED</option>
-              <option>LOST</option>
+            <select
+              aria-label="Filter by status"
+              value={leadStatusFilter}
+              onChange={(event) => changeLeadFilters(event.target.value, leadAssignFilter)}
+            >
+              <option value="">All statuses</option>
+              {LEAD_STATUS_OPTIONS.map((status) => <option key={status} value={status}>{status}</option>)}
+            </select>
+          </div>
+
+          <div className="admin-filter">
+            <Icon path={ICONS.filter} />
+            <select
+              aria-label="Filter by assignee"
+              value={leadAssignFilter}
+              onChange={(event) => changeLeadFilters(leadStatusFilter, event.target.value)}
+            >
+              <option value="">Everyone</option>
+              <option value="unassigned">Unassigned</option>
+              {assignableStaff.map((user) => <option key={user.id} value={user.id}>{user.name}</option>)}
             </select>
           </div>
         </div>
+
+        {can('leads.assign') && selectedLeadIds.length > 0 && (
+          <div className="admin-bulk-bar" role="region" aria-label="Assign selected leads">
+            <strong>{selectedLeadIds.length} selected</strong>
+            <select aria-label="Assign to" value={bulkAssignee} onChange={(event) => setBulkAssignee(event.target.value)}>
+              <option value="">Choose a BDE...</option>
+              <option value="__none">Unassign</option>
+              {assignableStaff.map((user) => <option key={user.id} value={user.id}>{user.name}</option>)}
+            </select>
+            <button className="admin-primary-button" disabled={loading || !bulkAssignee} onClick={bulkAssignLeads}>Assign</button>
+            <button className="admin-outline-button" onClick={() => setSelectedLeadIds([])}>Clear</button>
+          </div>
+        )}
 
         {renderLeadsByVendor(leads)}
 
@@ -3597,13 +3766,27 @@ function AdminPage() {
                   <table className="admin-table">
                     <thead>
                       <tr>
+                        {can('leads.assign') && (
+                          <th>
+                            <input
+                              type="checkbox"
+                              aria-label={`Select all ${group.vendorName} leads`}
+                              checked={group.leads.every((lead) => selectedLeadIds.includes(lead.id))}
+                              onChange={(event) => {
+                                const ids = group.leads.map((lead) => lead.id);
+                                setSelectedLeadIds((current) => (event.target.checked ? [...new Set([...current, ...ids])] : current.filter((id) => !ids.includes(id))));
+                              }}
+                            />
+                          </th>
+                        )}
                         <th>Customer</th>
                         <th>QR</th>
                         <th>Location</th>
                         <th>Qualification</th>
                         <th>Status</th>
+                        <th>Assigned to</th>
                         <th>Lead date</th>
-                        <th>Commission</th>
+                        {can('payouts.view') && <th>Commission</th>}
                         <th />
                       </tr>
                     </thead>
@@ -3611,6 +3794,16 @@ function AdminPage() {
                     <tbody>
                       {group.leads.map((lead) => (
                         <tr key={lead.id}>
+                          {can('leads.assign') && (
+                            <td>
+                              <input
+                                type="checkbox"
+                                aria-label={`Select ${lead.customerName}`}
+                                checked={selectedLeadIds.includes(lead.id)}
+                                onChange={(event) => setSelectedLeadIds((current) => (event.target.checked ? [...current, lead.id] : current.filter((id) => id !== lead.id)))}
+                              />
+                            </td>
+                          )}
                           <td>
                             <div className="admin-primary-cell">
                               <strong>{lead.customerName}</strong>
@@ -3644,16 +3837,24 @@ function AdminPage() {
                           </td>
 
                           <td>
-                            <select
-                              className="admin-inline-select"
-                              value={lead.status || 'NEW'}
-                              disabled={loading}
-                              onChange={(event) => updateLeadStatus(lead, event.target.value)}
-                            >
-                              {['NEW', 'CONTACTED', 'QUALIFIED', 'CONVERTED', 'LOST', 'REJECTED', 'DUPLICATE'].map((status) => (
-                                <option key={status} value={status}>{status}</option>
-                              ))}
-                            </select>
+                            {can('leads.edit') && (can('leads.convert') || lead.status !== 'CONVERTED') ? (
+                              <select
+                                className="admin-inline-select"
+                                value={lead.status || 'NEW'}
+                                disabled={loading}
+                                onChange={(event) => updateLeadStatus(lead, event.target.value)}
+                              >
+                                {LEAD_STATUS_OPTIONS.filter((status) => can('leads.convert') || status !== 'CONVERTED').map((status) => (
+                                  <option key={status} value={status}>{status}</option>
+                                ))}
+                              </select>
+                            ) : (
+                              <span className="admin-status">{lead.status || 'NEW'}</span>
+                            )}
+                          </td>
+
+                          <td>
+                            {lead.assignedTo?.name || <span className="admin-muted">Unassigned</span>}
                           </td>
 
                           <td>
@@ -3662,7 +3863,7 @@ function AdminPage() {
                               : '—'}
                           </td>
 
-                          <td>{lead.commission?.status || '—'}</td>
+                          {can('payouts.view') && <td>{lead.payout?.status || '—'}</td>}
 
                           <td>
                             <div className="admin-row-actions">
@@ -3673,7 +3874,7 @@ function AdminPage() {
                                 <Icon path={ICONS.eye} />
                                 View
                               </button>
-                              {confirmDeleteLeadId === lead.id ? (
+                              {portalData.account.role !== 'ADMIN' ? null : confirmDeleteLeadId === lead.id ? (
                                 <span className="admin-inline-confirm">
                                   <button
                                     className="admin-mini-button danger solid"
@@ -3877,13 +4078,31 @@ function AdminPage() {
                 <dd>{lead.qr?.code || '—'}</dd>
                 <dt>Lead status</dt>
                 <dd>{lead.status || '—'}</dd>
-                <dt>Commission</dt>
-                <dd>{lead.payout?.status || 'Not created'}</dd>
+                {can('payouts.view') && (
+                  <>
+                    <dt>Commission</dt>
+                    <dd>{lead.payout?.status || 'Not created'}</dd>
+                  </>
+                )}
                 <dt>Submitted</dt>
                 <dd>{lead.createdAt ? new Date(lead.createdAt).toLocaleString() : '—'}</dd>
               </dl>
             </div>
 
+            {can('leads.view') && (
+              <LeadWorkPanel
+                lead={lead}
+                canAssign={can('leads.assign')}
+                canNote={can('leads.edit')}
+                assignable={assignableStaff}
+                onAssigned={async () => {
+                  await loadAdminResource('leads', adminPage, undefined, undefined, true);
+                  setDetailLead(null);
+                }}
+              />
+            )}
+
+            {can('payouts.view') && (
             <div className="admin-modal-section">
               <h3>Payout</h3>
               <dl className="admin-modal-fields">
@@ -3903,6 +4122,7 @@ function AdminPage() {
                 )}
               </dl>
             </div>
+            )}
 
             <div className="admin-modal-section">
               <h3>Record IDs</h3>
@@ -4124,7 +4344,7 @@ function AdminPage() {
                               <td>{payout.paidAt ? new Date(payout.paidAt).toLocaleDateString() : payout.createdAt ? new Date(payout.createdAt).toLocaleDateString() : '—'}</td>
                               <td>
                                 <div className="admin-row-actions">
-                                  {['UNPAID', 'PARTIAL', 'PAID'].map((status) => (
+                                  {can('payouts.mark_paid') && ['UNPAID', 'PARTIAL', 'PAID'].map((status) => (
                                     confirmPayoutStatusKey === `${payout.id}:${status}` ? (
                                       <span key={status} className="admin-inline-confirm">
                                         <button
@@ -4154,12 +4374,12 @@ function AdminPage() {
                                       </button>
                                     )
                                   ))}
-                                  {group.vendor && (
+                                  {group.vendor && can('vendors.bank_details') && (
                                     <button className="admin-mini-button" onClick={() => viewVendorBankDetails(group.vendor)}>
                                       Bank details
                                     </button>
                                   )}
-                                  {group.vendor && (
+                                  {group.vendor && can('vendors.edit') && (
                                     <button className="admin-mini-button" onClick={() => viewVendorOnboardingMedia(group.vendor)}>
                                       Onboarding media
                                     </button>
@@ -4183,6 +4403,18 @@ function AdminPage() {
     );
   }
 
+  function accountTypeOptions() {
+    return (
+      <>
+        <option value={ACCOUNT_TYPE_SALES}>BDE / Sales (own assigned leads)</option>
+        {accessRoles.map((role) => (
+          <option key={role.id} value={`role:${role.id}`}>{role.name}</option>
+        ))}
+        <option value="ADMIN">Super admin (full access)</option>
+      </>
+    );
+  }
+
   function renderUsers() {
     const users =
       portalData?.data?.users || [];
@@ -4196,7 +4428,7 @@ function AdminPage() {
             </span>
             <h2>Staff users</h2>
             <p>
-              Control internal Sales and Admin access.
+              Control internal Sales, custom-role and Admin access.
             </p>
           </div>
 
@@ -4274,12 +4506,7 @@ function AdminPage() {
                   })
                 }
               >
-                <option value="SALES">
-                  SALES
-                </option>
-                <option value="ADMIN">
-                  ADMIN
-                </option>
+                {accountTypeOptions()}
               </select>
             </div>
 
@@ -4314,7 +4541,7 @@ function AdminPage() {
                 <th>Login</th>
                 <th>Role</th>
                 <th>Status</th>
-                <th>Change role</th>
+                <th>Change account type</th>
                 <th />
               </tr>
             </thead>
@@ -4335,12 +4562,12 @@ function AdminPage() {
                     </td>
 
                     <td>
-                      {user.usernameOrMobile}
+                      {user.usernameMobile}
                     </td>
 
                     <td>
                       <span className="admin-role">
-                        {user.role}
+                        {user.role === 'STAFF' ? user.roleName : user.role === 'SALES' ? 'BDE / Sales' : 'Super admin'}
                       </span>
                     </td>
 
@@ -4365,7 +4592,7 @@ function AdminPage() {
                             staffRoleInputs[
                               user.id
                             ] ||
-                            user.role
+                            accountTypeOf(user)
                           }
                           onChange={(event) =>
                             setStaffRoleInputs({
@@ -4375,16 +4602,14 @@ function AdminPage() {
                             })
                           }
                         >
-                          <option value="SALES">
-                            SALES
-                          </option>
-                          <option value="ADMIN">
-                            ADMIN
-                          </option>
+                          {accountTypeOptions()}
                         </select>
 
                         {confirmUpdateRoleId === user.id ? (
                           <span className="admin-inline-confirm">
+                            {user.role === 'SALES' && user.assignedLeadCount > 0 && (staffRoleInputs[user.id] || accountTypeOf(user)) !== ACCOUNT_TYPE_SALES && (
+                              <small>{user.assignedLeadCount} lead{user.assignedLeadCount === 1 ? '' : 's'} will return to the unassigned pool.</small>
+                            )}
                             <button
                               className="admin-mini-button primary solid"
                               disabled={loading}
@@ -4414,8 +4639,17 @@ function AdminPage() {
                     </td>
 
                     <td>
-                      {confirmDeactivateStaffId === user.id ? (
+                      {user.status !== 'ACTIVE' ? (
+                        <button
+                          className="admin-mini-button success"
+                          disabled={loading}
+                          onClick={() => activateStaffUser(user)}
+                        >
+                          Activate
+                        </button>
+                      ) : confirmDeactivateStaffId === user.id ? (
                         <span className="admin-inline-confirm">
+                          {user.assignedLeadCount > 0 && <small>{user.assignedLeadCount} lead{user.assignedLeadCount === 1 ? '' : 's'} will return to the unassigned pool.</small>}
                           <button
                             className="admin-mini-button danger solid"
                             disabled={loading}
@@ -4459,6 +4693,16 @@ function AdminPage() {
         </div>
 
         {renderPagination()}
+
+        <RolesPanel
+          roles={accessRoles}
+          catalog={permissionCatalog}
+          onChanged={async (text, isError) => {
+            await loadAdminResource('users', adminPage, undefined, undefined, true);
+            setMessage(text);
+            setMessageType(isError ? 'error' : 'success');
+          }}
+        />
       </div>
     );
   }
@@ -4540,7 +4784,9 @@ function AdminPage() {
                     )}
                   </td>
                   <td>
-                    {application.status === 'PENDING' ? (
+                    {application.status === 'PENDING' && !can('applications.review') ? (
+                      <span className="admin-muted-line">Awaiting review</span>
+                    ) : application.status === 'PENDING' ? (
                       rejectingApplicationId === application.id ? (
                         <span className="admin-inline-confirm">
                           <input
@@ -4782,6 +5028,10 @@ function AdminPage() {
   async function viewVendorDetails(vendor) {
     // Bank details are no longer fetched here — AdminBankForm below loads (and reloads) its own
     // copy, since it now writes as well as reads.
+    if (!can('vendors.edit')) {
+      setDetailVendor({ vendor, loading: false, media: null, error: '' });
+      return;
+    }
     setDetailVendor({ vendor, loading: true, media: null, error: '' });
     try {
       const media = await apiRequest(`/admin/vendors/${vendor.id}/onboarding-media`, { forceRefresh: true });
@@ -4817,12 +5067,16 @@ function AdminPage() {
               <dt>Leads</dt><dd>{vendor.leadCount ?? 0}</dd>
               <dt>Created</dt><dd>{vendor.createdAt ? new Date(vendor.createdAt).toLocaleString() : '—'}</dd>
             </dl>
-            <h3>Bank details</h3>
-            <AdminBankForm vendorId={vendor.id} />
+            {can('vendors.bank_details') && (
+              <>
+                <h3>Bank details</h3>
+                <AdminBankForm vendorId={vendor.id} />
+              </>
+            )}
 
             {detailLoading && <p>Loading location…</p>}
             {error && <p className="admin-scan-assign-blocked" role="alert">{error}</p>}
-            {!detailLoading && !error && (
+            {can('vendors.edit') && !detailLoading && !error && (
               <>
                 <h3>Shop location and photos</h3>
                 {media ? (
@@ -5732,7 +5986,7 @@ function AdminPage() {
         </div>
 
         <nav className="admin-nav">
-          {NAV_ITEMS.map(
+          {NAV_ITEMS.filter(([key]) => portalData.account.role === 'ADMIN' || (NAV_PERMISSION[key] && can(NAV_PERMISSION[key]))).map(
             ([key, label]) => (
               <button
                 key={key}
@@ -5775,7 +6029,7 @@ function AdminPage() {
               <strong>
                 {portalData.account.name}
               </strong>
-              <span>Administrator</span>
+              <span>{portalData.account.role === 'STAFF' ? portalData.account.roleName || 'Staff' : 'Administrator'}</span>
             </div>
           </div>
 
@@ -5840,7 +6094,9 @@ function AdminPage() {
         </header>
 
         <div className="admin-content">
-          {renderCurrentResource()}
+          {portalData.account.role === 'STAFF' && !landingResource(portalData.account)
+            ? <div className="admin-empty admin-empty-block">Your role has no screens yet. Ask an administrator to update it.</div>
+            : renderCurrentResource()}
 
           {message && (
             <div

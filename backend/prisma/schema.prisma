@@ -6,9 +6,13 @@ datasource db {
   provider = "postgresql"
 }
 
+// ADMIN = super-admin (unrestricted, no access role). SALES = BDE / field staff (own assigned leads,
+// no access role). STAFF = back-office user whose permissions come from an AccessRole (required).
+// The pairing is enforced by the users_role_access_role_ck CHECK constraint (see migration).
 enum StaffRole {
   ADMIN
   SALES
+  STAFF
 }
 
 enum AccountStatus {
@@ -74,9 +78,13 @@ model User {
   usernameMobile String               @unique @map("username_or_mobile")
   passwordHash   String               @map("password_hash")
   role           StaffRole
+  staffRoleId    String?              @map("staff_role_id")
   status         AccountStatus        @default(ACTIVE)
   createdAt      DateTime             @default(now()) @map("created_at")
   updatedAt      DateTime             @updatedAt @map("updated_at")
+  accessRole     AccessRole?          @relation(fields: [staffRoleId], references: [id], onDelete: Restrict)
+  assignedLeads  Lead[]               @relation("LeadAssignee")
+  leadNotes      LeadNote[]
   ownedVendors   Vendor[]             @relation("SalesOwner")
   assignments    QrAssignment[]
   payoutsPaid    Payout[]             @relation("PayoutPaidBy")
@@ -228,8 +236,13 @@ model Lead {
   averageElectricityBill String?          @map("average_electricity_bill")
   solarSize              String?          @map("solar_size")
   status                 String
+  assignedToId           String?          @map("assigned_to_id")
+  assignedAt             DateTime?        @map("assigned_at")
   createdAt              DateTime         @default(now()) @map("created_at")
   updatedAt              DateTime         @updatedAt @map("updated_at")
+  assignedTo             User?            @relation("LeadAssignee", fields: [assignedToId], references: [id], onDelete: SetNull)
+  notes                  LeadNote[]
+  assignmentHistory      LeadAssignmentHistory[]
   vendor                 Vendor?          @relation(fields: [vendorId], references: [id])
   qr                     QrCode           @relation(fields: [qrId], references: [id])
   assignment             QrAssignment?    @relation(fields: [qrAssignmentId], references: [id])
@@ -242,6 +255,7 @@ model Lead {
   @@index([qrId, createdAt])
   @@index([qrAssignmentId])
   @@index([status])
+  @@index([assignedToId, status])
   @@map("leads")
 }
 
@@ -331,6 +345,49 @@ model VendorOnboardingMedia {
   vendor                      Vendor    @relation(fields: [vendorId], references: [id])
 
   @@map("vendor_onboarding_media")
+}
+
+// Admin-defined back-office role: a name and a list of permission keys (backend/src/lib/permissions.js).
+model AccessRole {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  permissions String[] @default([])
+  createdById String?  @map("created_by_id")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+  users       User[]
+
+  @@map("staff_roles")
+}
+
+// Append-only work log on a lead, written from the Sales portal (own leads) or Admin (leads.edit).
+model LeadNote {
+  id        String   @id @default(cuid())
+  leadId    String   @map("lead_id")
+  authorId  String   @map("author_id")
+  body      String
+  createdAt DateTime @default(now()) @map("created_at")
+  lead      Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  author    User     @relation(fields: [authorId], references: [id])
+
+  @@index([leadId, createdAt])
+  @@map("lead_notes")
+}
+
+// Permanent record of who owned a lead when (AuditLog is pruned, this is not). User ids are plain
+// strings on purpose: history must survive any later change to the users table.
+model LeadAssignmentHistory {
+  id           String   @id @default(cuid())
+  leadId       String   @map("lead_id")
+  fromUserId   String?  @map("from_user_id")
+  toUserId     String?  @map("to_user_id")
+  changedById  String   @map("changed_by_id")
+  changedAt    DateTime @default(now()) @map("changed_at")
+  lead         Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
+
+  @@index([leadId, changedAt])
+  @@map("lead_assignment_history")
 }
 
 model Session {

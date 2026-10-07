@@ -50,6 +50,7 @@ authRoutes.post('/login', authRateLimit, async (request, response, next) => {
 		const input = loginSchema.parse(request.body);
 		const user = await prisma.user.findUnique({
 			where: { usernameMobile: normalizeLoginIdentifier(input.username_or_mobile) },
+			include: { accessRole: true },
 		});
 
 		if (!user || user.status !== 'ACTIVE' || !(await verifyPassword(input.password, user.passwordHash))) {
@@ -97,6 +98,7 @@ authRoutes.post('/change-password', requireAuth, async (request, response, next)
 		const user = await prisma.user.update({
 			where: { id: request.auth.user.id },
 			data: { passwordHash: await hashPassword(input.new_password) },
+			include: { accessRole: true },
 		});
 		return response.json({ success: true, user: publicStaff(user) });
 	} catch (error) {

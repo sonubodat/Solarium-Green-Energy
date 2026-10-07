@@ -288,7 +288,29 @@ Assign and activate an unassigned QR.
 
 Sales has no endpoint for directly reassigning an active QR, reading payouts, reading unrestricted leads, or reading audit logs.
 
+### Sales: My leads (role `SALES`)
+
+Only leads assigned to the signed-in salesperson; any other lead answers `404 LEAD_NOT_FOUND`. No commission or payout data.
+
+- `GET /api/sales/leads?status=&page=&limit=`: list (id, customerName, phone, location, status, createdAt, assignedAt).
+- `GET /api/sales/leads/:leadId`: adds email, pincode, averageElectricityBill, solarSize, `referredBy` (Solar Mitra business name), geoLocation and notes (author, time).
+- `PATCH /api/sales/leads/:leadId` `{ status }`: `NEW`, `CONTACTED`, `QUALIFIED` or `LOST` only (`403 STATUS_NOT_ALLOWED` otherwise); `409 STATUS_LOCKED` when the lead is already `CONVERTED`, `REJECTED` or `DUPLICATE`. Audit `LEAD_STATUS_CHANGED`.
+- `POST /api/sales/leads/:leadId/notes` `{ body }` (1 to 2000 chars): ownership check and insert in one transaction, so a concurrent reassignment cannot slip a note in. Audit `LEAD_NOTE_ADDED`.
+
 ## Admin API
+
+Access: unless a route says otherwise it needs the role `ADMIN`. Routes marked with a permission (below and in `backend/tests/route-permissions.test.js`, which lists every route) are also open to a `STAFF` user whose role has it. Permanent deletion, staff, roles, audit logs, templates and printing are always super-admin only.
+
+### Roles and lead assignment
+
+- `GET /api/admin/roles` (ADMIN): `{ roles: [{ id, name, description, permissions, userCount }], catalog }`; the catalog lists every screen and permission with labels.
+- `POST /api/admin/roles`, `PATCH /api/admin/roles/:roleId` `{ name, description?, permissions[] }` (ADMIN): permissions are validated (`400 UNKNOWN_PERMISSION`) and normalised (implied ones added); name is unique ignoring case (`409 ROLE_NAME_TAKEN`). `DELETE /api/admin/roles/:roleId`: `409 ROLE_IN_USE` while users hold it.
+- `POST /api/admin/users` / `PATCH /api/admin/users/:userId`: `role` is `ADMIN`, `SALES` or `STAFF`; `STAFF` requires `staff_role_id` (`400`), the others must not send it. Changing account type revokes sessions; a `SALES` user who is moved or deactivated returns their leads to the pool (`released_leads` in the response, audit `LEADS_RETURNED_TO_POOL`).
+- `GET /api/admin/staff/assignable` (`leads.assign`): active `SALES` users.
+- `PATCH /api/admin/leads/:leadId/assignment` `{ assigned_to_id | null }` (`leads.assign`): assignee must be an active `SALES` user (`400 INVALID_ASSIGNEE`); a no-op writes nothing (`changed: 0`).
+- `POST /api/admin/leads/assign-bulk` `{ lead_ids[], assigned_to_id | null }` (`leads.assign`, max 200): all-or-nothing, `409 LEADS_CHANGED` (with `details.missing`) if any lead vanished.
+- `GET /api/admin/leads/:leadId/assignments` (`leads.view`): ownership history. `GET/POST /api/admin/leads/:leadId/notes` (`leads.view` / `leads.edit`): notes on any lead.
+- `GET /api/admin/leads` also returns `assignedTo`, accepts `assigned_to=<userId>|unassigned` and `status=`, and omits payout data without `payouts.view`; the CSV export adds "Assigned To".
 
 ### `GET /api/admin/vendors`
 
@@ -567,7 +589,7 @@ Export every Lead as CSV (`solarium-leads.csv`), no pagination or filters.
 Change a lead status.
 
 - Authentication: Admin
-- Request: `status` (`NEW`, `CONTACTED`, `QUALIFIED`, `CONVERTED`, `REJECTED`, or `DUPLICATE`)
+- Request: `status` (`NEW`, `CONTACTED`, `QUALIFIED`, `CONVERTED`, `LOST`, `REJECTED`, or `DUPLICATE`); needs `leads.edit`, and `leads.convert` for any change to or from `CONVERTED` (`403 CONVERT_PERMISSION_REQUIRED`)
 - Rules: preserve immutable attribution and write an audit log; when status becomes `CONVERTED`, ensure a payout record exists for that lead (`UNPAID` by default)
 
 ### `POST /api/admin/leads/:leadId/delete`
