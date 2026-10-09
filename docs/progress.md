@@ -431,6 +431,11 @@
 - Live rollout is manual: back up the database, then `cd backend && npx prisma migrate deploy && npx prisma generate`, then restart the backend.
 - Known limits: the Admin menu is computed at sign-in, so a role edited mid-session hides or shows screens after the next sign-in (the server already enforces the change on the next request); no notification is sent to an assignee.
 
+## Solar Mitra poster follows the Auto-QR posters template (done, not yet applied to live)
+
+- Cause of "vendor still gets the old template": Auto-QR posters remembered its choice only in the admin's browser, while the vendor download always used the newest-created published template. Now one server-side choice (`qr_print_templates.vendor_poster`, migration `20261009000000_vendor_poster_template`) is used by both; choosing a template in Auto-QR posters, or "Use for Solar Mitras" on the Templates page, sets it. Falls back to the newest published template when none is chosen or it was archived.
+- Live rollout: back up, `cd backend && npx prisma migrate deploy && npx prisma generate`, deploy, then pick the template once in Auto-QR posters.
+
 ## Next step
 
 - The QR printing/export slice, the backend hardening pass, and the full `docs/testing.md` verification pass (with 6 fixed defects, detailed above) are all complete. The application has been exercised end-to-end against the live dev Supabase database and in a real browser, not just linted. Remaining Phase 17 items that need the client's production values (not verifiable locally): final `CORS_ORIGINS`/`FRONTEND_ORIGIN` for the deployed frontend, and a cross-browser check of `SameSite=None; Secure` cookies once both apps are actually deployed. You (the developer) should still run your own independent Postman pass per `docs/testing.md` as originally planned — an automated pass reduces risk but doesn't replace manual review, especially for anything touching money (payouts) or access control.

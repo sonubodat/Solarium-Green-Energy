@@ -301,6 +301,12 @@ Only leads assigned to the signed-in salesperson; any other lead answers `404 LE
 
 Access: unless a route says otherwise it needs the role `ADMIN`. Routes marked with a permission (below and in `backend/tests/route-permissions.test.js`, which lists every route) are also open to a `STAFF` user whose role has it. Permanent deletion, staff, roles, audit logs, templates and printing are always super-admin only.
 
+### Solar Mitra poster template
+
+- `POST /api/admin/qr/templates/:templateId/vendor-poster` (ADMIN): makes one published template the design every Solar Mitra gets from `GET /api/vendor/qr/poster`. `404 QR_TEMPLATE_NOT_FOUND`, `409 QR_TEMPLATE_NOT_PUBLISHED` (draft or archived), `409 VENDOR_POSTER_CHANGED` if two admins changed it at the same instant. Audit `QR_VENDOR_POSTER_TEMPLATE_SET`.
+- If no template is chosen, or the chosen one is no longer published, the newest published template is used (so a vendor download never breaks).
+- `GET /api/admin/qr/templates` includes `vendorPoster` per template; `GET /api/admin/auto-posters/summary` returns `vendorPosterTemplateId`. The Auto-QR posters screen selects that template and choosing another there sets it, so Admin and Solar Mitras always use the same design.
+
 ### Roles and lead assignment
 
 - `GET /api/admin/roles` (ADMIN): `{ roles: [{ id, name, description, permissions, userCount }], catalog }`; the catalog lists every screen and permission with labels.

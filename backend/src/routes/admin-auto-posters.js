@@ -6,6 +6,7 @@ import { maxBatchPages, batchTooLargeError } from '../lib/qr-artwork-limits.js';
 import { AUTO_CREATED_ASSIGNMENT_WHERE, POSTER_PRODUCED_JOB_STATUSES } from '../lib/qr-provisioning.js';
 import { buildTemplateSnapshot, normalizeQrCodeList, proofPreviewCodes, qrCodeNumber } from '../lib/auto-poster.js';
 import { publicReferralUrl } from '../services/qr-image.js';
+import { resolveVendorPosterTemplate } from '../services/vendor-poster.js';
 
 // Admin "Auto-QR posters": print files for the Solar Mitras whose QR was created automatically at
 // login (see services/qr.js ensureVendorQr). It adds two routes and reuses the existing print-batch
@@ -48,6 +49,7 @@ export function registerAutoPosterRoutes(router) {
 		try {
 			const includePrepared = request.query.include_prepared === 'true';
 			const all = await loadAutoQrs();
+			const posterTemplate = await resolveVendorPosterTemplate();
 			const pending = all.filter((item) => !item.prepared);
 			const selected = includePrepared ? all : pending;
 			return response.json({
@@ -56,6 +58,7 @@ export function registerAutoPosterRoutes(router) {
 				prepared: all.length - pending.length,
 				pending: pending.length,
 				includePrepared,
+				vendorPosterTemplateId: posterTemplate?.id ?? null,
 				batchSize: maxBatchPages(),
 				codes: selected.map((item) => item.code),
 				sample: selected.slice(0, 5).map(({ code, businessName }) => ({ code, businessName })),

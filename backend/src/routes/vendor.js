@@ -20,6 +20,7 @@ import { ensureVendorQrWithin } from '../services/qr.js';
 import { generateQrPng, generateQrSvg, publicReferralUrl } from '../services/qr-image.js';
 import { generateQrTemplatePdf } from '../services/qr-proof.js';
 import { buildTemplateSnapshot } from '../lib/auto-poster.js';
+import { resolveVendorPosterTemplate } from '../services/vendor-poster.js';
 import { runHeavy } from '../lib/heavy-queue.js';
 
 export const vendorRoutes = Router();
@@ -182,8 +183,8 @@ vendorRoutes.get('/qr/image', requireAuth, requireVendorReady, async (request, r
 	}
 });
 
-// The caller's OWN QR placed on the poster template Admin published (newest published one, the same
-// default the Admin "Auto-QR posters" panel uses), as a one-page PDF. Same rules as /qr/image: no code
+// The caller's OWN QR placed on the poster template Admin chose for Solar Mitras (set from Auto-QR posters or the
+// Templates page; falls back to the newest published one, see services/vendor-poster.js), as a one-page PDF. Same rules as /qr/image: no code
 // parameter, so a vendor can only ever get their own QR. It records no print job: this is a vendor
 // self-download, and a job would count as "poster produced" for the QR replace rule.
 vendorRoutes.get('/qr/poster', requireAuth, requireVendorReady, async (request, response, next) => {
@@ -195,10 +196,7 @@ vendorRoutes.get('/qr/poster', requireAuth, requireVendorReady, async (request, 
 		if (!assignment) {
 			return response.status(404).json({ success: false, error: { code: 'QR_NOT_ASSIGNED', message: 'You do not have a QR yet.' } });
 		}
-		const template = await prisma.qrPrintTemplate.findFirst({
-			where: { status: 'PUBLISHED' },
-			orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
-		});
+		const template = await resolveVendorPosterTemplate();
 		if (!template) {
 			return response.status(404).json({ success: false, error: { code: 'POSTER_TEMPLATE_NOT_AVAILABLE', message: 'The poster is not available yet. Please try again later.' } });
 		}

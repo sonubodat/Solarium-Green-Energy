@@ -28,6 +28,7 @@ POST /qr/generate => qr.create
 GET /qr/templates => ADMIN
 POST /qr/templates => ADMIN
 POST /qr/templates/:templateId/publish => ADMIN
+POST /qr/templates/:templateId/vendor-poster => ADMIN
 POST /qr/templates/:templateId/delete => ADMIN
 POST /qr/templates/:templateId/archive => ADMIN
 POST /qr/templates/:templateId/restore => ADMIN

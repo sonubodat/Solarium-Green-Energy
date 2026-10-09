@@ -7,6 +7,7 @@ import { LEAD_STATUSES } from '../lib/lead-status.js';
 import { releaseLeadsOfUser } from '../lib/lead-ownership.js';
 import { prisma } from '../lib/prisma.js';
 import { createPasswordResetToken, resetTokenResponse } from '../services/password-reset.js';
+import { setVendorPosterTemplate } from '../services/vendor-poster.js';
 import { assignUnassignedQr, generateQrCodes, generateSpecificQrCodes, reassignQr } from '../services/qr.js';
 import { generateQrPng, generateQrSvg } from '../services/qr-image.js';
 import PDFDocument from 'pdfkit';
@@ -1208,6 +1209,34 @@ adminRoutes.post('/qr/templates/:templateId/publish', requireAuth, requireAdmin,
 			error.statusCode = 404;
 			error.code = 'QR_TEMPLATE_NOT_FOUND';
 			error.message = 'QR print template was not found.';
+		}
+		return next(error);
+	}
+});
+
+// Choose the design Solar Mitras get when they download their own poster. Also what the Auto-QR posters screen shows.
+adminRoutes.post('/qr/templates/:templateId/vendor-poster', requireAuth, requireAdmin, async (request, response, next) => {
+	try {
+		const templateId = request.params.templateId;
+		const result = await prisma.$transaction(async (transaction) => {
+			const outcome = await setVendorPosterTemplate(transaction, templateId);
+			if (outcome && outcome !== 'NOT_PUBLISHED') await writeAudit(transaction, request, 'QR_VENDOR_POSTER_TEMPLATE_SET', 'QrPrintTemplate', templateId, { name: outcome.name });
+			return outcome;
+		});
+		if (!result) {
+			return response.status(404).json({ success: false, error: { code: 'QR_TEMPLATE_NOT_FOUND', message: 'QR print template was not found.' } });
+		}
+		if (result === 'NOT_PUBLISHED') {
+			return response.status(409).json({ success: false, error: { code: 'QR_TEMPLATE_NOT_PUBLISHED', message: 'Only a published template can be used for Solar Mitra posters.' } });
+		}
+		invalidateResponseCache();
+		return response.json({ success: true, templateId });
+	} catch (error) {
+		if (error.code === 'P2002') {
+			// Another admin set a different template at the same moment; the unique index let only one win.
+			error.statusCode = 409;
+			error.code = 'VENDOR_POSTER_CHANGED';
+			error.message = 'Someone else changed the Solar Mitra poster template at the same time. Reload and try again.';
 		}
 		return next(error);
 	}

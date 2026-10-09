@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { apiRequest, downloadFile } from '../api/client';
-import { POSTER_TEMPLATE_STORAGE_KEY, pickDefaultTemplate, splitIntoPosterBatches } from '../lib/auto-poster';
+import { pickDefaultTemplate, splitIntoPosterBatches } from '../lib/auto-poster';
 
 // Admin > Solar Mitras > "Auto-QR posters": print files for the Solar Mitras whose QR was created
 // automatically when they logged in. Self-contained: it does not touch the Print QR Codes wizard, it
@@ -9,22 +9,6 @@ import { POSTER_TEMPLATE_STORAGE_KEY, pickDefaultTemplate, splitIntoPosterBatche
 
 // Mirrors PDF_CHUNK_PAGES in the backend: a batch bigger than this downloads as a ZIP of PDFs.
 const PDF_CHUNK_PAGES = 50;
-
-function readStoredTemplate() {
-  try {
-    return window.localStorage.getItem(POSTER_TEMPLATE_STORAGE_KEY) || '';
-  } catch (error) {
-    return ''; // storage unavailable: the newest published template is the default
-  }
-}
-
-function rememberTemplate(templateId) {
-  try {
-    window.localStorage.setItem(POSTER_TEMPLATE_STORAGE_KEY, templateId);
-  } catch (error) {
-    // Only a convenience; nothing depends on it.
-  }
-}
 
 const NO_PROOF = { loading: false, error: '', url: '', checked: 0 };
 
@@ -82,7 +66,8 @@ function AutoPosterModal({ onClose }) {
         ]);
         if (cancelled) return;
         setTemplates(templateResult.templates || []);
-        setTemplateId(pickDefaultTemplate(templateResult.templates || [], readStoredTemplate()));
+        // The server remembers the choice (it is also the design Solar Mitras download), so every admin sees the same.
+        setTemplateId(pickDefaultTemplate(templateResult.templates || [], summaryResult.vendorPosterTemplateId));
         setSummary(summaryResult);
       } catch (requestError) {
         if (!cancelled) setLoadError(requestError.message);
@@ -93,10 +78,21 @@ function AutoPosterModal({ onClose }) {
     return () => { cancelled = true; };
   }, []);
 
-  function changeTemplate(event) {
-    setTemplateId(event.target.value);
-    rememberTemplate(event.target.value);
+  // Choosing a design here also makes it the design every Solar Mitra gets when they download their own poster.
+  async function changeTemplate(event) {
+    const nextId = event.target.value;
+    const previousId = templateId;
+    setTemplateId(nextId);
     resetBatch(); // a batch made for another design is not valid for this one
+    setBusy('template');
+    try {
+      await apiRequest(`/admin/qr/templates/${encodeURIComponent(nextId)}/vendor-poster`, { method: 'POST', body: '{}' });
+    } catch (requestError) {
+      setTemplateId(previousId); // not saved, so the screen must not claim it is
+      setError(requestError.message);
+    } finally {
+      setBusy('');
+    }
   }
 
   function changeIncludePrepared(event) {
@@ -222,7 +218,7 @@ function AutoPosterModal({ onClose }) {
                     <option key={template.id} value={template.id}>{template.name}</option>
                   ))}
                 </select>
-                <small>Selected for you automatically: the template you used last here, or the newest published one. Change it any time.</small>
+                <small>Solar Mitras download this same design from their portal. Changing it here changes it for all of them (posters already printed are not affected).</small>
               </label>
               {noPublishedTemplate && <p className="admin-field-error" role="alert">There is no published template. Publish one on the Templates page first.</p>}
 

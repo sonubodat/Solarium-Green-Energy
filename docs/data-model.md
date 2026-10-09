@@ -318,6 +318,10 @@ Admin-defined back-office role: `id`, `name` (unique ignoring case), `descriptio
 
 `role` enum `StaffRole` gains `STAFF`. `staff_role_id` is required for `STAFF` and must be null for `ADMIN` and `SALES` (CHECK `users_role_access_role_ck`). Existing rows already satisfy it.
 
+### Solar Mitra poster template
+
+`qr_print_templates.vendor_poster` (boolean, default false) marks the template Solar Mitras get when they download their own poster. A partial unique index allows at most one true row. Resolution lives in `backend/src/services/vendor-poster.js`.
+
 ### Lead assignment
 
 `leads.assigned_to_id` (FK users, `ON DELETE SET NULL`) and `leads.assigned_at`, index `(assigned_to_id, status)`. `lead_notes` (`lead_id` cascade, `author_id`, `body`, `created_at`, append-only). `lead_assignment_history` (`lead_id` cascade, `from_user_id`, `to_user_id`, `changed_by_id` as plain ids, `changed_at`), never pruned: it is the ownership record. AuditLog is pruned to 5,000 rows, so it is not.

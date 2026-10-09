@@ -1518,6 +1518,22 @@ function AdminPage() {
     });
   }
 
+  // The design Solar Mitras get when they download their own poster (also what Auto-QR posters shows).
+  async function setSolarMitraPosterTemplate(templateId) {
+    setLoading(true);
+    try {
+      await apiRequest(`/admin/qr/templates/${templateId}/vendor-poster`, { method: 'POST', body: '{}' });
+      setMessage('Solar Mitras will now download this design.');
+      setMessageType('success');
+      await loadAdminResource('templates', 1, undefined, undefined, true);
+    } catch (error) {
+      setMessage(error.message);
+      setMessageType('error');
+    } finally {
+      setLoading(false);
+    }
+  }
+
   async function publishQrTemplate(templateId) {
     setLoading(true);
     try {
@@ -3424,7 +3440,7 @@ function AdminPage() {
               {template.artworkUrl ? <img src={template.artworkUrl} alt="" /> : <span>Blank page</span>}
               <span className="admin-template-thumb-qr">QR</span>
             </button>
-            <div className="admin-template-card-body"><div className="admin-template-card-heading"><div><strong>{template.name}</strong><span>{qrStatusLabel(template.status)}</span></div><small>v{template.version}</small></div><p>{template.pageWidthMm} × {template.pageHeightMm} mm · {template.dpi} DPI</p><small className="admin-muted-text">{printCountLabel(template)}</small><div className="admin-template-card-actions"><button type="button" className="admin-mini-button" onClick={() => template.artworkUrl && previewQrTemplateArtwork(template)}>Preview</button>{template.status !== 'ARCHIVED' && <button type="button" className="admin-mini-button" onClick={() => startTemplateVersion(template)}>New version</button>}{template.status === 'ARCHIVED' ? <button type="button" className="admin-mini-button" onClick={() => restoreQrTemplate(template.id)}>Restore</button> : <button type="button" className="admin-mini-button" onClick={() => template.printJobCount ? setConfirmArchiveTemplateId(template.id) : setConfirmDeleteTemplateId(template.id)}>{template.printJobCount ? 'Archive' : 'Delete'}</button>}{template.status === 'DRAFT' && <button type="button" className="admin-mini-button primary" onClick={() => publishQrTemplate(template.id)}>Publish</button>}</div></div>
+            <div className="admin-template-card-body"><div className="admin-template-card-heading"><div><strong>{template.name}</strong><span>{qrStatusLabel(template.status)}</span>{template.vendorPoster && template.status === 'PUBLISHED' && <span className="admin-status active">Used for Solar Mitra posters</span>}</div><small>v{template.version}</small></div><p>{template.pageWidthMm} × {template.pageHeightMm} mm · {template.dpi} DPI</p><small className="admin-muted-text">{printCountLabel(template)}</small><div className="admin-template-card-actions"><button type="button" className="admin-mini-button" onClick={() => template.artworkUrl && previewQrTemplateArtwork(template)}>Preview</button>{template.status !== 'ARCHIVED' && <button type="button" className="admin-mini-button" onClick={() => startTemplateVersion(template)}>New version</button>}{template.status === 'ARCHIVED' ? <button type="button" className="admin-mini-button" onClick={() => restoreQrTemplate(template.id)}>Restore</button> : <button type="button" className="admin-mini-button" onClick={() => template.printJobCount ? setConfirmArchiveTemplateId(template.id) : setConfirmDeleteTemplateId(template.id)}>{template.printJobCount ? 'Archive' : 'Delete'}</button>}{template.status === 'DRAFT' && <button type="button" className="admin-mini-button primary" onClick={() => publishQrTemplate(template.id)}>Publish</button>}{template.status === 'PUBLISHED' && !template.vendorPoster && <button type="button" className="admin-mini-button" disabled={loading} onClick={() => setSolarMitraPosterTemplate(template.id)}>Use for Solar Mitras</button>}</div></div>
           </div>) : <div className="admin-empty admin-empty-block">No templates yet. Create the first reusable print design.</div>}
         </div>
         {confirmArchiveTemplateId && <div className="admin-template-inline-notice"><span>This template has print history. Archive it to remove it from future printing.</span><button className="admin-mini-button primary solid" onClick={() => archiveQrTemplate(confirmArchiveTemplateId)}>Confirm archive</button><button className="admin-mini-button" onClick={() => setConfirmArchiveTemplateId(null)}>Cancel</button></div>}

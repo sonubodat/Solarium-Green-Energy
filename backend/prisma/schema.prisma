@@ -440,6 +440,9 @@ model QrPrintTemplate {
   labelFontSize   Float?                @map("label_font_size")
   version         Int                   @default(1)
   status          QrPrintTemplateStatus @default(DRAFT)
+  // The one template Solar Mitras get when they download their own poster. At most one row is true
+  // (partial unique index in the migration); when none is, the newest published template is used.
+  vendorPoster    Boolean               @default(false) @map("vendor_poster")
   createdAt       DateTime              @default(now()) @map("created_at")
   updatedAt       DateTime              @updatedAt @map("updated_at")
   createdBy       User                  @relation(fields: [createdById], references: [id])
