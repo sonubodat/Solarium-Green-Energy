@@ -3008,3 +3008,20 @@ select.admin-table-select {
 .admin-matrix-options .admin-check { white-space: normal; }
 .admin-role-form input:not([type='checkbox']) { padding: 10px 12px; border: 1px solid #d1d5db; border-radius: 8px; font: inherit; }
 .sales-lead-note-form textarea, .admin-note-form textarea { box-sizing: border-box; }
+
+/* Export CSV with date range */
+.admin-export { position: relative; display: inline-block; }
+.admin-export-panel { position: absolute; right: 0; top: calc(100% + 6px); z-index: 30; width: min(340px, calc(100vw - 32px)); display: grid; gap: 10px; padding: 14px; background: #fff; border: 1px solid #e5e7eb; border-radius: 12px; box-shadow: 0 12px 32px rgba(15, 23, 42, 0.18); text-align: left; }
+.admin-export-panel fieldset { border: 0; margin: 0; padding: 0; display: flex; gap: 18px; flex-wrap: wrap; }
+.admin-export-panel legend { font-weight: 700; margin-bottom: 6px; padding: 0; }
+.admin-export-dates { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.admin-export-dates label { display: grid; gap: 4px; font-size: 13px; color: #374151; }
+.admin-export-dates input { font: inherit; font-size: 16px; padding: 8px; border: 1px solid #d1d5db; border-radius: 8px; min-width: 0; }
+.admin-export-presets { display: flex; flex-wrap: wrap; gap: 6px; }
+.admin-export-panel small { color: #6b7280; }
+@media (max-width: 640px) {
+  /* The button can sit anywhere on a narrow screen, so the panel is pinned to the screen instead of the button. */
+  .admin-export-panel { position: fixed; left: 16px; right: 16px; top: 72px; width: auto; max-height: calc(100vh - 96px); overflow-y: auto; }
+}
+.admin-export-panel textarea { width: 100%; box-sizing: border-box; font: 12px/1.4 ui-monospace, Menlo, monospace; border: 1px solid #d1d5db; border-radius: 8px; padding: 8px; }
+.admin-export-panel .admin-message { margin: 0; }

@@ -10,6 +10,7 @@ import BatchProgressModal from '../components/BatchProgressModal';
 import AutoPosterModal from '../components/AutoPosterModal';
 import SessionExpiryGuard from '../components/SessionExpiryGuard';
 import { RolesPanel, LeadWorkPanel } from './AdminAccess';
+import ExportRangeButton from '../components/ExportRangeButton';
 import {
   BATCH_TIMEOUT_MS,
   LEAD_BATCH_SIZE,
@@ -2077,28 +2078,10 @@ function AdminPage() {
     }
   }
 
-  function downloadLeadsCsv() {
-    window.location.href = `${API_BASE_URL}/admin/leads/export`;
-  }
 
-  // Same non-blocking export pattern as downloadLeadsCsv, honoring the current search/state
-  // filters so "export what I'm looking at" matches what the table shows.
-  function downloadVendorsCsv() {
-    const params = new URLSearchParams();
-    if (vendorSearch.trim()) params.set('search', vendorSearch.trim());
-    if (vendorStateFilter) params.set('state', vendorStateFilter);
-    const query = params.toString();
-    window.location.href = `${API_BASE_URL}/admin/vendors/export${query ? `?${query}` : ''}`;
-  }
 
-  // Plain, non-blocking export — used by the Audit Logs page's own "Export CSV" button.
-  // Nothing gates on this succeeding, so the simple navigation-triggered download (same
-  // pattern as downloadLeadsCsv) is fine here.
-  function downloadAuditLogsCsv() {
-    window.location.href = `${API_BASE_URL}/admin/audit-logs/export`;
-  }
 
-  // Used by the blocking retention-warning modal specifically. Unlike downloadAuditLogsCsv
+  // Used by the blocking retention-warning modal specifically. Unlike the Export button (ExportRangeButton)
   // above, this one's success/failure actually matters — the modal only dismisses once the
   // download is confirmed to have worked, so it needs a real fetch (a plain navigation gives
   // no success/failure signal in JS at all).
@@ -2390,12 +2373,13 @@ function AdminPage() {
 
           <div className="admin-heading-actions">
             {can('vendors.export') && (
-              <button
-                className="admin-outline-button"
-                onClick={downloadVendorsCsv}
-              >
-                Export CSV
-              </button>
+              <ExportRangeButton
+                path="/admin/vendors/export"
+                params={{ search: vendorSearch.trim(), state: vendorStateFilter }}
+                fallbackName="solarium-solar-mitras.csv"
+                dateLabel="by the date each Solar Mitra joined"
+                note={vendorSearch.trim() || vendorStateFilter ? 'Your current search and state filter also apply.' : undefined}
+              />
             )}
 
             {can('vendors.create') && (
@@ -3093,9 +3077,13 @@ function AdminPage() {
             <p>Every print batch and single designed PDF, with the template used and the Solar Mitra currently holding each code.</p>
           </div>
           <div className="admin-qr-action">
-            <button type="button" className="admin-outline-button" onClick={downloadPrintHistoryCsv}>
-              Export CSV
-            </button>
+            <ExportRangeButton
+              path="/admin/qr/print-history/export"
+              params={printHistoryFilters}
+              fallbackName="qr-print-history.csv"
+              dateLabel="by the date each batch was printed"
+              note="Your current filters also apply. At most the 5,000 newest rows are exported."
+            />
             <button
               type="button"
               className="admin-outline-button"
@@ -3589,12 +3577,11 @@ function AdminPage() {
 
           <div className="admin-heading-actions">
             {can('leads.export') && (
-              <button
-                className="admin-outline-button"
-                onClick={downloadLeadsCsv}
-              >
-                Export CSV
-              </button>
+              <ExportRangeButton
+                path="/admin/leads/export"
+                fallbackName="solarium-leads.csv"
+                dateLabel="by the date each lead was created"
+              />
             )}
 
             {can('leads.import') && (
@@ -3998,10 +3985,6 @@ function AdminPage() {
     return params.toString();
   }
 
-  function downloadPrintHistoryCsv() {
-    const query = printHistoryQuery();
-    window.location.href = `${API_BASE_URL}/admin/qr/print-history/export${query ? `?${query}` : ''}`;
-  }
 
   function renderQrPrintHistoryModal() {
     const { qr, loading: historyLoading, prints, currentVendor } = qrPrintHistory;
@@ -4903,9 +4886,13 @@ function AdminPage() {
           </div>
 
           <div className="admin-heading-actions">
-            <button className="admin-outline-button" onClick={downloadAuditLogsCsv}>
-              Export CSV
-            </button>
+            <ExportRangeButton
+              path="/admin/audit-logs/export"
+              fallbackName="solarium-audit-logs.csv"
+              allowCopy={false}
+              dateLabel="by the time of each log entry"
+              note="Only an all-time export counts as the backup that clears the clean-up warning."
+            />
             <button
               className="admin-outline-button"
               onClick={() =>

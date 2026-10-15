@@ -301,6 +301,14 @@ Only leads assigned to the signed-in salesperson; any other lead answers `404 LE
 
 Access: unless a route says otherwise it needs the role `ADMIN`. Routes marked with a permission (below and in `backend/tests/route-permissions.test.js`, which lists every route) are also open to a `STAFF` user whose role has it. Permanent deletion, staff, roles, audit logs, templates and printing are always super-admin only.
 
+### CSV exports: formats and date range
+
+The same four routes accept `format=csv` (default), `xlsx` (Excel and Google Sheets; every cell is text so phone numbers keep their digits) or `tsv` (tab-separated, used by the Admin "Copy for Google Sheets" button). Any other value returns `400 INVALID_FORMAT`. Cells starting with `=`, `+`, `-` or `@` are prefixed with `'` in every format. Built in `backend/src/lib/table-export.js` (no new dependency).
+
+#### Date range
+
+`GET /api/admin/leads/export`, `/vendors/export`, `/qr/print-history/export` and `/audit-logs/export` accept optional `from` and/or `to` (`YYYY-MM-DD`). Dates are Indian (IST) calendar days and both ends are inclusive; no dates means all time (unchanged). Filtered column: lead `createdAt`, Solar Mitra `createdAt`, print job `generatedAt` (else `createdAt`), audit `timestamp`. Combines with each export's existing filters. Bad, impossible or reversed dates return `400 INVALID_DATE_RANGE`. The file name gains the range (`solarium-leads_2026-10-01_to_2026-10-07.csv`). A date-limited audit export does not acknowledge the retention warning; only an all-time one does. Permissions are unchanged.
+
 ### Solar Mitra poster template
 
 - `POST /api/admin/qr/templates/:templateId/vendor-poster` (ADMIN): makes one published template the design every Solar Mitra gets from `GET /api/vendor/qr/poster`. `404 QR_TEMPLATE_NOT_FOUND`, `409 QR_TEMPLATE_NOT_PUBLISHED` (draft or archived), `409 VENDOR_POSTER_CHANGED` if two admins changed it at the same instant. Audit `QR_VENDOR_POSTER_TEMPLATE_SET`.

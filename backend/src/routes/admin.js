@@ -31,6 +31,8 @@ import { env } from '../config/env.js';
 import { customerHashFor } from '../lib/customer-identity.js';
 import { geoTagFields, resolveGeoTag } from '../lib/geo-tag.js';
 import { billBands, solarSizeBands } from './public.js';
+import { toCsv, sendTable, exportFormat } from '../lib/table-export.js';
+import { parseDateRange, dateRangeFilter, dateRangeFileSuffix } from '../lib/date-range.js';
 import { checkAuditLogRetention, acknowledgeAuditLogRetentionWarning } from '../lib/audit-retention.js';
 import { BULK_TRANSACTION_OPTIONS, MAX_LEAD_BATCH_ROWS, MAX_VENDOR_REQUEST_ROWS, VENDOR_ROW_FIELD_MAX } from '../lib/bulk-limits.js';
 import { isCustomerIdentityRace, leadImportBatchSchema, prepareLeadRows } from '../lib/lead-import.js';
@@ -1385,6 +1387,9 @@ function printJobWhere(query) {
 			},
 		});
 	}
+	// A print job counts on the day it was generated, or the day it was created if it never was.
+	const printRange = dateRangeFilter(parseDateRange(query));
+	if (printRange) and.push({ OR: [{ generatedAt: printRange }, { generatedAt: null, createdAt: printRange }] });
 	return and.length ? { AND: and } : {};
 }
 
@@ -1480,9 +1485,11 @@ adminRoutes.get('/qr/print-history/export', requireAuth, requireAdmin, async (re
 				},
 			},
 		});
-		const csv = toCsv(
-			['QR Code', 'QR ID', 'Template', 'Template ID', 'Print Type', 'Print Job ID', 'Printed At', 'Printed By', 'Current Vendor', 'Vendor ID', 'QR Status'],
-			items.map((item) => {
+		return await sendTable(request, response, {
+			baseName: `qr-print-history${dateRangeFileSuffix(parseDateRange(request.query))}`,
+			sheetName: 'Print history',
+			headers: ['QR Code', 'QR ID', 'Template', 'Template ID', 'Print Type', 'Print Job ID', 'Printed At', 'Printed By', 'Current Vendor', 'Vendor ID', 'QR Status'],
+			rows: items.map((item) => {
 				const vendor = currentVendorOf(item.qrCode);
 				return [
 					item.expectedCode,
@@ -1498,10 +1505,7 @@ adminRoutes.get('/qr/print-history/export', requireAuth, requireAdmin, async (re
 					item.qrCode?.status || '',
 				];
 			}),
-		);
-		response.setHeader('Content-Type', 'text/csv; charset=utf-8');
-		response.setHeader('Content-Disposition', 'attachment; filename="qr-print-history.csv"');
-		return response.send(csv);
+		});
 	} catch (error) {
 		return next(error);
 	}
@@ -2363,10 +2367,12 @@ adminRoutes.get('/vendors/export', requireAuth, requirePermission('vendors.expor
 		const search = vendorSearchWhere(request.query.search);
 		const stateFilter = vendorStateFilterOrError(request.query.state);
 		if (stateFilter?.error) return response.status(400).json(stateFilter.error);
+		const range = parseDateRange(request.query);
 		const where = {
 			status: { not: 'DELETED' },
 			...(search ? { AND: [{ OR: [...search.OR, { id: normalizeSearchInput(request.query.search) }] }] } : {}),
 			...(stateFilter?.value ? { state: stateFilter.value } : {}),
+			...(range ? { createdAt: dateRangeFilter(range) } : {}),
 		};
 		const vendors = await prisma.vendor.findMany({
 			where,
@@ -2385,9 +2391,11 @@ adminRoutes.get('/vendors/export', requireAuth, requirePermission('vendors.expor
 			},
 		});
 
-		const csv = toCsv(
-			['Business Name', 'Owner Name', 'Login ID', 'Mobile Number', 'State', 'Status', 'Current QR', 'Leads', 'Sales Owner', 'Created At'],
-			vendors.map((vendor) => [
+		return await sendTable(request, response, {
+			baseName: `solarium-solar-mitras${dateRangeFileSuffix(range)}`,
+			sheetName: 'Solar Mitras',
+			headers: ['Business Name', 'Owner Name', 'Login ID', 'Mobile Number', 'State', 'Status', 'Current QR', 'Leads', 'Sales Owner', 'Created At'],
+			rows: vendors.map((vendor) => [
 				vendor.businessName,
 				vendor.ownerName,
 				vendor.loginIdentifier,
@@ -2398,12 +2406,8 @@ adminRoutes.get('/vendors/export', requireAuth, requirePermission('vendors.expor
 				vendor._count.leads,
 				vendor.salesUser?.name,
 				vendor.createdAt.toISOString(),
-			])
-		);
-
-		response.setHeader('Content-Type', 'text/csv; charset=utf-8');
-		response.setHeader('Content-Disposition', 'attachment; filename="solarium-solar-mitras.csv"');
-		return response.send(csv);
+			]),
+		});
 	} catch (error) {
 		return next(error);
 	}
@@ -2464,29 +2468,11 @@ adminRoutes.get('/leads', requireAuth, requirePermission('leads.view'), async (r
 	}
 });
 
-// A cell starting with =/+/-/@ can execute as a formula when the CSV is opened in Excel/Sheets
-// (e.g. a pasted UPI ID or account holder name). Prefixing with ' defuses it while keeping the
-// value readable; done before the existing quote/newline escaping, which is unaffected by it.
-function neutralizeFormula(text) {
-	return /^[=+\-@]/.test(text) ? `'${text}` : text;
-}
-
-function csvCell(value) {
-	const text = neutralizeFormula(value === null || value === undefined ? '' : String(value));
-	return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
-}
-
-function toCsv(headers, rows) {
-	const lines = [headers.map(csvCell).join(',')];
-	for (const row of rows) {
-		lines.push(row.map(csvCell).join(','));
-	}
-	return lines.join('\r\n');
-}
-
 adminRoutes.get('/leads/export', requireAuth, requirePermission('leads.export'), async (request, response, next) => {
 	try {
+		const range = parseDateRange(request.query);
 		const leads = await prisma.lead.findMany({
+			where: range ? { createdAt: dateRangeFilter(range) } : undefined,
 			orderBy: { createdAt: 'desc' },
 			select: {
 				customerName: true,
@@ -2507,9 +2493,11 @@ adminRoutes.get('/leads/export', requireAuth, requirePermission('leads.export'),
 		});
 		const showPayout = hasPermission(request.auth.user, 'payouts.view');
 
-		const csv = toCsv(
-			['Customer Name', 'Customer Phone', 'Customer Email', 'Location', 'Pincode', 'Average Electricity Bill', 'Solar Size', 'GPS Latitude', 'GPS Longitude', 'GPS Accuracy (m)', 'Lead Status', 'Vendor Name', 'Vendor Mobile Number', 'Vendor State', 'QR Code', 'Payout Status', 'Payout Reference', 'Created At', 'Assigned To'],
-			leads.map((lead) => [
+		return await sendTable(request, response, {
+			baseName: `solarium-leads${dateRangeFileSuffix(range)}`,
+			sheetName: 'Leads',
+			headers: ['Customer Name', 'Customer Phone', 'Customer Email', 'Location', 'Pincode', 'Average Electricity Bill', 'Solar Size', 'GPS Latitude', 'GPS Longitude', 'GPS Accuracy (m)', 'Lead Status', 'Vendor Name', 'Vendor Mobile Number', 'Vendor State', 'QR Code', 'Payout Status', 'Payout Reference', 'Created At', 'Assigned To'],
+			rows: leads.map((lead) => [
 				lead.customerName,
 				lead.phone,
 				lead.email,
@@ -2529,12 +2517,8 @@ adminRoutes.get('/leads/export', requireAuth, requirePermission('leads.export'),
 				showPayout ? lead.payout?.paidReference : '',
 				lead.createdAt.toISOString(),
 				lead.assignedTo?.name,
-			])
-		);
-
-		response.setHeader('Content-Type', 'text/csv; charset=utf-8');
-		response.setHeader('Content-Disposition', 'attachment; filename="solarium-leads.csv"');
-		return response.send(csv);
+			]),
+		});
 	} catch (error) {
 		return next(error);
 	}
@@ -2785,13 +2769,18 @@ adminRoutes.get('/audit-logs', requireAuth, requireAdmin, async (request, respon
 
 adminRoutes.get('/audit-logs/export', requireAuth, requireAdmin, async (request, response, next) => {
 	try {
+		exportFormat(request); // reject a bad format before anything is acknowledged
+		const range = parseDateRange(request.query);
 		const logs = await prisma.auditLog.findMany({
+			where: range ? { timestamp: dateRangeFilter(range) } : undefined,
 			orderBy: [{ timestamp: 'desc' }, { id: 'desc' }],
 			include: { actor: { select: { name: true } } },
 		});
-		const csv = toCsv(
-			['Timestamp', 'Action', 'Entity', 'Entity ID', 'Actor Name', 'Actor Role', 'Metadata'],
-			logs.map((log) => [
+		const table = {
+			baseName: `solarium-audit-logs${dateRangeFileSuffix(range)}`,
+			sheetName: 'Audit logs',
+			headers: ['Timestamp', 'Action', 'Entity', 'Entity ID', 'Actor Name', 'Actor Role', 'Metadata'],
+			rows: logs.map((log) => [
 				log.timestamp.toISOString(),
 				log.action,
 				log.entity,
@@ -2799,14 +2788,13 @@ adminRoutes.get('/audit-logs/export', requireAuth, requireAdmin, async (request,
 				log.actor?.name,
 				log.actorRole,
 				log.metadata ? JSON.stringify(log.metadata) : '',
-			])
-		);
+			]),
+		};
 		// The download itself is the acknowledgment — only after the CSV has actually
 		// been built, so a request that fails before this point never falsely acknowledges.
-		await acknowledgeAuditLogRetentionWarning(prisma);
-		response.setHeader('Content-Type', 'text/csv; charset=utf-8');
-		response.setHeader('Content-Disposition', 'attachment; filename="solarium-audit-logs.csv"');
-		return response.send(csv);
+		// A date-limited export does not save everything, so only an all-time export may count as the backup.
+		if (!range) await acknowledgeAuditLogRetentionWarning(prisma);
+		return await sendTable(request, response, table);
 	} catch (error) {
 		return next(error);
 	}

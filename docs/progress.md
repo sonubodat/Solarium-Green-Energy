@@ -436,6 +436,10 @@
 - Cause of "vendor still gets the old template": Auto-QR posters remembered its choice only in the admin's browser, while the vendor download always used the newest-created published template. Now one server-side choice (`qr_print_templates.vendor_poster`, migration `20261009000000_vendor_poster_template`) is used by both; choosing a template in Auto-QR posters, or "Use for Solar Mitras" on the Templates page, sets it. Falls back to the newest published template when none is chosen or it was archived.
 - Live rollout: back up, `cd backend && npx prisma migrate deploy && npx prisma generate`, deploy, then pick the template once in Auto-QR posters.
 
+## Date range on every CSV export (done, not yet deployed)
+
+- Leads, Solar Mitras, Print History and Audit Logs "Export CSV" now open a small panel: All time (default) or a From/To date range with quick presets. Backend helper `backend/src/lib/date-range.js`, frontend `components/ExportRangeButton.js`. No schema or migration. A date-limited audit export does not clear the retention warning. The same panel offers three formats: Excel (.xlsx), CSV, and "Copy for Google Sheets" (puts tab-separated data on the clipboard, paste at A1); the audit-log export has no copy option because a clipboard is not a backup.
+
 ## Next step
 
 - The QR printing/export slice, the backend hardening pass, and the full `docs/testing.md` verification pass (with 6 fixed defects, detailed above) are all complete. The application has been exercised end-to-end against the live dev Supabase database and in a real browser, not just linted. Remaining Phase 17 items that need the client's production values (not verifiable locally): final `CORS_ORIGINS`/`FRONTEND_ORIGIN` for the deployed frontend, and a cross-browser check of `SameSite=None; Secure` cookies once both apps are actually deployed. You (the developer) should still run your own independent Postman pass per `docs/testing.md` as originally planned — an automated pass reduces risk but doesn't replace manual review, especially for anything touching money (payouts) or access control.
