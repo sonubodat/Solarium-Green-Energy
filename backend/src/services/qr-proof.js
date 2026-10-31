@@ -53,8 +53,23 @@ async function decodePng(buffer, expectedUrl) {
 // Downloads the stored artwork once per generation and re-inspects it with the same validator
 // the upload used. An artwork that cannot be rendered raises here rather than being silently
 // dropped from the printed pages.
+// Uploaded artwork never changes at its storage path (a new upload gets a new path), so the downloaded and inspected
+// file is kept for the last few templates: a burst of poster downloads then costs one storage download, not one each.
+// ponytail: at most 2 entries of 8 MB in this process; the key is the path, so there is nothing to invalidate.
+const artworkCache = new Map();
+const ARTWORK_CACHE_ENTRIES = 2;
+
 async function loadArtwork(snapshot, jobId) {
   if (!snapshot.artworkPath) return null;
+  const hit = artworkCache.get(snapshot.artworkPath);
+  if (hit) return hit;
+  const artwork = await downloadArtwork(snapshot, jobId);
+  if (artworkCache.size >= ARTWORK_CACHE_ENTRIES) artworkCache.delete(artworkCache.keys().next().value);
+  artworkCache.set(snapshot.artworkPath, artwork);
+  return artwork;
+}
+
+async function downloadArtwork(snapshot, jobId) {
   const artworkUrl = await createQrArtworkUrl(snapshot.artworkPath);
   const artworkResponse = await fetch(artworkUrl);
   if (!artworkResponse.ok) throw new Error('Template artwork could not be downloaded for PDF generation.');

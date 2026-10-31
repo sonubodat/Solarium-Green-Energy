@@ -3,6 +3,7 @@ import { prisma } from '../lib/prisma.js';
 import { env } from '../config/env.js';
 import { sessionCookieName } from '../services/auth.js';
 import { hasAnyPermission } from '../lib/permissions.js';
+import { currentSessionGeneration, getCachedSession, putCachedSession } from '../lib/session-cache.js';
 
 function unauthorized(message = 'Authentication is required.') {
   const error = new Error(message);
@@ -52,15 +53,22 @@ export async function requireAuth(request, _response, next) {
       return next(unauthorized());
     }
 
-    const session = await prisma.session.findFirst({
-      where: {
-        tokenHash: hashToken(token),
-        revokedAt: null,
-        expiresAt: { gt: new Date() },
-      },
-      // The role is read with the user on every request, so editing a role takes effect on the next request.
-      include: { user: { include: { accessRole: true } }, vendor: true },
-    });
+    const tokenHash = hashToken(token);
+    let session = getCachedSession(tokenHash);
+    if (!session) {
+      const generation = currentSessionGeneration();
+      session = await prisma.session.findFirst({
+        where: {
+          tokenHash,
+          revokedAt: null,
+          expiresAt: { gt: new Date() },
+        },
+        // The role is read with the user on every request (or from a cache cleared by every write and kept 30 s),
+        // so editing a role takes effect on the next request.
+        include: { user: { include: { accessRole: true } }, vendor: true },
+      });
+      if (session) putCachedSession(tokenHash, session, generation);
+    }
 
     if (!session || (!session.user && !session.vendor)) {
       return next(unauthorized('Session is invalid or expired.'));

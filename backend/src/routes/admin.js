@@ -31,7 +31,7 @@ import { env } from '../config/env.js';
 import { customerHashFor } from '../lib/customer-identity.js';
 import { geoTagFields, resolveGeoTag } from '../lib/geo-tag.js';
 import { billBands, solarSizeBands } from './public.js';
-import { toCsv, sendTable, exportFormat } from '../lib/table-export.js';
+import { toCsv, sendTable, sendTableStream, pagedRows, exportFormat } from '../lib/table-export.js';
 import { parseDateRange, dateRangeFilter, dateRangeFileSuffix } from '../lib/date-range.js';
 import { checkAuditLogRetention, acknowledgeAuditLogRetentionWarning } from '../lib/audit-retention.js';
 import { BULK_TRANSACTION_OPTIONS, MAX_LEAD_BATCH_ROWS, MAX_VENDOR_REQUEST_ROWS, VENDOR_ROW_FIELD_MAX } from '../lib/bulk-limits.js';
@@ -2374,10 +2374,13 @@ adminRoutes.get('/vendors/export', requireAuth, requirePermission('vendors.expor
 			...(stateFilter?.value ? { state: stateFilter.value } : {}),
 			...(range ? { createdAt: dateRangeFilter(range) } : {}),
 		};
-		const vendors = await prisma.vendor.findMany({
+		const fetchPage = (cursor, take) => prisma.vendor.findMany({
 			where,
 			orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
+			take,
+			...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
 			select: {
+				id: true,
 				businessName: true,
 				ownerName: true,
 				loginIdentifier: true,
@@ -2391,11 +2394,11 @@ adminRoutes.get('/vendors/export', requireAuth, requirePermission('vendors.expor
 			},
 		});
 
-		return await sendTable(request, response, {
+		return await sendTableStream(request, response, {
 			baseName: `solarium-solar-mitras${dateRangeFileSuffix(range)}`,
 			sheetName: 'Solar Mitras',
 			headers: ['Business Name', 'Owner Name', 'Login ID', 'Mobile Number', 'State', 'Status', 'Current QR', 'Leads', 'Sales Owner', 'Created At'],
-			rows: vendors.map((vendor) => [
+			pages: pagedRows(fetchPage, (vendor) => [
 				vendor.businessName,
 				vendor.ownerName,
 				vendor.loginIdentifier,
@@ -2471,10 +2474,14 @@ adminRoutes.get('/leads', requireAuth, requirePermission('leads.view'), async (r
 adminRoutes.get('/leads/export', requireAuth, requirePermission('leads.export'), async (request, response, next) => {
 	try {
 		const range = parseDateRange(request.query);
-		const leads = await prisma.lead.findMany({
+		const fetchPage = (cursor, take) => prisma.lead.findMany({
 			where: range ? { createdAt: dateRangeFilter(range) } : undefined,
-			orderBy: { createdAt: 'desc' },
+			orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+			take,
+			...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
 			select: {
+				id: true,
+				vendorNameSnapshot: true,
 				customerName: true,
 				phone: true,
 				email: true,
@@ -2493,11 +2500,11 @@ adminRoutes.get('/leads/export', requireAuth, requirePermission('leads.export'),
 		});
 		const showPayout = hasPermission(request.auth.user, 'payouts.view');
 
-		return await sendTable(request, response, {
+		return await sendTableStream(request, response, {
 			baseName: `solarium-leads${dateRangeFileSuffix(range)}`,
 			sheetName: 'Leads',
 			headers: ['Customer Name', 'Customer Phone', 'Customer Email', 'Location', 'Pincode', 'Average Electricity Bill', 'Solar Size', 'GPS Latitude', 'GPS Longitude', 'GPS Accuracy (m)', 'Lead Status', 'Vendor Name', 'Vendor Mobile Number', 'Vendor State', 'QR Code', 'Payout Status', 'Payout Reference', 'Created At', 'Assigned To'],
-			rows: leads.map((lead) => [
+			pages: pagedRows(fetchPage, (lead) => [
 				lead.customerName,
 				lead.phone,
 				lead.email,
@@ -2771,16 +2778,21 @@ adminRoutes.get('/audit-logs/export', requireAuth, requireAdmin, async (request,
 	try {
 		exportFormat(request); // reject a bad format before anything is acknowledged
 		const range = parseDateRange(request.query);
-		const logs = await prisma.auditLog.findMany({
+		const fetchPage = (cursor, take) => prisma.auditLog.findMany({
 			where: range ? { timestamp: dateRangeFilter(range) } : undefined,
 			orderBy: [{ timestamp: 'desc' }, { id: 'desc' }],
+			take,
+			...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
 			include: { actor: { select: { name: true } } },
 		});
-		const table = {
+		return await sendTableStream(request, response, {
 			baseName: `solarium-audit-logs${dateRangeFileSuffix(range)}`,
 			sheetName: 'Audit logs',
 			headers: ['Timestamp', 'Action', 'Entity', 'Entity ID', 'Actor Name', 'Actor Role', 'Metadata'],
-			rows: logs.map((log) => [
+			// The download itself is the acknowledgment: only after every row was sent, so a failed or cut-off export never
+			// falsely acknowledges. A date-limited export does not save everything, so only an all-time export counts.
+			onComplete: range ? undefined : () => acknowledgeAuditLogRetentionWarning(prisma),
+			pages: pagedRows(fetchPage, (log) => [
 				log.timestamp.toISOString(),
 				log.action,
 				log.entity,
@@ -2789,12 +2801,7 @@ adminRoutes.get('/audit-logs/export', requireAuth, requireAdmin, async (request,
 				log.actorRole,
 				log.metadata ? JSON.stringify(log.metadata) : '',
 			]),
-		};
-		// The download itself is the acknowledgment — only after the CSV has actually
-		// been built, so a request that fails before this point never falsely acknowledges.
-		// A date-limited export does not save everything, so only an all-time export may count as the backup.
-		if (!range) await acknowledgeAuditLogRetentionWarning(prisma);
-		return await sendTable(request, response, table);
+		});
 	} catch (error) {
 		return next(error);
 	}

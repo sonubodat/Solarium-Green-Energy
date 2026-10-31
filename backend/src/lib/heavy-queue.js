@@ -21,9 +21,11 @@ function busyError() {
 	return error;
 }
 
-export function runHeavy(key, fn) {
+// maxWaiting: how many may queue behind the running one. Admin batches keep the small default; single-page Solar Mitra
+// downloads (a few hundred ms each, small memory) pass a larger number so a burst of vendors waits instead of failing.
+export function runHeavy(key, fn, maxWaiting = MAX_WAITING) {
 	if (key && inFlight.has(key)) return inFlight.get(key);
-	if (pending > MAX_WAITING) throw busyError();
+	if (pending > maxWaiting) throw busyError();
 	pending += 1;
 	const run = tail.catch(() => {}).then(fn);
 	tail = run;

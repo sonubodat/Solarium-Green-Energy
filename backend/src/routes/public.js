@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { prisma } from '../lib/prisma.js';
+import { cached } from '../lib/response-cache.js';
 import { publicRateLimit } from '../middleware/rate-limit.js';
 import { normalizePhone, customerHashFor, customerAlreadyExistsError, findExistingLeadByHash } from '../lib/customer-identity.js';
 
@@ -72,7 +73,9 @@ async function ensureGeneralAssignment(transaction) {
 
 publicRoutes.get('/qr/:qrCode', publicRateLimit, async (request, response, next) => {
 	try {
-		const assignment = await prisma.qrAssignment.findFirst({
+		// Same QR scanned again within 30 s reuses the lookup; any successful write through the API (reassign, retire,
+		// deactivate ...) clears it, so Admin changes apply at once. Only hits are kept; the scan row below is always written.
+		const assignment = await cached(`qr:${request.params.qrCode}`, 30000, () => prisma.qrAssignment.findFirst({
 			where: {
 				unassignedAt: null,
 				qrCode: { code: request.params.qrCode, status: 'ACTIVE' },
@@ -83,7 +86,7 @@ publicRoutes.get('/qr/:qrCode', publicRateLimit, async (request, response, next)
 				vendor: { select: { businessName: true } },
 				qrCode: { select: { id: true, code: true } },
 			},
-		});
+		}));
 
 		if (!assignment) {
 			const qr = await prisma.qrCode.findUnique({

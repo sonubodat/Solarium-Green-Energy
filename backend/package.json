@@ -6,7 +6,7 @@
   "scripts": {
     "build": "prisma generate",
     "dev": "node --watch src/server.js",
-    "start": "node src/server.js",
+    "start": "node --max-old-space-size=384 src/server.js",
     "prestart": "prisma generate",
     "postinstall": "prisma generate",
     "db:generate": "prisma generate",

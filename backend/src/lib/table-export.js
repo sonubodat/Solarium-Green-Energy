@@ -38,17 +38,38 @@ function columnName(index) {
 	return name;
 }
 
-export async function toXlsx(headers, rows, sheetName = 'Export') {
-	const widths = headers.map((header, column) => {
-		const longest = rows.slice(0, 200).reduce((max, row) => Math.max(max, asText(row[column]).length), String(header).length);
-		return Math.min(Math.max(longest + 2, 10), 50);
-	});
-	const cell = (value, column, row, style) => {
-		const text = asText(value);
-		return text === '' ? '' : `<c r="${columnName(column)}${row}" t="inlineStr"${style ? ` s="${style}"` : ''}><is><t xml:space="preserve">${xml(text)}</t></is></c>`;
-	};
-	const lines = [`<row r="1">${headers.map((header, column) => cell(header, column, 1, 1)).join('')}</row>`];
-	rows.forEach((row, index) => lines.push(`<row r="${index + 2}">${row.map((value, column) => cell(value, column, index + 2, 0)).join('')}</row>`));
+// Excel files are built in memory (a ZIP needs the whole sheet), so they are capped; CSV and "copy" have no cap.
+export const XLSX_MAX_ROWS = 20000;
+
+function xlsxCell(value, column, row, style) {
+	const text = asText(value);
+	return text === '' ? '' : `<c r="${columnName(column)}${row}" t="inlineStr"${style ? ` s="${style}"` : ''}><is><t xml:space="preserve">${xml(text)}</t></is></c>`;
+}
+
+// rowChunks: an async iterable of arrays of rows. Only the finished row XML strings are kept, not the row objects.
+export async function buildXlsx(headers, rowChunks, sheetName = 'Export') {
+	const lines = [`<row r="1">${headers.map((header, column) => xlsxCell(header, column, 1, 1)).join('')}</row>`];
+	let widths = null;
+	let count = 0;
+	for await (const chunk of rowChunks) {
+		if (!widths) {
+			widths = headers.map((header, column) => {
+				const longest = chunk.slice(0, 200).reduce((max, row) => Math.max(max, asText(row[column]).length), String(header).length);
+				return Math.min(Math.max(longest + 2, 10), 50);
+			});
+		}
+		for (const row of chunk) {
+			if (count >= XLSX_MAX_ROWS) {
+				const error = new Error(`Excel files are limited to ${XLSX_MAX_ROWS.toLocaleString('en-IN')} rows. Use a date range to export fewer rows, or choose CSV.`);
+				error.statusCode = 422;
+				error.code = 'EXPORT_TOO_LARGE_FOR_XLSX';
+				throw error;
+			}
+			count += 1;
+			lines.push(`<row r="${count + 1}">${row.map((value, column) => xlsxCell(value, column, count + 1, 0)).join('')}</row>`);
+		}
+	}
+	widths = widths || headers.map((header) => Math.min(Math.max(String(header).length + 2, 10), 50));
 	const sheet = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>`
 		+ `<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">`
 		+ `<sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>`
@@ -65,6 +86,10 @@ export async function toXlsx(headers, rows, sheetName = 'Export') {
 	const chunks = [];
 	await writeZip((async function* entries() { for (const [name, text] of files) yield { name, buffer: Buffer.from(text, 'utf8') }; }()), async (chunk) => { chunks.push(chunk); });
 	return Buffer.concat(chunks);
+}
+
+export async function toXlsx(headers, rows, sheetName = 'Export') {
+	return buildXlsx(headers, [rows], sheetName);
 }
 
 const formatSchema = z.enum(['csv', 'xlsx', 'tsv']).default('csv');
@@ -93,4 +118,55 @@ export async function sendTable(request, response, { baseName, headers, rows, sh
 	response.setHeader('Content-Type', format === 'tsv' ? 'text/tab-separated-values; charset=utf-8' : 'text/csv; charset=utf-8');
 	response.setHeader('Content-Disposition', `attachment; filename="${baseName}.${format}"`);
 	return response.send(format === 'tsv' ? toTsv(headers, rows) : toCsv(headers, rows));
+}
+
+// Same as sendTable, but the rows come from `pages`, an async iterable of row arrays (one database page at a time),
+// so a big export never holds the whole table in memory: CSV and TSV are written to the response page by page with
+// back-pressure. `onComplete` runs after the last page and before the response ends. If the data fails once the
+// download has started the connection is cut, so a truncated file is never mistaken for a complete one.
+export async function sendTableStream(request, response, { baseName, headers, sheetName, pages, onComplete }) {
+	const format = exportFormat(request);
+	if (format === 'xlsx') {
+		const buffer = await buildXlsx(headers, pages, sheetName);
+		if (onComplete) await onComplete();
+		response.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+		response.setHeader('Content-Disposition', `attachment; filename="${baseName}.xlsx"`);
+		return response.send(buffer);
+	}
+	const toLine = format === 'tsv'
+		? (row) => row.map((value) => asText(value).replace(/[\t\r\n]+/g, ' ')).join('\t')
+		: (row) => row.map(csvCell).join(',');
+	const separator = format === 'tsv' ? '\n' : '\r\n';
+	response.setHeader('Content-Type', format === 'tsv' ? 'text/tab-separated-values; charset=utf-8' : 'text/csv; charset=utf-8');
+	response.setHeader('Content-Disposition', `attachment; filename="${baseName}.${format}"`);
+	const write = (text) => (response.write(text) ? null : new Promise((resolve) => { response.once('drain', resolve); response.once('close', resolve); }));
+	// The first page is read before anything is sent, so a database failure there is still a clean error response.
+	const iterator = pages[Symbol.asyncIterator]();
+	let step = await iterator.next();
+	try {
+		await write(toLine(headers));
+		while (!step.done) {
+			if (response.destroyed) return;
+			if (step.value.length) await write(separator + step.value.map(toLine).join(separator));
+			step = await iterator.next();
+		}
+		if (onComplete) await onComplete();
+		response.end();
+	} catch (error) {
+		if (!response.headersSent) throw error;
+		response.destroy(error);
+	}
+}
+
+// Reads a table one page at a time with a cursor: fetchPage(cursorId, take) returns up to `take` rows in a fixed order
+// (the caller adds the cursor and a unique tie-break); the last row's id is the next cursor.
+export async function* pagedRows(fetchPage, toRow, pageSize = 500) {
+	let cursor = null;
+	for (;;) {
+		const rows = await fetchPage(cursor, pageSize);
+		if (!rows.length) return;
+		yield rows.map(toRow);
+		if (rows.length < pageSize) return;
+		cursor = rows[rows.length - 1].id;
+	}
 }

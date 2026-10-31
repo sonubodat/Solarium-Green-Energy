@@ -134,3 +134,18 @@ test('pagination: 50/100/200 accepted, 201 clamps, bad values fall back', () => 
 	assert.equal(at('200', undefined), 100); // routes that did not opt in stay at 100
 	assert.deepEqual(pagination({ page: '3', limit: '100' }, 200), { page: 3, limit: 100, skip: 200 });
 });
+
+import { cached as cachedForMisses, invalidateResponseCache as clearForMisses } from '../src/lib/response-cache.js';
+test('cached(): a miss (null) is never kept, and a write clears hits', async () => {
+	clearForMisses();
+	let calls = 0;
+	await cachedForMisses('k-miss', 60000, async () => { calls += 1; return null; });
+	await cachedForMisses('k-miss', 60000, async () => { calls += 1; return null; });
+	assert.equal(calls, 2);
+	await cachedForMisses('k-hit', 60000, async () => { calls += 1; return { a: 1 }; });
+	await cachedForMisses('k-hit', 60000, async () => { calls += 1; return { a: 1 }; });
+	assert.equal(calls, 3);
+	clearForMisses();
+	await cachedForMisses('k-hit', 60000, async () => { calls += 1; return { a: 1 }; });
+	assert.equal(calls, 4);
+});

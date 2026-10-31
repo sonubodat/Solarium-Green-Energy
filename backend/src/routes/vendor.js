@@ -177,7 +177,8 @@ vendorRoutes.get('/qr/image', requireAuth, requireVendorReady, async (request, r
 		const { code } = assignment.qrCode;
 		response.setHeader('Content-Disposition', `attachment; filename="Solarium-QR-${code.replace(/[^A-Za-z0-9._-]/g, '-')}.png"`);
 		response.setHeader('Content-Type', 'image/png');
-		return response.send(await generateQrPng(code, 2048));
+		// A 2048 px PNG takes real CPU: queue it with the PDFs so many vendors at once never run in parallel.
+		return response.send(await runHeavy(`png:${code}`, () => generateQrPng(code, 2048), 50));
 	} catch (error) {
 		return next(error);
 	}
@@ -201,10 +202,12 @@ vendorRoutes.get('/qr/poster', requireAuth, requireVendorReady, async (request, 
 			return response.status(404).json({ success: false, error: { code: 'POSTER_TEMPLATE_NOT_AVAILABLE', message: 'The poster is not available yet. Please try again later.' } });
 		}
 		const { code } = assignment.qrCode;
-		const pdf = await runHeavy(null, () => generateQrTemplatePdf({
+		// Queued one at a time like every PDF job; the same vendor double-clicking shares one run, and a burst of
+		// vendors waits (up to 50) instead of getting "server busy".
+		const pdf = await runHeavy(`poster:${template.id}:${code}`, () => generateQrTemplatePdf({
 			templateSnapshot: buildTemplateSnapshot(template),
 			items: [{ sequence: 1, expectedCode: code, expectedUrl: publicReferralUrl(code) }],
-		}));
+		}), 50);
 		response.setHeader('Content-Disposition', `attachment; filename="Solarium-Poster-${code.replace(/[^A-Za-z0-9._-]/g, '-')}.pdf"`);
 		response.setHeader('Content-Type', 'application/pdf');
 		return response.send(pdf);
